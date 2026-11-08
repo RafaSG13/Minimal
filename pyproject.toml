@@ -1,0 +1,22 @@
+[project]
+name = "minimal"
+version = "0.1.0"
+description = "Minimal, extensible coding-agent harness"
+readme = "README.md"
+authors = [
+    { name = "RafaSG13", email = "rafasrrg13@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=2.3.0",
+    "google-genai>=2.34.0",
+    "questionary>=2",
+    "textual>=8.2",
+]
+
+[project.scripts]
+minimal = "minimal.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,227 @@
+"""The registry: the one place where tools, slash commands, model providers,
+system-prompt additions, event handlers and UI widgets are collected.
+
+Built-in tools, built-in providers and extensions register through it. The
+agent loop and the terminal UI read from it. Extensions receive it as their
+``pi`` argument.
+
+Events and their payloads:
+
+    ``tool_call``    ``{name, input}``
+        Fired before a tool runs. A handler may return
+        ``{"block": True, "reason": str}`` to veto the call.
+    ``tool_result``  ``{name, input, output, is_error}``
+        Fired after a tool runs. A handler may return ``{"output": str}``
+        to rewrite what the model sees.
+    ``turn_end``     ``{messages}``
+        Fired when the model finishes answering without further tool calls.
+"""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from minimal.providers.base import Provider, ProviderSpec
+
+ToolRun = Callable[[dict, Any], Any]
+"""Tool implementation: ``run(input, ctx) -> str``. Raise to report an error."""
+
+CommandRun = Callable[[str, Any], Any]
+"""Slash-command implementation: ``run(args, ctx)``."""
+
+EventHandler = Callable[[dict], Any]
+"""Event handler: ``handler(payload) -> dict | None``."""
+
+WIDGET_AREAS = ("top", "bottom", "sidebar")
+"""Where an extension widget can be placed in the terminal UI."""
+
+
+@dataclass
+class Tool:
+    """A tool the model can call.
+
+    Attributes:
+        name: Unique name the model uses to call the tool.
+        description: Tells the model what the tool does and when to use it.
+        input_schema: JSON schema of the ``input`` object.
+        run: Implementation, called as ``run(input, ctx)``.
+        confirm: Ask the user before running (tools with side effects).
+    """
+
+    name: str
+    description: str
+    input_schema: dict
+    run: ToolRun
+    confirm: bool = False
+
+
+@dataclass
+class Command:
+    """A slash command such as ``/stats``.
+
+    Attributes:
+        run: Implementation, called as ``run(args, ctx)`` where ``args`` is
+            the text after the command name.
+        description: One-line summary shown by ``/help``.
+        terminal: Needs the real terminal (the TUI suspends itself while it runs).
+    """
+
+    run: CommandRun
+    description: str = ""
+    terminal: bool = False
+
+
+@dataclass
+class WidgetSpec:
+    """A visual component an extension adds to the terminal UI.
+
+    Attributes:
+        name: Unique name; registering the same name again replaces it.
+        create: Called as ``create(ctx)`` with the :class:`~minimal.app.App`;
+            returns a ``textual.widget.Widget``.
+        area: ``"top"``, ``"bottom"`` or ``"sidebar"``.
+    """
+
+    name: str
+    create: Callable[[Any], Any]
+    area: str = "sidebar"
+
+
+class Registry:
+    """Collects tools, commands, providers, prompt additions and event handlers.
+
+    Attributes:
+        tools: Tools offered to the model, by name, in registration order.
+        commands: Slash commands added by extensions, by name.
+        providers: Model integrations, by name (see :mod:`minimal.providers`).
+        prompt_parts: Extra paragraphs appended to the system prompt.
+        widgets: Visual components for the terminal UI, by name.
+    """
+
+    def __init__(self) -> None:
+        self.tools: dict[str, Tool] = {}
+        self.commands: dict[str, Command] = {}
+        self.providers: dict[str, ProviderSpec] = {}
+        self.prompt_parts: list[str] = []
+        self.widgets: dict[str, WidgetSpec] = {}
+        self._handlers: dict[str, list[EventHandler]] = {}
+
+    def reset(self) -> None:
+        """Forget everything registered, keeping the same container objects.
+
+        The containers are cleared in place because the agent loop holds this
+        registry and re-reads ``tools`` on every model request: a reload during
+        a turn offers the new tools on the next request.
+        """
+        self.tools.clear()
+        self.commands.clear()
+        self.providers.clear()
+        self.prompt_parts.clear()
+        self.widgets.clear()
+        self._handlers.clear()
+
+    def add_tool(self, tool: Tool) -> None:
+        """Register a ready-made ``Tool``, replacing any tool with the same name."""
+        self.tools[tool.name] = tool
+
+    def register_tool(
+        self,
+        name: str,
+        run: ToolRun,
+        description: str = "",
+        input_schema: dict | None = None,
+        confirm: bool = False,
+    ) -> None:
+        """Build and register a tool. ``input_schema`` defaults to an empty object.
+
+        Raises:
+            ValueError: if ``name`` is empty or ``run`` is not callable.
+        """
+        if not name or not callable(run):
+            raise ValueError("register_tool: name and run are required")
+        schema = input_schema or {"type": "object", "properties": {}}
+        self.add_tool(Tool(name, description, schema, run, confirm))
+
+    def register_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
+        """Register a slash command, available as ``/name``.
+
+        Set ``terminal`` when the command needs the real terminal (prompts,
+        menus, a browser login): the TUI suspends itself while it runs.
+
+        Raises:
+            ValueError: if ``run`` is not callable.
+        """
+        if not callable(run):
+            raise ValueError("register_command: run is required")
+        self.commands[name] = Command(run, description, terminal)
+
+    def register_widget(self, name: str, create: Callable[[Any], Any], area: str = "sidebar") -> None:
+        """Add a visual component to the terminal UI, replacing any widget with the same name.
+
+        ``create(ctx)`` receives the :class:`~minimal.app.App` and returns a
+        ``textual.widget.Widget``, placed in ``area`` (``"top"``, ``"bottom"`` or
+        ``"sidebar"``). Style it with its own ``DEFAULT_CSS``. The ``top`` and
+        ``bottom`` areas size to their content, so give the widget a height and
+        do not ``dock`` it (a docked widget leaves the area zero rows tall). If
+        the widget has a method ``refresh_state(ctx)``, the TUI calls it after
+        mount, after every turn, after every slash command and after every reload.
+
+        Raises:
+            ValueError: if ``name`` is empty, ``create`` is not callable or ``area`` is unknown.
+        """
+        if not name or not callable(create):
+            raise ValueError("register_widget: name and create are required")
+        if area not in WIDGET_AREAS:
+            raise ValueError("register_widget: area must be one of top, bottom, sidebar")
+        self.widgets[name] = WidgetSpec(name, create, area)
+
+    def add_provider(self, spec: ProviderSpec) -> None:
+        """Register a ready-made ``ProviderSpec``, replacing any with the same name."""
+        self.providers[spec.name] = spec
+
+    def register_provider(
+        self,
+        name: str,
+        create: Callable[[], Provider],
+        default_model: str,
+        env_keys: tuple[str, ...] = (),
+        description: str = "",
+    ) -> None:
+        """Register a model integration, selectable with ``--provider name`` or ``/provider name``.
+
+        ``create()`` must return an object implementing
+        :class:`~minimal.providers.base.Provider`.
+
+        Raises:
+            ValueError: if ``name`` or ``default_model`` is empty or ``create`` is not callable.
+        """
+        if not name or not default_model or not callable(create):
+            raise ValueError("register_provider: name, create and default_model are required")
+        self.add_provider(ProviderSpec(name, create, default_model, tuple(env_keys), description))
+
+    def on(self, event: str, handler: EventHandler) -> None:
+        """Subscribe ``handler`` to ``event`` (see the module docstring for events)."""
+        self._handlers.setdefault(event, []).append(handler)
+
+    def append_system_prompt(self, text: str) -> None:
+        """Add a paragraph to the end of the system prompt."""
+        self.prompt_parts.append(text)
+
+    def emit(self, event: str, payload: dict) -> list:
+        """Call every handler of ``event`` in order and return their non-``None`` results.
+
+        A failing handler is reported on stderr and skipped, so one broken
+        extension cannot break the agent loop.
+        """
+        results = []
+        for handler in self._handlers.get(event, []):
+            try:
+                result = handler(payload)
+            except Exception as e:
+                print(f'[extension] error in "{event}" handler: {e}', file=sys.stderr)
+                continue
+            if result is not None:
+                results.append(result)
+        return results
