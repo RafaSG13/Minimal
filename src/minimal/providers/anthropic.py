@@ -31,6 +31,10 @@ class AnthropicProvider:
             client = anthropic.Anthropic()
         self.client = client
 
+    def list_models(self) -> list[str]:
+        """Model ids the account can use, newest first, as reported by the API."""
+        return [m.id for m in self.client.models.list(limit=100)]
+
     def stream(
         self,
         *,

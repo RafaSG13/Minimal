@@ -46,6 +46,11 @@ class GeminiProvider:
             client = genai.Client()
         self.client = client
 
+    def list_models(self) -> list[str]:
+        """Gemini model ids the key can use, as reported by the API."""
+        names = (m.name or "" for m in self.client.models.list())
+        return sorted(n.removeprefix("models/") for n in names if n.startswith("models/gemini"))
+
     def stream(
         self,
         *,

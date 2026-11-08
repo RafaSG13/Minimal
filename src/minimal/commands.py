@@ -37,9 +37,38 @@ def _sessions(args: str, app: App) -> None:
     print("\n".join(list_sessions()) or "(none)")
 
 
+def _available_models(app: App) -> list[str]:
+    """Models the current provider offers: queried from its API, else just the default."""
+    lister = getattr(app.provider, "list_models", None)
+    spec = app.registry.providers.get(app.provider_name)
+    found: list[str] = []
+    if lister is not None:
+        try:
+            found = list(lister())
+        except Exception as e:
+            print(f"(could not fetch the model list: {e})", file=sys.stderr)
+    if not found and spec is not None:
+        found = [spec.default_model]
+    if app.model not in found:
+        found.insert(0, app.model)
+    return found
+
+
 def _model(args: str, app: App) -> None:
-    if args:
+    models = _available_models(app) if (not args or args.isdigit()) else []
+    if args.isdigit():
+        index = int(args)
+        if not 1 <= index <= len(models):
+            raise ValueError(f"no model number {index}; /model lists 1-{len(models)}")
+        app.model = models[index - 1]
+    elif args:
         app.model = args
+    else:
+        print(f"Models for {app.provider_name} (* = current):")
+        for i, name in enumerate(models, 1):
+            print(f"{'*' if name == app.model else ' '} {i:>2}. {name}")
+        print("Change with /model <number or name>. Other providers: /provider")
+        return
     print(f"Model: {app.model}")
 
 
@@ -127,7 +156,7 @@ BUILTIN_COMMANDS: dict[str, Command] = {
     "help": Command(_help, "show the commands"),
     "new": Command(_new, "start a new session"),
     "sessions": Command(_sessions, "list saved sessions"),
-    "model": Command(_model, "show or change the model: /model <name>"),
+    "model": Command(_model, "list models, or change: /model [number|name]"),
     "provider": Command(_provider, "list providers, or switch: /provider <name> [model]"),
     "tools": Command(_tools, "list the tools"),
     "reload": Command(_reload, "reload extensions from disk"),

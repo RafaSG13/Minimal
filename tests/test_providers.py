@@ -133,3 +133,22 @@ class AnthropicRequestTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListModelsTest(unittest.TestCase):
+    def test_anthropic_lists_ids(self):
+        from types import SimpleNamespace as NS
+
+        from minimal.providers.anthropic import AnthropicProvider
+
+        client = NS(models=NS(list=lambda limit: [NS(id="claude-a"), NS(id="claude-b")]))
+        self.assertEqual(AnthropicProvider(client).list_models(), ["claude-a", "claude-b"])
+
+    def test_gemini_lists_gemini_models_only(self):
+        from types import SimpleNamespace as NS
+
+        from minimal.providers.gemini import GeminiProvider
+
+        names = ["models/gemini-x", "models/embedding-001", "models/gemini-a"]
+        client = NS(models=NS(list=lambda: [NS(name=n) for n in names]))
+        self.assertEqual(GeminiProvider(client).list_models(), ["gemini-a", "gemini-x"])

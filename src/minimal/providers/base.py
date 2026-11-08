@@ -56,6 +56,13 @@ class Provider(Protocol):
     name: str
     """Registry name, also stored in ``provider_data`` to recognise its own data."""
 
+    def list_models(self) -> list[str]:
+        """Optional: model names this provider can use right now (queried from its API).
+
+        ``/model`` lists them when present; providers without it fall back to the default model.
+        """
+        ...
+
     def stream(
         self,
         *,
