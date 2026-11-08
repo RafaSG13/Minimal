@@ -1,0 +1,26 @@
+README.md
+  h_e81853c41416fb 23-24,34,57-59,114
+src/minimal/__init__.py
+  h_e81853c41416fb 16
+src/minimal/agent.py
+  h_e81853c41416fb 34,50,74-77
+src/minimal/app.py
+  h_e81853c41416fb 91-93,115-120,249
+src/minimal/theme.py
+  h_e81853c41416fb 1-86
+src/minimal/tui.py
+  h_e81853c41416fb 3-9,23,25,27-28,31,38,40,44-46,65-220,225,228-229,231-233,243-244,246-251,281-283,319,321-324,326-353,358-359,364,370,376-377,379-385,392,407,410-419,421,431,441,445-453,457,491-492,495-527,537,551,572-575,580-581
+tests/test_tui.py
+  h_e81853c41416fb 14,81,88,94,96-98,103,106,109-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c6a127237510e9af645c80291e56eced3aae7567",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
