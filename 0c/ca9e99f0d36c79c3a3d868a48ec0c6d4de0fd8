@@ -1,0 +1,14 @@
+.gitignore
+  h_e81853c41416fb 4-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "0cca9e99f0d36c79c3a3d868a48ec0c6d4de0fd8",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
