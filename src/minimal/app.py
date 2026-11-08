@@ -88,6 +88,9 @@ class Frontend(Protocol):
     def tool_call(self, call: dict) -> None:
         """A tool is about to run: ``{name, input}``."""
 
+    def tool_result(self, call: dict, result: dict) -> None:
+        """A tool finished: ``result`` is its ``tool_result`` block (``content``, ``is_error``)."""
+
     def turn_end(self, error: str | None) -> None:
         """The turn finished; ``error`` is set if it failed."""
 
@@ -108,6 +111,12 @@ class ConsoleFrontend:
         """Show a dimmed one-line summary of a tool call on stderr."""
         args = json.dumps(call["input"], ensure_ascii=False)[:120]
         print(f"\n\x1b[2m› {call['name']} {args}\x1b[0m\n", end="", file=sys.stderr, flush=True)
+
+    def tool_result(self, call: dict, result: dict) -> None:
+        """Show the first line of a failed tool call on stderr."""
+        if result["is_error"]:
+            first = result["content"].strip().partition("\n")[0][:200]
+            print(f"\x1b[31m✘ {call['name']}: {first}\x1b[0m", file=sys.stderr, flush=True)
 
     def turn_end(self, error: str | None) -> None:
         if error is None:
@@ -237,6 +246,7 @@ class App:
                 ctx=self,
                 on_text=self.frontend.text,
                 on_tool=self.frontend.tool_call,
+                on_tool_result=self.frontend.tool_result,
             )
         except Exception as e:
             del self.messages[before:]

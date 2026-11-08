@@ -31,6 +31,7 @@ def run_agent(
     ctx: Any,
     on_text: Callable[[str], Any] | None = None,
     on_tool: Callable[[dict], Any] | None = None,
+    on_tool_result: Callable[[dict, dict], Any] | None = None,
     max_turns: int = 50,
 ) -> Reply:
     """Run the model/tool loop until the model answers without calling tools.
@@ -46,6 +47,7 @@ def run_agent(
             attribute, it is asked before running tools marked ``confirm``.
         on_text: Called with each streamed text chunk.
         on_tool: Called with each ``tool_use`` block before it runs.
+        on_tool_result: Called with each ``tool_use`` block and its ``tool_result`` block after it runs.
         max_turns: Most model requests allowed for this turn.
 
     Returns:
@@ -69,7 +71,10 @@ def run_agent(
         for call in calls:
             if on_tool:
                 on_tool(call)
-            results.append(execute_tool_call(call, registry, ctx))
+            result = execute_tool_call(call, registry, ctx)
+            if on_tool_result:
+                on_tool_result(call, result)
+            results.append(result)
         messages.append({"role": "user", "content": results})
 
     raise RuntimeError(f"exceeded the maximum of {max_turns} turns")

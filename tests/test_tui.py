@@ -11,7 +11,7 @@ from minimal.app import App
 from minimal.providers.base import Reply
 from minimal.registry import Registry
 from minimal.session import Session
-from minimal.tui import ConfirmScreen, MinimalTui, _outside_event_loop
+from minimal.tui import ConfirmScreen, MinimalTui, ToolBlock, _outside_event_loop
 
 
 class StreamingFakeProvider:
@@ -78,28 +78,46 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await self.submit(pilot, "hi")
             await self.wait_until(pilot, self.idle(app))
             users = [str(s.render()) for s in app.query(".user").results(Static)]
-            self.assertIn("> hi", users)
+            self.assertIn("hi", users)
             self.assertEqual([m.source for m in app.query(Markdown)], ["Hello **there**"])
             sidebar = app.query_one("#sidebar")
             self.assertTrue(sidebar.has_class("-has-widgets"))
             self.assertEqual(len(sidebar.query(Counter)), 1)
             self.assertGreaterEqual(Counter.calls, 2)
 
-    async def test_confirm_modal(self):
+    def use_write_replies(self):
         self.use_replies(
             Reply(
                 content=[{"type": "tool_use", "id": "t1", "name": "write", "input": {"path": "out.txt", "content": "x"}}],
                 stop_reason="tool_use",
             ),
-            Reply(content=[{"type": "text", "text": "written"}], stop_reason="end_turn"),
+            Reply(content=[{"type": "text", "text": "done"}], stop_reason="end_turn"),
         )
+
+    async def test_confirm_modal_allows_tool(self):
+        self.use_write_replies()
         app = MinimalTui(self.core)
         async with app.run_test() as pilot:
             await self.submit(pilot, "write it")
             await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+            self.assertTrue(app.query_one(ToolBlock).has_class("-pending"))
             await pilot.press("y")
             await self.wait_until(pilot, self.idle(app))
+            self.assertTrue(app.query_one(ToolBlock).has_class("-success"))
         self.assertEqual((self.tmp / "out.txt").read_text(), "x")
+
+    async def test_denied_tool_shows_error(self):
+        self.use_write_replies()
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "write it")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+            await pilot.press("n")
+            await self.wait_until(pilot, self.idle(app))
+            block = app.query_one(ToolBlock)
+            self.assertTrue(block.has_class("-error"))
+            self.assertIn("denied", str(block.render()))
+        self.assertFalse((self.tmp / "out.txt").exists())
 
     async def test_command_output_captured(self):
         app = MinimalTui(self.core)

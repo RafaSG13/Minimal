@@ -20,7 +20,8 @@ src/minimal/
   commands.py    slash commands (/help, /provider, /reload, /ext, …)
   config.py      default provider/model and API keys saved by setup (~/.minimal/config.json, keys.json)
   setup.py       onboarding wizard: provider, login or API key, model
-  tui.py         Textual terminal UI: transcript, prompt, confirm dialog, extension widget areas
+  theme.py       colour theme (omp's dark palette) and glyphs of the terminal UI
+  tui.py         Textual terminal UI: welcome header, transcript, tool-call blocks, prompt, status line, confirm dialog, extension widget areas
   cli.py         option parsing, entry point
 extensions/
   example.py     example extension (tool, command, guardrail, prompt note, sidebar widget)
@@ -30,7 +31,7 @@ tests/
   test_claude_auth.py browser login round trip, token refresh
   test_config.py      saved keys and config, how the startup provider is chosen
   test_marketplace.py search, install and publish against a local bare git repository
-  test_tui.py         the terminal UI: streaming, confirm dialog, command output, widgets
+  test_tui.py         the terminal UI: streaming, confirm dialog, tool-call states, command output, widgets
 ```
 
 ## Architecture
@@ -53,7 +54,9 @@ flowchart LR
 
 One user turn: `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If anything fails mid-turn, the turn is dropped from the history. The session file is appended to after every turn.
 
-What the user sees goes through a `Frontend` (`app.py`): the terminal UI's, or `ConsoleFrontend` (plain stdout) for `-p`. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
+What the user sees goes through a `Frontend` (`app.py`): the terminal UI's, or `ConsoleFrontend` (plain stdout) for `-p`. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
+
+The terminal UI follows omp/pi: a welcome header, user messages on a tinted band, replies rendered as Markdown, and each tool call as a block whose background shows its state (running, done, failed). The block's header line is `$ command` for `bash` or `read`/`write`/`edit <path>`; under it, a preview of the output, the content written, or the diff of an edit. Below the prompt, a status line shows the model, provider, directory and git branch (`*` when there are uncommitted changes). Colours and glyphs live in `theme.py`.
 
 History is stored in one provider-neutral format, shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request, so you can switch providers mid-conversation and resume any session with any provider. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`. Other providers ignore it.
 
@@ -108,7 +111,7 @@ def register(pi):
 
 `ctx` exposes `cwd`, `messages`, `provider_name`, `model` and `registry`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself.
 
-A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
+A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
 
 ### Self-extension and hot reload
 

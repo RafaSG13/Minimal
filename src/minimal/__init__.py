@@ -13,6 +13,7 @@ Modules, from the bottom up:
 - :mod:`minimal.commands`   slash commands (/help, /reload, /ext, …)
 - :mod:`minimal.config`     provider/model and API keys saved by setup (``~/.minimal``)
 - :mod:`minimal.setup`      onboarding: pick the provider, sign in or enter its key, pick the model
+- :mod:`minimal.theme`      colour theme and glyphs of the terminal UI
 - :mod:`minimal.tui`        the Textual terminal UI, with extension widgets
 - :mod:`minimal.cli`        option parsing, the ``minimal`` entry point
 """
