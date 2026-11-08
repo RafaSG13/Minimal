@@ -32,13 +32,16 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App as TextualApp
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Button, Input, Label, Markdown, Static
+from textual.widgets import Button, Input, Label, Markdown, OptionList, SelectionList, Static
+from textual.widgets.option_list import Option
+from textual.widgets.selection_list import Selection
 
 from minimal import theme
-from minimal.app import App
+from minimal.app import App, ConsoleFrontend
 from minimal.commands import ExitRepl, find_command, run_command
 
 PREVIEW_LINES = 8
@@ -257,6 +260,97 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(value)
 
 
+class DialogScreen(ModalScreen[Any]):
+    """A titled box opened by a command through the frontend; esc cancels (dismisses with ``None``)."""
+
+    DEFAULT_CSS = """
+    DialogScreen { align: center middle; background: $background 30%; }
+    DialogScreen > Vertical {
+        width: 80%; max-width: 100; height: auto; max-height: 80%;
+        padding: 1 2; border: round $accent; background: $surface;
+        border-title-color: $accent; border-title-style: bold;
+    }
+    DialogScreen OptionList, DialogScreen SelectionList { height: auto; max-height: 20; }
+    DialogScreen .hint { color: $dim; margin-top: 1; }
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+    HINT = ""
+
+    def __init__(self, heading: str) -> None:
+        super().__init__()
+        self.heading = heading  # not ``title``: Screen.title is a reactive
+
+    def compose(self) -> ComposeResult:
+        with Vertical() as box:
+            box.border_title = self.heading
+            yield self.body()
+            yield Label(self.HINT, classes="hint")
+
+    def body(self) -> Widget:
+        """The widget that takes the answer."""
+        raise NotImplementedError
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ChoiceScreen(DialogScreen):
+    """Pick one option; dismisses with its value."""
+
+    HINT = "enter selects · esc cancels"
+
+    def __init__(self, heading: str, options: list[tuple[str, str]]) -> None:
+        super().__init__(heading)
+        self.options = options
+
+    def body(self) -> Widget:
+        return OptionList(*(Option(Text(label), id=value) for value, label in self.options))
+
+    def on_mount(self) -> None:
+        if self.options:
+            self.query_one(OptionList).highlighted = 0
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(event.option.id)
+
+
+class ChecklistScreen(DialogScreen):
+    """Tick any options; dismisses with the ticked values in option order."""
+
+    HINT = "space toggles · enter applies · esc cancels"
+    BINDINGS = [Binding("enter", "apply", "Apply", priority=True)]
+
+    def __init__(self, heading: str, options: list[tuple[str, str, bool]]) -> None:
+        super().__init__(heading)
+        self.options = options
+
+    def body(self) -> Widget:
+        return SelectionList[str](*(Selection(Text(label), value, checked) for value, label, checked in self.options))
+
+    def on_mount(self) -> None:
+        if self.options:
+            self.query_one(SelectionList).highlighted = 0
+
+    def action_apply(self) -> None:
+        ticked = set(self.query_one(SelectionList).selected)
+        self.dismiss([value for value, _, _ in self.options if value in ticked])
+
+
+class TextScreen(DialogScreen):
+    """One line of text; dismisses with it stripped, or ``None`` if empty."""
+
+    HINT = "enter confirms · esc cancels"
+
+    def body(self) -> Widget:
+        return Input()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()  # otherwise MinimalTui.on_input_submitted sends it as a message
+        self.dismiss(event.value.strip() or None)
+
+
 class TuiFrontend:
     """Shows turns in the TUI. Called from worker threads, or from the UI thread during a terminal command."""
 
@@ -287,25 +381,48 @@ class TuiFrontend:
     def reloaded(self) -> None:
         self._on_ui(self.tui.remount_widgets)
 
+    def _modal(self, screen: ModalScreen) -> Any:
+        """Show ``screen`` from a worker thread and wait for its dismiss value (``None`` on quit)."""
+        done = threading.Event()
+        result: list[Any] = []
+
+        def on_done(value: Any) -> None:
+            result.append(value)
+            done.set()
+
+        self.tui.pending_modal = done
+        self.tui.call_from_thread(lambda: self.tui.push_screen(screen, callback=on_done))
+        done.wait()
+        self.tui.pending_modal = None
+        return result[0] if result else None
+
+    def _in_terminal(self) -> bool:
+        """True on the UI thread, which only asks during a suspended terminal command."""
+        return threading.get_ident() == self.tui.ui_thread
+
     def ask(self, question: str) -> bool:
-        if threading.get_ident() == self.tui.ui_thread:  # only inside a suspended terminal command
+        if self._in_terminal():
             try:
                 answer = input(f"{question} [y/N] ")
             except EOFError:
                 return False
             return re.fullmatch(r"y|yes", answer.strip(), re.IGNORECASE) is not None
-        done = threading.Event()
-        result: list[bool] = []
+        return bool(self._modal(ConfirmScreen(question)))
 
-        def on_done(answer: bool | None) -> None:
-            result.append(bool(answer))
-            done.set()
+    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        if self._in_terminal():
+            return ConsoleFrontend().choose(title, options)
+        return self._modal(ChoiceScreen(title, options))
 
-        self.tui.pending_confirm = done
-        self.tui.call_from_thread(lambda: self.tui.push_screen(ConfirmScreen(question), callback=on_done))
-        done.wait()
-        self.tui.pending_confirm = None
-        return result[0] if result else False
+    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
+        if self._in_terminal():
+            return ConsoleFrontend().choose_many(title, options)
+        return self._modal(ChecklistScreen(title, options))
+
+    def ask_text(self, title: str) -> str | None:
+        if self._in_terminal():
+            return ConsoleFrontend().ask_text(title)
+        return self._modal(TextScreen(title))
 
 
 class MinimalTui(TextualApp):
@@ -359,7 +476,7 @@ class MinimalTui(TextualApp):
         self.theme = theme.THEME.name
         self.core = core
         self.ui_thread: int | None = None
-        self.pending_confirm: threading.Event | None = None
+        self.pending_modal: threading.Event | None = None
         self.assistant: Markdown | None = None
         self.tool_blocks: dict[str, ToolBlock] = {}
         self.output_block: Static | None = None
@@ -397,8 +514,8 @@ class MinimalTui(TextualApp):
         self.query_one("#prompt", Input).focus()
 
     def on_unmount(self) -> None:
-        if self.pending_confirm is not None:  # release a worker waiting for an answer
-            self.pending_confirm.set()
+        if self.pending_modal is not None:  # release a worker waiting for an answer
+            self.pending_modal.set()
 
     # --- transcript ----------------------------------------------------------
 

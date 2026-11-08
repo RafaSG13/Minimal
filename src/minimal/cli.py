@@ -40,7 +40,8 @@ Environment:
                                 (a key entered in setup is saved in ~/.minimal/keys.json and wins over these)
   --provider claude uses the login from minimal --login
   MINIMAL_PROVIDER, MINIMAL_MODEL
-  MINIMAL_MARKETPLACE           git URL or path of the extension marketplace
+  MINIMAL_MARKETPLACE           git URL or path of the extension marketplace used by the
+                                model's tools and listed first by /ext
                                 (default https://github.com/RafaSG13/minimal-marketplace.git)"""
 
 

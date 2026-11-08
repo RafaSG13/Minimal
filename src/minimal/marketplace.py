@@ -7,10 +7,13 @@ publishes never conflict:
 * description: first line of the module docstring (required);
 * version: optional top-level ``__version__ = "x"`` string, default ``""``.
 
-The repository URL is ``$MINIMAL_MARKETPLACE``, else :data:`DEFAULT_URL`; a
-local path works too. Searching and installing use a cached clone under
-:data:`CACHE_ROOT`. Publishing pushes a new ``publish/<name>-<timestamp>``
-branch and, when the ``gh`` CLI is installed, opens a pull request.
+Marketplaces are ``$MINIMAL_MARKETPLACE`` (if set), :data:`DEFAULT_URL` and
+the ones saved from the ``/ext`` picker (:func:`marketplaces`); a local path
+works as well as a git URL. The model's tools use :func:`marketplace_url`.
+Searching and installing use a cached clone per marketplace under
+:data:`CACHE_ROOT`; the picker lists one through :func:`catalog`. Publishing
+pushes a new ``publish/<name>-<timestamp>`` branch and, when the ``gh`` CLI is
+installed, opens a pull request.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from minimal import extensions
+from minimal import config, extensions
 from minimal.registry import Registry
 
 DEFAULT_URL = "https://github.com/RafaSG13/minimal-marketplace.git"
@@ -47,9 +50,60 @@ class Listing:
     path: Path
 
 
+@dataclass
+class Entry:
+    """A marketplace extension and its local copies."""
+
+    listing: Listing
+    installed: list[str]
+    """Scopes holding ``<name>.py``, ``"global"`` before ``"project"``."""
+    outdated: list[str]
+    """Scopes whose copy differs from the marketplace file."""
+    installed_version: str
+    """Version of the first installed copy; ``""`` if none, unset or unreadable."""
+
+
 def marketplace_url() -> str:
     """The marketplace repository: ``$MINIMAL_MARKETPLACE``, else :data:`DEFAULT_URL`."""
     return os.environ.get("MINIMAL_MARKETPLACE") or DEFAULT_URL
+
+
+def marketplaces() -> list[str]:
+    """Marketplaces to offer: :func:`marketplace_url`, :data:`DEFAULT_URL`, then the saved ones."""
+    return list(dict.fromkeys([marketplace_url(), DEFAULT_URL, *config.load_marketplaces()]))
+
+
+def add_marketplace(url: str) -> str:
+    """Save a marketplace after checking that it can be cloned; return it as saved.
+
+    Existing local paths are saved as absolute paths.
+
+    Raises:
+        ValueError: if ``url`` is empty or already listed.
+        RuntimeError: if git cannot clone it.
+    """
+    url = url.strip()
+    if not url:
+        raise ValueError("enter a git URL or a local path")
+    if Path(url).expanduser().exists():
+        url = str(Path(url).expanduser().resolve())
+    if url in marketplaces():
+        raise ValueError(f"{url} is already in the list")
+    sync(url)
+    config.save_marketplaces([*config.load_marketplaces(), url])
+    return url
+
+
+def remove_marketplace(url: str) -> None:
+    """Forget a saved marketplace.
+
+    Raises:
+        ValueError: if ``url`` was not saved (the default and ``$MINIMAL_MARKETPLACE`` cannot be removed).
+    """
+    saved = config.load_marketplaces()
+    if url not in saved:
+        raise ValueError(f"{url} is not a saved marketplace")
+    config.save_marketplaces([u for u in saved if u != url])
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -168,6 +222,27 @@ def search(query: str = "", url: str | None = None) -> list[Listing]:
     return listings
 
 
+def catalog(url: str, cwd: str) -> list[Entry]:
+    """Every extension in marketplace ``url`` with its installed copies (global and ``cwd``'s project)."""
+    entries = []
+    for listing in search("", url):
+        installed, outdated = [], []
+        for scope in ("global", "project"):
+            path = _target_dir(scope, cwd) / f"{listing.name}.py"
+            if path.is_file():
+                installed.append(scope)
+                if path.read_bytes() != listing.path.read_bytes():
+                    outdated.append(scope)
+        version = ""
+        if installed:
+            try:
+                version = describe(_target_dir(installed[0], cwd) / f"{listing.name}.py").version
+            except ValueError:
+                pass
+        entries.append(Entry(listing, installed, outdated, version))
+    return entries
+
+
 def _target_dir(scope: str, cwd: str) -> Path:
     """Extensions folder for ``scope``: ``"global"`` or ``"project"``."""
     if scope == "global":
@@ -192,8 +267,17 @@ def install(name: str, scope: str = "global", cwd: str = ".", url: str | None = 
     root = sync(url)
     src = root / "extensions" / f"{name}.py"
     if not src.is_file():
-        raise ValueError(f"{name} is not in the marketplace (try /ext search)")
-    dest = _target_dir(scope, cwd) / f"{name}.py"
+        raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
+    return install_from(src, scope, cwd)
+
+
+def install_from(src: Path, scope: str, cwd: str) -> tuple[Path, bool]:
+    """Copy marketplace file ``src`` (from a synced clone) into the ``scope`` folder.
+
+    Returns:
+        ``(dest, updated)``: the installed file, and whether it replaced an existing one.
+    """
+    dest = _target_dir(scope, cwd) / src.name
     dest.parent.mkdir(parents=True, exist_ok=True)
     updated = dest.exists()
     shutil.copyfile(src, dest)

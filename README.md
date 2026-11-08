@@ -13,12 +13,12 @@ src/minimal/
   registry.py    Registry, Tool, Command, WidgetSpec: where tools, commands, providers, hooks and widgets are registered
   tools.py       built-in tools: read, write, edit, bash, reload_extensions
   extensions.py  finds extension files and calls their register(minimal)
-  marketplace.py git-based extension marketplace: search, install, publish (~/.minimal/marketplace cache)
+  marketplace.py git-based extension marketplaces: list, search, install, publish (~/.minimal/marketplace cache)
   session.py     JSONL sessions (~/.minimal/sessions)
   agent.py       agent loop (model → tools → model …)
   app.py         App: runtime state, provider switching, system prompt, one user turn, extension reload, Frontend
   commands.py    slash commands (/help, /provider, /reload, /ext, …)
-  config.py      default provider/model and API keys saved by setup (~/.minimal/config.json, keys.json)
+  config.py      default provider/model, API keys and added marketplaces (~/.minimal/config.json, keys.json, marketplaces.json)
   setup.py       onboarding wizard: provider, login or API key, model
   theme.py       colour theme (omp's dark palette) and glyphs of the terminal UI
   tui.py         Textual terminal UI: welcome header, transcript, tool-call blocks, prompt, status line, confirm dialog, extension widget areas
@@ -30,8 +30,8 @@ tests/
   test_providers.py   provider conversions (Gemini history/streaming, Anthropic/Claude request)
   test_claude_auth.py browser login round trip, token refresh
   test_config.py      saved keys and config, how the startup provider is chosen
-  test_marketplace.py search, install and publish against a local bare git repository
-  test_tui.py         the terminal UI: streaming, confirm dialog, tool-call states, command output, widgets
+  test_marketplace.py search, install, publish, the /ext picker and saved marketplaces against local bare git repositories
+  test_tui.py         the terminal UI: streaming, confirm, checklist and text dialogs, tool-call states, command output, widgets
 ```
 
 ## Architecture
@@ -119,17 +119,17 @@ The model knows how to write extensions (the system prompt explains the API and 
 
 ### Marketplace
 
-Extensions are shared through a git repository: `extensions/<name>.py`, one file each, whose docstring's first line is the description and an optional `__version__ = "1.0"` the version. The default is `https://github.com/RafaSG13/minimal-marketplace.git`; set `MINIMAL_MARKETPLACE` to another URL or a local path (for example your fork).
+Extensions are shared through a git repository: `extensions/<name>.py`, one file each, whose docstring's first line is the description and an optional `__version__ = "1.0"` the version. The default is `https://github.com/RafaSG13/minimal-marketplace.git`; `MINIMAL_MARKETPLACE` adds another URL or a local path (for example your fork) and makes it the one the model's tools use.
 
 ```
-/ext                              list installed extensions
-/ext search [words]               search the marketplace
-/ext install <name> [--project]   install into ~/.minimal/extensions (or ./.minimal/extensions) and reload
-/ext uninstall <name> [--project] remove and reload
+/ext                              pick a marketplace, then tick extensions to install, update or remove
+/ext list                         list installed extensions
 /ext publish <path> [name]        push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
 ```
 
-The model has the same through the `ext_search`, `ext_install` and `ext_publish` tools; it must call `reload_extensions` after installing. Publishing never pushes to the default branch: without push access, fork the marketplace and point `MINIMAL_MARKETPLACE` at the fork.
+`/ext` opens a dialog with the marketplaces: the default, `$MINIMAL_MARKETPLACE` and the ones you added. "Add a marketplace…" takes a git URL or a local path, checks that it can be cloned and saves it in `~/.minimal/marketplaces.json`; "Remove a saved marketplace…" forgets one. Picking a marketplace shows a checklist of all its extensions with the installed ones ticked: tick to install (you then choose `~/.minimal/extensions` or `./.minimal/extensions`), untick to uninstall. Installed extensions whose file differs from the marketplace's are offered for update. Space toggles, Enter applies, Esc cancels without changing anything; the extensions are reloaded afterwards.
+
+The model has the `ext_search`, `ext_install` and `ext_publish` tools, which use `$MINIMAL_MARKETPLACE` or the default; it must call `reload_extensions` after installing. Publishing never pushes to the default branch: without push access, fork the marketplace and point `MINIMAL_MARKETPLACE` at the fork.
 
 ## Adding a provider
 

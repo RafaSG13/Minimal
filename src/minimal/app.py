@@ -97,12 +97,21 @@ class Frontend(Protocol):
     def ask(self, question: str) -> bool:
         """Ask a yes/no question; return the answer."""
 
+    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled."""
+
+    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
+        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if cancelled."""
+
+    def ask_text(self, title: str) -> str | None:
+        """Ask for one line of text; return it stripped, or ``None`` if empty or cancelled."""
+
     def reloaded(self) -> None:
         """Extensions were reloaded (widgets may have changed)."""
 
 
 class ConsoleFrontend:
-    """Plain stdout/stderr and ``input()``: used by ``-p``."""
+    """Plain stdout/stderr and ``input()``: used by ``-p`` and by commands the TUI runs in the terminal."""
 
     def text(self, chunk: str) -> None:
         print(chunk, end="", flush=True)
@@ -131,6 +140,46 @@ class ConsoleFrontend:
         except EOFError:
             return False
         return re.fullmatch(r"y|yes", answer.strip(), re.IGNORECASE) is not None
+
+    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        """Numbered list; empty, invalid input or EOF cancels."""
+        print(f"\n{title}")
+        for i, (_, label) in enumerate(options, 1):
+            print(f"  {i:>2}. {label}")
+        try:
+            answer = input("Number (empty cancels): ").strip()
+        except EOFError:
+            return None
+        if not answer.isdigit() or not 1 <= int(answer) <= len(options):
+            return None
+        return options[int(answer) - 1][0]
+
+    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
+        """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input or EOF cancels."""
+        print(f"\n{title}")
+        for i, (_, label, checked) in enumerate(options, 1):
+            print(f"  {i:>2}. [{'x' if checked else ' '}] {label}")
+        try:
+            answer = input("Numbers to tick (Enter keeps the ticks shown, 0 for none): ").strip()
+        except EOFError:
+            return None
+        if not answer:
+            return [value for value, _, checked in options if checked]
+        if answer == "0":
+            return []
+        tokens = re.split(r"[\s,]+", answer)
+        if not all(t.isdigit() and 1 <= int(t) <= len(options) for t in tokens):
+            return None
+        picked = {int(t) - 1 for t in tokens}
+        return [value for i, (value, _, _) in enumerate(options) if i in picked]
+
+    def ask_text(self, title: str) -> str | None:
+        """One ``input()`` line; EOF cancels."""
+        try:
+            answer = input(f"{title}: ").strip()
+        except EOFError:
+            return None
+        return answer or None
 
     def reloaded(self) -> None:
         pass

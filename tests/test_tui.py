@@ -4,14 +4,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Input, Markdown, SelectionList, Static
 
 from minimal import extensions
 from minimal.app import App
 from minimal.providers.base import Reply
 from minimal.registry import Registry
 from minimal.session import Session
-from minimal.tui import ConfirmScreen, MinimalTui, ToolBlock, _outside_event_loop
+from minimal.tui import ChecklistScreen, ConfirmScreen, MinimalTui, TextScreen, ToolBlock, _outside_event_loop
 
 
 class StreamingFakeProvider:
@@ -127,6 +127,34 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.1)
             outputs = [str(s.render()) for s in app.query(".output").results(Static)]
             self.assertTrue(any("reload_extensions" in o for o in outputs), outputs)
+
+    def outputs(self, app):
+        return [str(s.render()) for s in app.query(".output").results(Static)]
+
+    async def test_checklist_dialog(self):
+        options = [("a", "A", True), ("b", "B", False)]
+        self.core.registry.register_command("pick", lambda args, app: print(app.frontend.choose_many("Pick", options)))
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "/pick")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, ChecklistScreen))
+            app.screen.query_one(SelectionList).select("b")
+            await pilot.press("enter")
+            await self.wait_until(pilot, self.idle(app))
+            await pilot.pause(0.1)
+            self.assertTrue(any("['a', 'b']" in o for o in self.outputs(app)), self.outputs(app))
+
+    async def test_text_dialog_does_not_send_message(self):
+        self.core.registry.register_command("name", lambda args, app: print(repr(app.frontend.ask_text("Name"))))
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "/name")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, TextScreen))
+            await pilot.press("h", "i", "enter")
+            await self.wait_until(pilot, self.idle(app))
+            await pilot.pause(0.1)
+            self.assertTrue(any("'hi'" in o for o in self.outputs(app)), self.outputs(app))
+            self.assertEqual(len(app.query(".user")), 0)
 
     async def test_terminal_command_can_run_its_own_event_loop(self):
         # /setup's questionary menus call asyncio.run on the UI thread.

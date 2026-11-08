@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -6,9 +8,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from minimal import extensions, marketplace
+from minimal import commands, config, extensions, marketplace
+from minimal.app import App
 from minimal.extensions import load_extensions
 from minimal.registry import Registry
+from minimal.session import Session
 
 HELLO = '''"""Say hello."""
 
@@ -22,6 +26,26 @@ def register(minimal):
 
 def git(*args, cwd=None):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+class ScriptedFrontend:
+    """Answers dialogs from ``answers``, keyed by title prefix; records ``(title, options)``."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.asked = []
+
+    def _answer(self, title, options=None):
+        self.asked.append((title, options))
+        return next(value for prefix, value in self.answers.items() if title.startswith(prefix))
+
+    choose = choose_many = _answer
+
+    def ask_text(self, title):
+        return self._answer(title)
+
+    def reloaded(self):
+        pass
 
 
 class MarketplaceTest(unittest.TestCase):
@@ -44,19 +68,39 @@ class MarketplaceTest(unittest.TestCase):
             mock.patch.dict(os.environ, env),
             mock.patch.object(marketplace, "CACHE_ROOT", self.tmp / "cache"),
             mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", self.global_dir),
+            mock.patch.object(config, "MARKETPLACES_FILE", self.tmp / "marketplaces.json"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
 
         git("init", "--quiet", "--bare", "--initial-branch=main", str(self.bare))
-        work = self.tmp / "work"
-        git("clone", "--quiet", str(self.bare), str(work))
-        (work / "extensions").mkdir()
-        (work / "extensions" / "hello.py").write_text(HELLO)
-        git("checkout", "--quiet", "-b", "main", cwd=work)
-        git("add", ".", cwd=work)
-        git("commit", "--quiet", "-m", "hello", cwd=work)
-        git("push", "--quiet", "origin", "main", cwd=work)
+        self.work = self.tmp / "work"
+        git("clone", "--quiet", str(self.bare), str(self.work))
+        (self.work / "extensions").mkdir()
+        git("checkout", "--quiet", "-b", "main", cwd=self.work)
+        self.push_hello(HELLO)
+
+    def push_hello(self, source):
+        """Commit ``source`` as ``extensions/hello.py`` and push it to the marketplace."""
+        (self.work / "extensions" / "hello.py").write_text(source)
+        git("add", ".", cwd=self.work)
+        git("commit", "--quiet", "-m", "hello", cwd=self.work)
+        git("push", "--quiet", "origin", "main", cwd=self.work)
+
+    def run_ext(self, answers):
+        """Run ``/ext`` with scripted dialog answers; return the frontend and the printed output."""
+        ui = ScriptedFrontend(answers)
+        app = App(
+            registry=Registry(),
+            session=Session("t", self.tmp / "t.jsonl"),
+            cwd=str(self.tmp),
+            auto_approve=True,
+            frontend=ui,
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            commands.run_command("/ext", app)
+        return ui, out.getvalue()
 
     def test_search_and_install(self):
         listings = marketplace.search("hello")
@@ -72,6 +116,44 @@ class MarketplaceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "not in the marketplace"):
             marketplace.install("missing")
+
+    def test_picker_installs_updates_removes(self):
+        hello = self.global_dir / "hello.py"
+        url = str(self.bare)
+        _, out = self.run_ext({"Marketplace": url, "Extensions": ["hello"], "Install": "global"})
+        self.assertEqual(hello.read_text(), HELLO)
+        self.assertIn("Installed hello at", out)
+
+        self.push_hello(HELLO.replace('"1.0"', '"1.1"'))
+        ui, out = self.run_ext({"Marketplace": url, "Extensions": ["hello"], "Update": ["hello"]})
+        [(value, label, checked)] = next(opts for title, opts in ui.asked if title.startswith("Extensions"))
+        self.assertEqual((value, checked), ("hello", True))
+        self.assertIn("update available (1.0 → 1.1)", label)
+        self.assertIn('"1.1"', hello.read_text())
+        self.assertIn("Updated hello at", out)
+
+        _, out = self.run_ext({"Marketplace": url, "Extensions": []})
+        self.assertFalse(hello.exists())
+        self.assertIn("Removed", out)
+
+        _, out = self.run_ext({"Marketplace": None})
+        self.assertIn("Cancelled.", out)
+
+    def test_saved_marketplaces(self):
+        self.assertEqual(marketplace.marketplaces(), [str(self.bare), marketplace.DEFAULT_URL])
+        other = self.tmp / "other.git"
+        git("init", "--quiet", "--bare", str(other))
+        url = marketplace.add_marketplace(str(other))
+        self.assertEqual(marketplace.marketplaces()[-1], url)
+        with self.assertRaisesRegex(ValueError, "already in the list"):
+            marketplace.add_marketplace(str(other))
+        with self.assertRaises(RuntimeError):
+            marketplace.add_marketplace(str(self.tmp / "missing.git"))
+        self.assertEqual(marketplace.marketplaces()[-1], url)
+        with self.assertRaisesRegex(ValueError, "not a saved marketplace"):
+            marketplace.remove_marketplace(marketplace.DEFAULT_URL)
+        marketplace.remove_marketplace(url)
+        self.assertNotIn(url, marketplace.marketplaces())
 
     def test_publish_pushes_branch(self):
         path = self.tmp / "greet.py"
