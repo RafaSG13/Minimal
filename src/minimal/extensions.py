@@ -1,15 +1,15 @@
 """Discovering and loading extensions.
 
-An extension is a ``.py`` file that defines ``register(pi)``, where ``pi`` is the
+An extension is a ``.py`` file that defines ``register(minimal)``, where ``minimal`` is the
 :class:`~minimal.registry.Registry`::
 
-    def register(pi):
-        pi.register_tool(name="hello", run=lambda input, ctx: "hi", description="...")
-        pi.register_command("stats", lambda args, ctx: print(len(ctx.messages)))
-        pi.register_provider("myllm", create=MyProvider, default_model="my-model")
-        pi.on("tool_call", lambda e: {"block": True, "reason": "no"})
-        pi.append_system_prompt("Extra instructions.")
-        pi.register_widget("panel", lambda ctx: MyWidget(), area="sidebar")
+    def register(minimal):
+        minimal.register_tool(name="hello", run=lambda input, ctx: "hi", description="...")
+        minimal.register_command("stats", lambda args, ctx: print(len(ctx.messages)))
+        minimal.register_provider("myllm", create=MyProvider, default_model="my-model")
+        minimal.on("tool_call", lambda e: {"block": True, "reason": "no"})
+        minimal.append_system_prompt("Extra instructions.")
+        minimal.register_widget("panel", lambda ctx: MyWidget(), area="sidebar")
 
 Search order (each folder in sorted order, files starting with ``_`` skipped):
 
@@ -42,7 +42,7 @@ def load_extensions(
     """Load every extension found and let it register into ``registry``.
 
     Args:
-        registry: Passed to each extension's ``register(pi)``.
+        registry: Passed to each extension's ``register(minimal)``.
         cwd: Directory used for the project-local folder and to resolve ``extra``.
         extra: Additional files or folders (the ``--ext`` option).
 
@@ -103,5 +103,5 @@ def _load_extension(file: Path, registry: Registry) -> None:
 
     register = getattr(module, "register", None)
     if not callable(register):
-        raise ValueError("missing register(pi) function")
+        raise ValueError("missing register(minimal) function")
     register(registry)

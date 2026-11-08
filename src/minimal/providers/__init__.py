@@ -2,7 +2,7 @@
 
 Each integration is a module exposing a :class:`~minimal.providers.base.ProviderSpec`
 named ``SPEC``. Built-in ones are registered at startup; extensions can add
-more with ``pi.register_provider(...)``.
+more with ``minimal.register_provider(...)``.
 
 To add a built-in integration: write ``providers/<name>.py`` with a class that
 implements :class:`~minimal.providers.base.Provider` (convert the canonical

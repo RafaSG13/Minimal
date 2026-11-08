@@ -15,8 +15,8 @@ HELLO = '''"""Say hello."""
 __version__ = "1.0"
 
 
-def register(pi):
-    pi.register_tool(name="hello", run=lambda input, ctx: "hi", description="Say hi")
+def register(minimal):
+    minimal.register_tool(name="hello", run=lambda input, ctx: "hi", description="Say hi")
 '''
 
 
@@ -75,7 +75,7 @@ class MarketplaceTest(unittest.TestCase):
 
     def test_publish_pushes_branch(self):
         path = self.tmp / "greet.py"
-        path.write_text('"""Greet people."""\n\n\ndef register(pi):\n    pass\n')
+        path.write_text('"""Greet people."""\n\n\ndef register(minimal):\n    pass\n')
         real_git = shutil.which("git")
         with mock.patch.object(marketplace.shutil, "which", lambda cmd: real_git if cmd == "git" else None):
             message = marketplace.publish(path)
@@ -89,10 +89,10 @@ class MarketplaceTest(unittest.TestCase):
     def test_publish_rejects_invalid(self):
         no_register = self.tmp / "noreg.py"
         no_register.write_text('"""No register."""\n')
-        with self.assertRaisesRegex(ValueError, r"register\(pi\)"):
+        with self.assertRaisesRegex(ValueError, r"register\(minimal\)"):
             marketplace.publish(no_register)
         good = self.tmp / "good.py"
-        good.write_text('"""Good."""\n\n\ndef register(pi):\n    pass\n')
+        good.write_text('"""Good."""\n\n\ndef register(minimal):\n    pass\n')
         with self.assertRaisesRegex(ValueError, "invalid extension name"):
             marketplace.publish(good, "Bad-Name")
 

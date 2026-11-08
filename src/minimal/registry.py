@@ -3,7 +3,7 @@ system-prompt additions, event handlers and UI widgets are collected.
 
 Built-in tools, built-in providers and extensions register through it. The
 agent loop and the terminal UI read from it. Extensions receive it as their
-``pi`` argument.
+``minimal`` argument.
 
 Events and their payloads:
 

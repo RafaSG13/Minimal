@@ -12,7 +12,7 @@ src/minimal/
     gemini.py      Gemini via the Google Interactions API
   registry.py    Registry, Tool, Command, WidgetSpec: where tools, commands, providers, hooks and widgets are registered
   tools.py       built-in tools: read, write, edit, bash, reload_extensions
-  extensions.py  finds extension files and calls their register(pi)
+  extensions.py  finds extension files and calls their register(minimal)
   marketplace.py git-based extension marketplace: search, install, publish (~/.minimal/marketplace cache)
   session.py     JSONL sessions (~/.minimal/sessions)
   agent.py       agent loop (model → tools → model …)
@@ -94,19 +94,19 @@ If there is an `AGENTS.md` in the current directory, it is added to the system p
 
 ## Extensions
 
-A Python file defining `register(pi)`. Extensions are loaded from `~/.minimal/extensions/`, `./.minimal/extensions/` and any paths passed with `--ext` (files starting with `_` are skipped).
+A Python file defining `register(minimal)`. Extensions are loaded from `~/.minimal/extensions/`, `./.minimal/extensions/` and any paths passed with `--ext` (files starting with `_` are skipped).
 
 ```python
-def register(pi):
-    pi.register_tool(name="hello", description="...", input_schema={...}, run=lambda input, ctx: "text")
-    pi.register_command("hi", lambda args, ctx: print("hi", args), description="say hi")
-    pi.register_command("wizard", run_wizard, terminal=True)                  # needs the real terminal
-    pi.register_provider("myllm", create=MyProvider, default_model="my-model", env_keys=("MYLLM_KEY",))
-    pi.on("tool_call", lambda e: {"block": True, "reason": "no"})              # veto a call
-    pi.on("tool_result", lambda e: {"output": e["output"].upper()})            # rewrite a result
-    pi.on("turn_end", lambda e: None)                                          # e["messages"]
-    pi.append_system_prompt("Extra instructions for the model.")
-    pi.register_widget("panel", lambda ctx: MyPanel(), area="sidebar")         # top, bottom or sidebar
+def register(minimal):
+    minimal.register_tool(name="hello", description="...", input_schema={...}, run=lambda input, ctx: "text")
+    minimal.register_command("hi", lambda args, ctx: print("hi", args), description="say hi")
+    minimal.register_command("wizard", run_wizard, terminal=True)                  # needs the real terminal
+    minimal.register_provider("myllm", create=MyProvider, default_model="my-model", env_keys=("MYLLM_KEY",))
+    minimal.on("tool_call", lambda e: {"block": True, "reason": "no"})              # veto a call
+    minimal.on("tool_result", lambda e: {"output": e["output"].upper()})            # rewrite a result
+    minimal.on("turn_end", lambda e: None)                                          # e["messages"]
+    minimal.append_system_prompt("Extra instructions for the model.")
+    minimal.register_widget("panel", lambda ctx: MyPanel(), area="sidebar")         # top, bottom or sidebar
 ```
 
 `ctx` exposes `cwd`, `messages`, `provider_name`, `model` and `registry`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself.
@@ -139,7 +139,7 @@ A provider is a class with a `name` and a `stream(*, model, system, messages, to
 2. Stream the response, calling `on_text(chunk)` for text as it arrives.
 3. Return `Reply(content=[text/tool_use blocks], stop_reason="tool_use" | "end_turn" | ..., provider_data=...)`.
 
-Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or from an extension with `pi.register_provider(...)`. `providers/gemini.py` is a complete example, including the history conversion.
+Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or from an extension with `minimal.register_provider(...)`. `providers/gemini.py` is a complete example, including the history conversion.
 
 ## Tests
 

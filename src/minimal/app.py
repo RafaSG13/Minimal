@@ -35,12 +35,12 @@ BASE_PROMPT = (
 
 SELF_EXTEND_PROMPT = (
     "You can extend minimal, the harness you are running in. An extension is one Python file defining "
-    "register(pi); pi is the Registry (API and docstrings: {registry_path}). Save new extensions to "
+    "register(minimal); minimal is the Registry (API and docstrings: {registry_path}). Save new extensions to "
     "{global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this project. "
-    "pi.register_tool(name, run, description, input_schema, confirm) adds a tool run(input, ctx); "
-    "pi.register_command(name, run, description, terminal=False) adds a slash command run(args, ctx); "
-    'pi.register_provider(...) adds a model; pi.on("tool_call"|"tool_result"|"turn_end", handler) hooks events; '
-    "pi.append_system_prompt(text) adds instructions; pi.register_widget(name, create, area) adds a visual "
+    "minimal.register_tool(name, run, description, input_schema, confirm) adds a tool run(input, ctx); "
+    "minimal.register_command(name, run, description, terminal=False) adds a slash command run(args, ctx); "
+    'minimal.register_provider(...) adds a model; minimal.on("tool_call"|"tool_result"|"turn_end", handler) hooks events; '
+    "minimal.append_system_prompt(text) adds instructions; minimal.register_widget(name, create, area) adds a visual "
     'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '
     "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn. "
     "After writing or editing an extension, call reload_extensions and fix any reported errors. "

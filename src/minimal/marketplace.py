@@ -95,7 +95,7 @@ def describe(path: Path, name: str | None = None) -> Listing:
     name = path.stem if name is None else name
     _check_name(name)
     if not any(isinstance(node, ast.FunctionDef) and node.name == "register" for node in tree.body):
-        raise ValueError(f"{path}: missing a top-level register(pi) function")
+        raise ValueError(f"{path}: missing a top-level register(minimal) function")
     docstring = ast.get_docstring(tree)
     if not docstring:
         raise ValueError(f"{path}: add a module docstring; its first line is the marketplace description")
@@ -325,7 +325,7 @@ def register_marketplace_tools(registry: Registry) -> None:
         run=_ext_publish,
         description=(
             "Publish an extension file to the marketplace: pushes a new branch and opens a pull request. "
-            "The file must define register(pi) and start with a docstring; its first line is the description."
+            "The file must define register(minimal) and start with a docstring; its first line is the description."
         ),
         input_schema={
             "type": "object",

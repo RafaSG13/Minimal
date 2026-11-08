@@ -5,7 +5,7 @@ Modules, from the bottom up:
 - :mod:`minimal.providers`  model integrations behind one interface (``base``, ``anthropic``, ``gemini``)
 - :mod:`minimal.registry`   ``Registry``, ``Tool``, ``Command``: where tools, commands, providers, hooks and widgets are registered
 - :mod:`minimal.tools`      built-in tools ``read``, ``write``, ``edit``, ``bash``, ``reload_extensions``
-- :mod:`minimal.extensions` finds extension files and calls their ``register(pi)``
+- :mod:`minimal.extensions` finds extension files and calls their ``register(minimal)``
 - :mod:`minimal.marketplace` git-based extension marketplace: search, install, publish
 - :mod:`minimal.session`    JSONL persistence of conversations
 - :mod:`minimal.agent`      the model → tools → model loop (``run_agent``)

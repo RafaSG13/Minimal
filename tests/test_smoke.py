@@ -51,8 +51,8 @@ class SmokeTest(unittest.TestCase):
         self.assertRegex(self.run_tool("read", path="a/b.txt"), r"1\thello")
         with self.assertRaisesRegex(ValueError, "appears 2 times"):
             self.run_tool("edit", path="a/b.txt", old_string="hello", new_string="x")
-        self.run_tool("edit", path="a/b.txt", old_string="world", new_string="Pi")
-        self.assertEqual((Path(self.cwd) / "a/b.txt").read_text(), "hello\nPi\nhello\n")
+        self.run_tool("edit", path="a/b.txt", old_string="world", new_string="minimal")
+        self.assertEqual((Path(self.cwd) / "a/b.txt").read_text(), "hello\nminimal\nhello\n")
 
     def test_bash(self):
         self.assertRegex(self.run_tool("bash", command="echo ok; exit 3"), r"ok[\s\S]*\[exit 3\]")
@@ -94,7 +94,7 @@ class SmokeTest(unittest.TestCase):
             self.assertEqual(session_mod.list_sessions(), ["x"])
 
 
-HELLO_EXT = 'def register(pi):\n    pi.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
+HELLO_EXT = 'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
 
 class ReloadTest(unittest.TestCase):
@@ -128,7 +128,7 @@ class ReloadTest(unittest.TestCase):
 
     def test_reload_reports_broken_extension(self):
         self.app.reload_extensions()
-        (self.ext_dir / "broken.py").write_text("def register(pi):\n  pi.register_tool(\n")
+        (self.ext_dir / "broken.py").write_text("def register(minimal):\n  minimal.register_tool(\n")
         with self.assertRaisesRegex(RuntimeError, "broken.py: SyntaxError"):
             self.registry.tools["reload_extensions"].run({}, self.app)
 
