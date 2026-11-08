@@ -1,0 +1,32 @@
+README.md
+  h_e81853c41416fb 15,97,100-109,142
+extensions/example.py
+  h_e81853c41416fb 22,24,35,42,45,48
+src/minimal/__init__.py
+  h_e81853c41416fb 8
+src/minimal/app.py
+  h_e81853c41416fb 38,40-43
+src/minimal/extensions.py
+  h_e81853c41416fb 3,6-12,45,106
+src/minimal/marketplace.py
+  h_e81853c41416fb 98,328
+src/minimal/providers/__init__.py
+  h_e81853c41416fb 5
+src/minimal/registry.py
+  h_e81853c41416fb 6
+tests/test_marketplace.py
+  h_e81853c41416fb 18-19,78,92,95
+tests/test_smoke.py
+  h_e81853c41416fb 54-55,97,131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "fc3a4539d5b92118d15281de6d65764f79472a8d",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
