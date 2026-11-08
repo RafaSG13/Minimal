@@ -1,0 +1,22 @@
+src/minimal/commands.py
+  h_e81853c41416fb 40-56,58-64,66-71,159
+src/minimal/providers/anthropic.py
+  h_e81853c41416fb 34-37
+src/minimal/providers/base.py
+  h_e81853c41416fb 59-65
+src/minimal/providers/gemini.py
+  h_e81853c41416fb 49-53
+tests/test_providers.py
+  h_e81853c41416fb 136-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "3c7447137d77e83f350a66189da08b4726af19d8",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
