@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="minimal — bare by default. yours by config.">
+  <rect x="1" y="1" width="1278" height="398" rx="24" fill="#000000" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="171" y="185" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="34" xml:space="preserve"><tspan fill="#8a8a8a">─●─</tspan>  <tspan fill="#ffffff" stroke="#ffffff" stroke-width="0.8">m i n i m a l</tspan> <tspan fill="#ffffff">▌</tspan>  <tspan fill="#8a8a8a">─●─</tspan></text>
+  <text x="171" y="239" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="34" xml:space="preserve">     <tspan fill="#8a8a8a">bare by default. yours by config.</tspan>  <tspan fill="#5c5c5c">v0.1.0</tspan></text>
+</svg>
