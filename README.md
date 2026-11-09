@@ -277,10 +277,13 @@ The suite needs no network or API key. It covers:
 
 ### Roadmap ideas
 
-- `grep`/`glob` tools, or a web-search tool, as extensions.
+- A web-search tool, as an extension.
 - Compact the history when the session grows (an extension on `turn_end`).
 - Subagents: a tool that calls `run_agent` with its own message history.
 - Prompt caching: add `cache_control` to the system prompt and the last tool.
+- Token usage: record each reply's input/output tokens and show context use in the status line (also tells compaction when to run).
+- An OpenAI-compatible provider (OpenAI, OpenRouter, Ollama, LM Studio) as one class in `providers/`.
+- Hermetic tests: `test_smoke.py` also loads `~/.minimal/extensions/`, so `test_extension_loaded` fails on machines with extensions installed.
 
 ---
 
