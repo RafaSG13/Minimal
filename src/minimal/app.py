@@ -36,13 +36,16 @@ BASE_PROMPT = (
 SELF_EXTEND_PROMPT = (
     "You can extend minimal, the harness you are running in. An extension is one Python file defining "
     "register(minimal); minimal is the Registry (API and docstrings: {registry_path}). Save new extensions to "
-    "{global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this project. "
+    "{global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this project; themes, "
+    "tools and UI widgets go in the themes/, tools/ or widgets/ subfolder, as the marketplace groups them. "
     "minimal.register_tool(name, run, description, input_schema, confirm) adds a tool run(input, ctx); "
     "minimal.register_command(name, run, description, terminal=False) adds a slash command run(args, ctx); "
     'minimal.register_provider(...) adds a model; minimal.on("tool_call"|"tool_result"|"turn_end", handler) hooks events; '
     "minimal.append_system_prompt(text) adds instructions; minimal.register_widget(name, create, area) adds a visual "
     'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '
-    "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn. "
+    "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn; "
+    "minimal.register_theme(name, dark=..., background=..., foreground=..., accent=..., **more #rrggbb colours) "
+    "adds a colour theme the user picks with /theme. "
     "After writing or editing an extension, call reload_extensions and fix any reported errors. "
     "Share and reuse extensions with ext_search, ext_install and ext_publish."
 )
@@ -97,12 +100,27 @@ class Frontend(Protocol):
     def ask(self, question: str) -> bool:
         """Ask a yes/no question; return the answer."""
 
+    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled."""
+
+    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
+        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if cancelled."""
+
+    def ask_text(self, title: str) -> str | None:
+        """Ask for one line of text; return it stripped, or ``None`` if empty or cancelled."""
+
     def reloaded(self) -> None:
         """Extensions were reloaded (widgets may have changed)."""
 
+    def themes(self) -> tuple[list[str], str | None]:
+        """The colour themes on offer and the current one; ``([], None)`` if the frontend has none."""
+
+    def set_theme(self, name: str) -> None:
+        """Switch to colour theme ``name``, one of :meth:`themes`."""
+
 
 class ConsoleFrontend:
-    """Plain stdout/stderr and ``input()``: used by ``-p``."""
+    """Plain stdout/stderr and ``input()``: used by ``-p`` and by commands the TUI runs in the terminal."""
 
     def text(self, chunk: str) -> None:
         print(chunk, end="", flush=True)
@@ -132,8 +150,54 @@ class ConsoleFrontend:
             return False
         return re.fullmatch(r"y|yes", answer.strip(), re.IGNORECASE) is not None
 
+    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        """Numbered list; empty, invalid input or EOF cancels."""
+        print(f"\n{title}")
+        for i, (_, label) in enumerate(options, 1):
+            print(f"  {i:>2}. {label}")
+        try:
+            answer = input("Number (empty cancels): ").strip()
+        except EOFError:
+            return None
+        if not answer.isdigit() or not 1 <= int(answer) <= len(options):
+            return None
+        return options[int(answer) - 1][0]
+
+    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
+        """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input or EOF cancels."""
+        print(f"\n{title}")
+        for i, (_, label, checked) in enumerate(options, 1):
+            print(f"  {i:>2}. [{'x' if checked else ' '}] {label}")
+        try:
+            answer = input("Numbers to tick (Enter keeps the ticks shown, 0 for none): ").strip()
+        except EOFError:
+            return None
+        if not answer:
+            return [value for value, _, checked in options if checked]
+        if answer == "0":
+            return []
+        tokens = re.split(r"[\s,]+", answer)
+        if not all(t.isdigit() and 1 <= int(t) <= len(options) for t in tokens):
+            return None
+        picked = {int(t) - 1 for t in tokens}
+        return [value for i, (value, _, _) in enumerate(options) if i in picked]
+
+    def ask_text(self, title: str) -> str | None:
+        """One ``input()`` line; EOF cancels."""
+        try:
+            answer = input(f"{title}: ").strip()
+        except EOFError:
+            return None
+        return answer or None
+
     def reloaded(self) -> None:
         pass
+
+    def themes(self) -> tuple[list[str], str | None]:
+        return [], None
+
+    def set_theme(self, name: str) -> None:
+        raise ValueError("colour themes only apply to the terminal UI")
 
 
 class App:

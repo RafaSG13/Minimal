@@ -10,12 +10,17 @@ An extension is a ``.py`` file that defines ``register(minimal)``, where ``minim
         minimal.on("tool_call", lambda e: {"block": True, "reason": "no"})
         minimal.append_system_prompt("Extra instructions.")
         minimal.register_widget("panel", lambda ctx: MyWidget(), area="sidebar")
+        minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
 
 Search order (each folder in sorted order, files starting with ``_`` skipped):
 
 1. ``~/.minimal/extensions/``
 2. ``<cwd>/.minimal/extensions/``
 3. every ``--ext`` path (a file or a folder)
+
+Within each folder, its own files load first, then those of its ``themes/``,
+``tools/`` and ``widgets/`` subfolders: the marketplace's categories
+(:data:`CATEGORIES`), which only group files; any file may register anything.
 """
 
 from __future__ import annotations
@@ -30,10 +35,24 @@ from minimal.registry import Registry
 GLOBAL_EXTENSIONS_DIR = Path.home() / ".minimal" / "extensions"
 """Extensions loaded in every project."""
 
+CATEGORIES = ("extensions", "themes", "tools", "widgets")
+"""Marketplace categories: ``extensions`` files live in an extensions folder itself, the others in a subfolder."""
+
 
 def project_extensions_dir(cwd: str) -> Path:
     """Extensions loaded only when running in ``cwd``."""
     return Path(cwd) / ".minimal" / "extensions"
+
+
+def category_dir(directory: Path, category: str) -> Path:
+    """Where files of ``category`` live inside extensions folder ``directory``.
+
+    Raises:
+        ValueError: if ``category`` is not one of :data:`CATEGORIES`.
+    """
+    if category not in CATEGORIES:
+        raise ValueError(f"unknown category {category!r}; use one of {', '.join(CATEGORIES)}")
+    return directory if category == "extensions" else directory / category
 
 
 def load_extensions(
@@ -65,18 +84,23 @@ def load_extensions(
 
 def _find_extension_files(cwd: str, extra: Iterable[str | Path]) -> tuple[list[Path], list[str]]:
     """Return candidate extension files in load order, and errors for missing ``extra`` paths."""
-    files = _py_files(GLOBAL_EXTENSIONS_DIR)
-    files += _py_files(project_extensions_dir(cwd))
+    files = extension_files(GLOBAL_EXTENSIONS_DIR)
+    files += extension_files(project_extensions_dir(cwd))
     errors = []
     for entry in extra:
         path = Path(cwd, entry).resolve()
         if not path.exists():
             errors.append(f"{path}: not found")
         elif path.is_dir():
-            files += _py_files(path)
+            files += extension_files(path)
         else:
             files.append(path)
     return files, errors
+
+
+def extension_files(directory: Path) -> list[Path]:
+    """The extensions in folder ``directory``, in load order: its own files, then each category subfolder's."""
+    return [p for category in CATEGORIES for p in _py_files(category_dir(directory, category))]
 
 
 def _py_files(directory: Path) -> list[Path]:
@@ -93,7 +117,9 @@ def _load_extension(file: Path, registry: Registry) -> None:
     ``__pycache__`` check (whole-second mtime and size) could run stale code
     when a file is edited twice within a second and reloaded.
     """
-    module_name = f"minimal_ext_{file.stem}"
+    # Category subfolders may reuse a name (tools/x.py and widgets/x.py): keep their modules apart.
+    category = file.parent.name if file.parent.name in CATEGORIES[1:] else ""
+    module_name = f"minimal_ext_{category}_{file.stem}" if category else f"minimal_ext_{file.stem}"
     spec = importlib.util.spec_from_file_location(module_name, file)
     if spec is None or spec.loader is None:
         raise ValueError("cannot import file")

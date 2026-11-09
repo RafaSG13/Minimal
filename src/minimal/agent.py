@@ -14,7 +14,8 @@ The loop only sees the canonical message format described in
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from minimal.providers.base import Provider, Reply
 from minimal.registry import Registry
@@ -58,7 +59,11 @@ def run_agent(
     """
     for _ in range(max_turns):
         reply = provider.stream(
-            model=model, system=system, messages=messages, tools=_tool_specs(registry), on_text=on_text
+            model=model,
+            system=system,
+            messages=messages,
+            tools=_tool_specs(registry),
+            on_text=on_text,
         )
         messages.append(_assistant_message(provider, reply))
 
@@ -94,12 +99,22 @@ def execute_tool_call(call: dict, registry: Registry, ctx: Any) -> dict:
         output = f"Error: {e}"
         is_error = True
 
-    payload = {"name": call["name"], "input": call["input"], "output": output, "is_error": is_error}
+    payload = {
+        "name": call["name"],
+        "input": call["input"],
+        "output": output,
+        "is_error": is_error,
+    }
     for rewrite in registry.emit("tool_result", payload):
         if isinstance(rewrite, dict) and isinstance(rewrite.get("output"), str):
             output = rewrite["output"]
 
-    return {"type": "tool_result", "tool_use_id": call["id"], "content": clip(output), "is_error": is_error}
+    return {
+        "type": "tool_result",
+        "tool_use_id": call["id"],
+        "content": clip(output),
+        "is_error": is_error,
+    }
 
 
 def _run_tool(call: dict, registry: Registry, ctx: Any) -> str:
@@ -108,7 +123,9 @@ def _run_tool(call: dict, registry: Registry, ctx: Any) -> str:
     if tool is None:
         raise ValueError(f"unknown tool: {call['name']}")
 
-    for verdict in registry.emit("tool_call", {"name": call["name"], "input": call["input"]}):
+    for verdict in registry.emit(
+        "tool_call", {"name": call["name"], "input": call["input"]}
+    ):
         if isinstance(verdict, dict) and verdict.get("block"):
             raise RuntimeError(verdict.get("reason") or "blocked by an extension")
 
@@ -131,5 +148,8 @@ def _assistant_message(provider: Provider, reply: Reply) -> dict:
     """Build the canonical assistant message for ``reply``, tagging any provider data."""
     message: dict = {"role": "assistant", "content": reply.content}
     if reply.provider_data is not None:
-        message["provider_data"] = {"provider": provider.name, "data": reply.provider_data}
+        message["provider_data"] = {
+            "provider": provider.name,
+            "data": reply.provider_data,
+        }
     return message

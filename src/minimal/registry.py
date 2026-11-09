@@ -1,5 +1,5 @@
 """The registry: the one place where tools, slash commands, model providers,
-system-prompt additions, event handlers and UI widgets are collected.
+system-prompt additions, event handlers, UI widgets and UI colour themes are collected.
 
 Built-in tools, built-in providers and extensions register through it. The
 agent loop and the terminal UI read from it. Extensions receive it as their
@@ -19,9 +19,11 @@ Events and their payloads:
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from minimal.providers.base import Provider, ProviderSpec
 
@@ -36,6 +38,35 @@ EventHandler = Callable[[dict], Any]
 
 WIDGET_AREAS = ("top", "bottom", "sidebar")
 """Where an extension widget can be placed in the terminal UI."""
+
+THEME_COLORS = (
+    "surface",
+    "panel",
+    "secondary",
+    "success",
+    "warning",
+    "error",
+    "muted",
+    "dim",
+    "border",
+    "focus",
+    "user_bg",
+    "pending_bg",
+    "success_bg",
+    "error_bg",
+    "code",
+    "model",
+    "path",
+    "status_bg",
+    "git_clean",
+    "git_dirty",
+    "selection",
+    "diff_added",
+    "diff_removed",
+)
+"""Optional colours of :meth:`Registry.register_theme`; the terminal UI derives any left out."""
+
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 
 
 @dataclass
@@ -89,8 +120,24 @@ class WidgetSpec:
     area: str = "sidebar"
 
 
+@dataclass
+class ThemeSpec:
+    """A colour theme an extension adds to the terminal UI (see :meth:`Registry.register_theme`).
+
+    Attributes:
+        name: Unique name; registering the same name again replaces it.
+        dark: Whether it is a dark theme.
+        colors: ``#rrggbb`` colours by name: ``background``, ``foreground``,
+            ``accent`` and any of :data:`THEME_COLORS`.
+    """
+
+    name: str
+    dark: bool
+    colors: dict[str, str]
+
+
 class Registry:
-    """Collects tools, commands, providers, prompt additions and event handlers.
+    """Collects tools, commands, providers, prompt additions, event handlers, widgets and themes.
 
     Attributes:
         tools: Tools offered to the model, by name, in registration order.
@@ -98,6 +145,7 @@ class Registry:
         providers: Model integrations, by name (see :mod:`minimal.providers`).
         prompt_parts: Extra paragraphs appended to the system prompt.
         widgets: Visual components for the terminal UI, by name.
+        themes: Colour themes for the terminal UI, by name.
     """
 
     def __init__(self) -> None:
@@ -106,6 +154,7 @@ class Registry:
         self.providers: dict[str, ProviderSpec] = {}
         self.prompt_parts: list[str] = []
         self.widgets: dict[str, WidgetSpec] = {}
+        self.themes: dict[str, ThemeSpec] = {}
         self._handlers: dict[str, list[EventHandler]] = {}
 
     def reset(self) -> None:
@@ -120,6 +169,7 @@ class Registry:
         self.providers.clear()
         self.prompt_parts.clear()
         self.widgets.clear()
+        self.themes.clear()
         self._handlers.clear()
 
     def add_tool(self, tool: Tool) -> None:
@@ -144,7 +194,9 @@ class Registry:
         schema = input_schema or {"type": "object", "properties": {}}
         self.add_tool(Tool(name, description, schema, run, confirm))
 
-    def register_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
+    def register_command(
+        self, name: str, run: CommandRun, description: str = "", terminal: bool = False
+    ) -> None:
         """Register a slash command, available as ``/name``.
 
         Set ``terminal`` when the command needs the real terminal (prompts,
@@ -157,7 +209,9 @@ class Registry:
             raise ValueError("register_command: run is required")
         self.commands[name] = Command(run, description, terminal)
 
-    def register_widget(self, name: str, create: Callable[[Any], Any], area: str = "sidebar") -> None:
+    def register_widget(
+        self, name: str, create: Callable[[Any], Any], area: str = "sidebar"
+    ) -> None:
         """Add a visual component to the terminal UI, replacing any widget with the same name.
 
         ``create(ctx)`` receives the :class:`~minimal.app.App` and returns a
@@ -174,8 +228,46 @@ class Registry:
         if not name or not callable(create):
             raise ValueError("register_widget: name and create are required")
         if area not in WIDGET_AREAS:
-            raise ValueError("register_widget: area must be one of top, bottom, sidebar")
+            raise ValueError(
+                "register_widget: area must be one of top, bottom, sidebar"
+            )
         self.widgets[name] = WidgetSpec(name, create, area)
+
+    def register_theme(
+        self, name: str, *, dark: bool, background: str, foreground: str, accent: str, **colors: str
+    ) -> None:
+        """Add a colour theme to the terminal UI (pick it with ``/theme``), replacing any with the same name.
+
+        Colours are ``#rrggbb`` strings. ``background``, ``foreground`` and
+        ``accent`` are required; the optional ones (:data:`THEME_COLORS`) are
+        derived from those when left out:
+
+        - ``surface``, ``panel``: raised backgrounds (code blocks, dialogs; highlighted rows)
+        - ``secondary``: file paths in tool calls
+        - ``success``, ``warning``, ``error``: states, icons and the permission dialog
+        - ``muted``, ``dim``: secondary and faint text
+        - ``border``, ``focus``: separators, and the prompt's lines while it has focus
+        - ``user_bg``, ``pending_bg``, ``success_bg``, ``error_bg``: user messages and tool calls by state
+        - ``code``: inline code in replies
+        - ``model``, ``path``, ``status_bg``, ``git_clean``, ``git_dirty``: the status line
+        - ``selection``: selected text in inputs
+        - ``diff_added``, ``diff_removed``: lines of an edit's diff
+
+        The built-in ``minimal`` theme cannot be replaced.
+
+        Raises:
+            ValueError: if ``name`` is empty, a colour name is unknown or a value is not ``#rrggbb``.
+        """
+        if not name:
+            raise ValueError("register_theme: name is required")
+        unknown = sorted(set(colors) - set(THEME_COLORS))
+        if unknown:
+            raise ValueError(f"register_theme: unknown colour(s) {', '.join(unknown)}; use {', '.join(THEME_COLORS)}")
+        palette = {"background": background, "foreground": foreground, "accent": accent, **colors}
+        bad = [key for key, value in palette.items() if not (isinstance(value, str) and _HEX_COLOR.fullmatch(value))]
+        if bad:
+            raise ValueError(f"register_theme: not a #rrggbb colour: {', '.join(bad)}")
+        self.themes[name] = ThemeSpec(name, bool(dark), palette)
 
     def add_provider(self, spec: ProviderSpec) -> None:
         """Register a ready-made ``ProviderSpec``, replacing any with the same name."""
@@ -198,8 +290,12 @@ class Registry:
             ValueError: if ``name`` or ``default_model`` is empty or ``create`` is not callable.
         """
         if not name or not default_model or not callable(create):
-            raise ValueError("register_provider: name, create and default_model are required")
-        self.add_provider(ProviderSpec(name, create, default_model, tuple(env_keys), description))
+            raise ValueError(
+                "register_provider: name, create and default_model are required"
+            )
+        self.add_provider(
+            ProviderSpec(name, create, default_model, tuple(env_keys), description)
+        )
 
     def on(self, event: str, handler: EventHandler) -> None:
         """Subscribe ``handler`` to ``event`` (see the module docstring for events)."""
