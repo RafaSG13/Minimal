@@ -1,0 +1,18 @@
+README.md
+  h_e81853c41416fb 227
+src/minimal/tools.py
+  h_e81853c41416fb 1,12,50-155,315-401,430
+tests/test_smoke.py
+  h_e81853c41416fb 1-3,64-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "318b3249fcd2a90f6ce30cc697537d80c3c04288",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
