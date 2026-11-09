@@ -7,6 +7,7 @@
   provider (built-in or from an extension) reads them the same way.
 - ``marketplaces.json``: extension marketplaces added from the ``/ext``
   picker (git URLs or local paths), as ``{"marketplaces": [...]}``.
+- ``theme.json``: the terminal UI's colour theme, as ``{"theme": name}``.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 CONFIG_FILE = Path.home() / ".minimal" / "config.json"
 KEYS_FILE = Path.home() / ".minimal" / "keys.json"
 MARKETPLACES_FILE = Path.home() / ".minimal" / "marketplaces.json"
+THEME_FILE = Path.home() / ".minimal" / "theme.json"
 
 
 def load_config() -> dict | None:
@@ -75,6 +77,21 @@ def load_marketplaces() -> list[str]:
 def save_marketplaces(urls: list[str]) -> None:
     """Replace the saved marketplace URLs with ``urls``."""
     _write_private(MARKETPLACES_FILE, {"marketplaces": urls})
+
+
+def load_theme() -> str | None:
+    """Return the saved theme name, or ``None`` if none was saved or the file is unreadable."""
+    try:
+        data = _read_json(THEME_FILE)
+    except ValueError:
+        return None
+    name = data.get("theme") if data else None
+    return name if isinstance(name, str) else None
+
+
+def save_theme(name: str) -> None:
+    """Save the terminal UI's colour theme."""
+    _write_private(THEME_FILE, {"theme": name})
 
 
 def _read_json(path: Path) -> dict | None:

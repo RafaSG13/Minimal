@@ -1,77 +1,160 @@
-"""Look of the terminal UI: the colour theme and the glyphs.
+"""Look of the terminal UI: the colour themes and the glyphs.
 
-The palette is omp's (oh-my-pi) ``dark`` theme. :data:`THEME` exposes it to
-Textual CSS: the standard variables (``$primary``, ``$success``, …) plus the
-custom ones listed in its ``variables`` (``$user-message-bg``,
-``$tool-success-bg``, …), which extension widgets can use too.
+The built-in theme is ``minimal`` (:data:`DEFAULT`): black and white, nothing
+else. Extensions add more with ``minimal.register_theme`` (see
+:meth:`~minimal.registry.Registry.register_theme`); the marketplace keeps them
+in its ``themes/`` folder. Pick one with ``/theme`` or ctrl+p → Theme; the
+choice is saved in ``~/.minimal/theme.json``.
+
+:func:`build` turns a theme's colours into a Textual theme: the standard
+variables (``$primary``, ``$success``, …) plus custom ones (``$muted``,
+``$user-message-bg``, ``$tool-success-bg``, …), which extension widgets can use
+too. The UI only paints with these variables, so switching theme recolours
+everything.
 """
 
 from __future__ import annotations
 
+from textual.color import Color
 from textual.theme import Theme
 
-ACCENT = "#febc38"
-BLUE = "#178fb9"
-CYAN = "#0088fa"
-GREEN = "#89d281"
-RED = "#fc3a4b"
-YELLOW = "#e4c00f"
-GRAY = "#777d88"
-DIM_GRAY = "#5f6673"
-DARK_GRAY = "#3d424a"
-STATUS_MODEL = "#d787af"
-STATUS_PATH = "#00afaf"
-STATUS_GIT_CLEAN = "#5faf5f"
-STATUS_GIT_DIRTY = "#d7af5f"
-BACKGROUND = "#0f0f14"
+from minimal.registry import Registry, ThemeSpec
 
-THEME = Theme(
-    name="minimal-dark",
-    primary=ACCENT,
-    secondary=CYAN,
-    accent=ACCENT,
-    warning=YELLOW,
-    error=RED,
-    success=GREEN,
-    foreground="#cccccc",
-    background=BACKGROUND,
-    surface="#1a1a22",
-    panel="#25252f",
-    dark=True,
-    variables={
-        "muted": GRAY,
-        "dim": DIM_GRAY,
-        "border-accent": CYAN,
-        "border-blue": BLUE,
-        "border-muted": DARK_GRAY,
-        "user-message-bg": "#221d1a",
-        "tool-pending-bg": "#1d2129",
-        "tool-success-bg": "#161a1f",
-        "tool-error-bg": "#291d1d",
-        "md-code": "#e5c1ff",
-        "status-model": STATUS_MODEL,
-        "status-path": STATUS_PATH,
-        "status-bg": "#16161c",
-        "status-git-clean": STATUS_GIT_CLEAN,
-        "status-git-dirty": STATUS_GIT_DIRTY,
-        "markdown-h1-color": ACCENT,
-        "markdown-h1-text-style": "bold",
-        "markdown-h2-color": ACCENT,
-        "markdown-h2-text-style": "bold",
-        "markdown-h3-color": ACCENT,
-        "markdown-h3-text-style": "bold",
-        "markdown-h4-color": ACCENT,
-        "markdown-h4-text-style": "bold",
-        "scrollbar": DARK_GRAY,
-        "scrollbar-hover": GRAY,
-        "scrollbar-active": ACCENT,
-        "scrollbar-background": BACKGROUND,
-        "scrollbar-background-hover": BACKGROUND,
-        "scrollbar-background-active": BACKGROUND,
-        "scrollbar-corner-color": BACKGROUND,
-        "input-selection-background": "#31363f",
-    },
+DEFAULT = "minimal"
+
+_SEMANTIC = {
+    True: {"success": "#89d281", "warning": "#e5c07b", "error": "#e06c75"},
+    False: {"success": "#1a7f37", "warning": "#9a6700", "error": "#cf222e"},
+}
+"""Default state colours for dark (``True``) and light themes."""
+
+
+def _complete(dark: bool, colors: dict[str, str]) -> dict[str, str]:
+    """``colors`` with every colour :meth:`Registry.register_theme` leaves optional filled in."""
+    c = dict(colors)
+    background, foreground = Color.parse(c["background"]), Color.parse(c["foreground"])
+
+    def mix(amount: float, toward: str | None = None) -> str:
+        return background.blend(Color.parse(toward) if toward else foreground, amount).hex
+
+    for key, value in _SEMANTIC[dark].items():
+        c.setdefault(key, value)
+    c.setdefault("surface", mix(0.05))
+    c.setdefault("panel", mix(0.10))
+    c.setdefault("secondary", c["accent"])
+    c.setdefault("muted", mix(0.55))
+    c.setdefault("dim", mix(0.38))
+    c.setdefault("border", mix(0.15))
+    c.setdefault("focus", c["accent"])
+    c.setdefault("user_bg", mix(0.07))
+    c.setdefault("pending_bg", c["surface"])
+    c.setdefault("success_bg", c["surface"])
+    c.setdefault("error_bg", mix(0.12, c["error"]))
+    c.setdefault("code", c["accent"])
+    c.setdefault("model", c["accent"])
+    c.setdefault("path", c["secondary"])
+    c.setdefault("status_bg", c["background"])
+    c.setdefault("git_clean", c["success"])
+    c.setdefault("git_dirty", c["warning"])
+    c.setdefault("selection", mix(0.30, c["accent"]))
+    c.setdefault("diff_added", c["success"])
+    c.setdefault("diff_removed", c["error"])
+    return c
+
+
+def build(spec: ThemeSpec) -> Theme:
+    """The Textual theme for ``spec``, with the custom variables the UI's CSS and text use."""
+    c = _complete(spec.dark, spec.colors)
+    background = c["background"]
+    headings = {
+        f"markdown-h{n}-{key}": value for n in range(1, 5) for key, value in (("color", c["accent"]), ("text-style", "bold"))
+    }
+    return Theme(
+        name=spec.name,
+        primary=c["accent"],
+        secondary=c["secondary"],
+        accent=c["accent"],
+        warning=c["warning"],
+        error=c["error"],
+        success=c["success"],
+        foreground=c["foreground"],
+        background=background,
+        surface=c["surface"],
+        panel=c["panel"],
+        dark=spec.dark,
+        variables={
+            "muted": c["muted"],
+            "dim": c["dim"],
+            # Behind modals: a 30% wash of the background on dark themes, a faint shade on light ones.
+            "modal-overlay": f"{background}4d" if spec.dark else f"{c['foreground']}1f",
+            "border-accent": c["secondary"],
+            "border-blue": c["focus"],
+            "border-muted": c["border"],
+            "user-message-bg": c["user_bg"],
+            "tool-pending-bg": c["pending_bg"],
+            "tool-success-bg": c["success_bg"],
+            "tool-error-bg": c["error_bg"],
+            "diff-added": c["diff_added"],
+            "diff-removed": c["diff_removed"],
+            "md-code": c["code"],
+            "status-model": c["model"],
+            "status-path": c["path"],
+            "status-bg": c["status_bg"],
+            "status-git-clean": c["git_clean"],
+            "status-git-dirty": c["git_dirty"],
+            **headings,
+            "scrollbar": c["border"],
+            "scrollbar-hover": c["muted"],
+            "scrollbar-active": c["accent"],
+            "scrollbar-background": background,
+            "scrollbar-background-hover": background,
+            "scrollbar-background-active": background,
+            "scrollbar-corner-color": background,
+            "input-selection-background": c["selection"],
+        },
+    )
+
+
+MINIMAL = build(
+    ThemeSpec(
+        DEFAULT,
+        True,
+        {
+            "background": "#000000",
+            "foreground": "#d4d4d4",
+            "accent": "#ffffff",
+            "surface": "#111111",
+            "panel": "#222222",
+            "secondary": "#ffffff",
+            "success": "#ffffff",
+            "warning": "#ffffff",
+            "error": "#ffffff",
+            "muted": "#8a8a8a",
+            "dim": "#5c5c5c",
+            "border": "#2a2a2a",
+            "focus": "#5c5c5c",
+            "user_bg": "#161616",
+            "pending_bg": "#0c0c0c",
+            "success_bg": "#0c0c0c",
+            "error_bg": "#1c1c1c",
+            "code": "#ffffff",
+            "model": "#d4d4d4",
+            "path": "#8a8a8a",
+            "status_bg": "#000000",
+            "git_clean": "#8a8a8a",
+            "git_dirty": "#d4d4d4",
+            "selection": "#333333",
+            "diff_added": "#ffffff",
+            "diff_removed": "#6e6e6e",
+        },
+    )
 )
+
+
+def available(registry: Registry) -> dict[str, Theme]:
+    """The themes to offer: the built-in one first, then those extensions registered (except one named like it)."""
+    return {DEFAULT: MINIMAL, **{name: build(spec) for name, spec in registry.themes.items() if name != DEFAULT}}
+
 
 # Glyphs (omp's unicode symbol preset).
 SUCCESS = "✔"

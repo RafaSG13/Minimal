@@ -23,6 +23,20 @@ def register(minimal):
     minimal.register_tool(name="hello", run=lambda input, ctx: "hi", description="Say hi")
 '''
 
+OCEAN = '''"""Deep blue dark theme."""
+
+
+def register(minimal):
+    minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
+'''
+
+HELLO_TOOL = '''"""Another hello, as a tool."""
+
+
+def register(minimal):
+    minimal.register_tool(name="hello_tool", run=lambda input, ctx: "hi", description="Say hi")
+'''
+
 
 def git(*args, cwd=None):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
@@ -82,9 +96,15 @@ class MarketplaceTest(unittest.TestCase):
 
     def push_hello(self, source):
         """Commit ``source`` as ``extensions/hello.py`` and push it to the marketplace."""
-        (self.work / "extensions" / "hello.py").write_text(source)
+        self.push_file("extensions/hello.py", source)
+
+    def push_file(self, relative, source):
+        """Commit ``source`` at ``relative`` in the marketplace and push it."""
+        path = self.work / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
         git("add", ".", cwd=self.work)
-        git("commit", "--quiet", "-m", "hello", cwd=self.work)
+        git("commit", "--quiet", "-m", relative, cwd=self.work)
         git("push", "--quiet", "origin", "main", cwd=self.work)
 
     def run_ext(self, answers):
@@ -120,24 +140,51 @@ class MarketplaceTest(unittest.TestCase):
     def test_picker_installs_updates_removes(self):
         hello = self.global_dir / "hello.py"
         url = str(self.bare)
-        _, out = self.run_ext({"Marketplace": url, "Extensions": ["hello"], "Install": "global"})
+        _, out = self.run_ext({"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Install": "global"})
         self.assertEqual(hello.read_text(), HELLO)
         self.assertIn("Installed hello at", out)
 
         self.push_hello(HELLO.replace('"1.0"', '"1.1"'))
-        ui, out = self.run_ext({"Marketplace": url, "Extensions": ["hello"], "Update": ["hello"]})
+        ui, out = self.run_ext(
+            {"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Update": ["hello"]}
+        )
         [(value, label, checked)] = next(opts for title, opts in ui.asked if title.startswith("Extensions"))
         self.assertEqual((value, checked), ("hello", True))
         self.assertIn("update available (1.0 → 1.1)", label)
         self.assertIn('"1.1"', hello.read_text())
         self.assertIn("Updated hello at", out)
 
-        _, out = self.run_ext({"Marketplace": url, "Extensions": []})
+        _, out = self.run_ext({"Marketplace": url, "Category": "extensions", "Extensions": []})
         self.assertFalse(hello.exists())
         self.assertIn("Removed", out)
 
         _, out = self.run_ext({"Marketplace": None})
         self.assertIn("Cancelled.", out)
+
+    def test_categories_install_into_subfolders(self):
+        self.push_file("themes/ocean.py", OCEAN)
+        self.push_file("tools/hello.py", HELLO_TOOL)
+        ui, _ = self.run_ext(
+            {"Marketplace": str(self.bare), "Category": "themes", "Themes": ["ocean"], "Install": "global"}
+        )
+        categories = next(opts for title, opts in ui.asked if title.startswith("Category"))
+        self.assertEqual([value for value, _ in categories], ["extensions", "themes", "tools"])
+        self.assertEqual((self.global_dir / "themes" / "ocean.py").read_text(), OCEAN)
+
+        # The same name in two categories is ambiguous until the category is given.
+        with self.assertRaisesRegex(ValueError, "several categories"):
+            marketplace.install("hello")
+        self.assertEqual(marketplace.install("hello", category="tools"), (self.global_dir / "tools" / "hello.py", False))
+        marketplace.install("hello", category="extensions")
+        registry = Registry()
+        loaded, errors = load_extensions(registry, str(self.tmp))
+        self.assertEqual(errors, [])
+        self.assertIn("ocean", registry.themes)
+        self.assertLessEqual({"hello", "hello_tool"}, set(registry.tools))  # both hello.py files loaded
+        self.assertEqual(
+            [(scope, category, path.name) for scope, category, path in marketplace.installed(str(self.tmp))],
+            [("global", "extensions", "hello.py"), ("global", "themes", "ocean.py"), ("global", "tools", "hello.py")],
+        )
 
     def test_saved_marketplaces(self):
         self.assertEqual(marketplace.marketplaces(), [str(self.bare), marketplace.DEFAULT_URL])

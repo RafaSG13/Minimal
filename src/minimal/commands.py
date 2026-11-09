@@ -88,6 +88,24 @@ def _tools(args: str, app: App) -> None:
     print(", ".join(app.registry.tools))
 
 
+def _theme(args: str, app: App) -> None:
+    names, current = app.frontend.themes()
+    if not names:
+        print("Colour themes only apply to the terminal UI.")
+        return
+    if not args and len(names) == 1:
+        print(f"Only the built-in {names[0]} theme is installed; get more from /ext → Themes.")
+        return
+    options = [(n, f"{n} (current)" if n == current else n) for n in names]
+    name = args or app.frontend.choose("Theme · more in /ext → Themes", options)
+    if name is None:
+        return
+    if name not in names:
+        raise ValueError(f"no theme {name!r}; installed: {', '.join(names)} (more in /ext → Themes)")
+    app.frontend.set_theme(name)
+    print(f"Theme: {name}")
+
+
 def _login(args: str, app: App) -> None:
     try:
         claude_auth.login()
@@ -136,14 +154,18 @@ def _ext(args: str, app: App) -> None:
         _ext_picker(app)
     elif words == ["list"]:
         rows = marketplace.installed(app.cwd)
-        for where, path in rows:
-            print(f"{where:<8} {path.stem:<20} {path}")
+        for where, category, path in rows:
+            print(f"{where:<8} {category:<10} {path.stem:<20} {path}")
         if not rows:
             print("(none)")
     elif words[0] == "publish" and 2 <= len(words) <= 3:
         print(marketplace.publish(Path(app.cwd, words[1]), words[2] if len(words) > 2 else None))
     else:
         raise ValueError(f"usage: {EXT_USAGE}")
+
+
+CATEGORY_LABELS = {"extensions": "Extensions", "themes": "Themes", "tools": "Tools", "widgets": "TUI components"}
+"""How the ``/ext`` picker names each marketplace category."""
 
 
 def _marketplace_label(url: str) -> str:
@@ -193,8 +215,14 @@ def _entry_label(entry: marketplace.Entry) -> str:
     return label
 
 
+def _category_label(category: str, entries: list[marketplace.Entry]) -> str:
+    installed = sum(1 for e in entries if e.installed)
+    label = f"{CATEGORY_LABELS[category]} ({len(entries)}"
+    return label + (f", {installed} installed)" if installed else ")")
+
+
 def _ext_picker(app: App) -> None:
-    """Pick a marketplace, then tick its extensions: ticking installs, unticking uninstalls.
+    """Pick a marketplace and a category, then tick its extensions: ticking installs, unticking uninstalls.
 
     Ticked extensions whose installed copy differs from the marketplace are
     offered for update. Nothing changes on disk until every question is answered.
@@ -203,12 +231,21 @@ def _ext_picker(app: App) -> None:
     if url is None:
         print("Cancelled.")
         return
-    entries = marketplace.catalog(url, app.cwd)
-    if not entries:
+    by_category: dict[str, list[marketplace.Entry]] = {}
+    for entry in marketplace.catalog(url, app.cwd):
+        by_category.setdefault(entry.listing.category, []).append(entry)
+    if not by_category:
         print(f"No extensions in {url}.")
         return
+    category = app.frontend.choose(
+        f"Category · {url}", [(c, _category_label(c, entries)) for c, entries in by_category.items()]
+    )
+    if category is None:
+        print("Cancelled.")
+        return
+    entries = by_category[category]
     ticked = app.frontend.choose_many(
-        f"Extensions · {url}", [(e.listing.name, _entry_label(e), bool(e.installed)) for e in entries]
+        f"{CATEGORY_LABELS[category]} · {url}", [(e.listing.name, _entry_label(e), bool(e.installed)) for e in entries]
     )
     if ticked is None:
         print("Cancelled.")
@@ -219,10 +256,13 @@ def _ext_picker(app: App) -> None:
     scope = "global"
     if to_install:
         scope = app.frontend.choose(
-            f"Install {len(to_install)} extension(s) into",
+            f"Install {len(to_install)} item(s) into",
             [
-                ("global", f"Global: {extensions.GLOBAL_EXTENSIONS_DIR}"),
-                ("project", f"This project: {extensions.project_extensions_dir(app.cwd)}"),
+                ("global", f"Global: {extensions.category_dir(extensions.GLOBAL_EXTENSIONS_DIR, category)}"),
+                (
+                    "project",
+                    f"This project: {extensions.category_dir(extensions.project_extensions_dir(app.cwd), category)}",
+                ),
             ],
         )
         if scope is None:
@@ -231,7 +271,7 @@ def _ext_picker(app: App) -> None:
     to_update = []
     if outdated:
         picked = app.frontend.choose_many(
-            "Update these extensions?", [(e.listing.name, _entry_label(e), True) for e in outdated]
+            "Update these?", [(e.listing.name, _entry_label(e), True) for e in outdated]
         )
         if picked is None:
             print("Cancelled.")
@@ -249,7 +289,7 @@ def _ext_picker(app: App) -> None:
             print(f"Updated {e.listing.name} at {dest}")
     for e in to_remove:
         for s in e.installed:
-            print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd)}")
+            print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd, category)}")
     print(reload_summary(*app.reload_extensions()))
 
 
@@ -260,6 +300,7 @@ BUILTIN_COMMANDS: dict[str, Command] = {
     "model": Command(_model, "list models, or change: /model [number|name]"),
     "provider": Command(_provider, "list providers, or switch: /provider <name> [model]"),
     "tools": Command(_tools, "list the tools"),
+    "theme": Command(_theme, "pick the colour theme, or switch: /theme <name>"),
     "reload": Command(_reload, "reload extensions from disk"),
     "ext": Command(_ext, f"pick extensions to install, update or remove; {EXT_USAGE}"),
     "setup": Command(_setup, "choose and save the default provider, its login or key, and the model", terminal=True),

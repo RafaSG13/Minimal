@@ -1,8 +1,11 @@
 """The extension marketplace: a git repository of shareable extensions.
 
-Layout of the repository: ``extensions/<name>.py``, one file per extension.
-There is no index; each file carries its own metadata, so concurrent
-publishes never conflict:
+Layout of the repository: one folder per category (:data:`~minimal.extensions.CATEGORIES`):
+``extensions/`` (general), ``themes/`` (colour themes), ``tools/`` (tools for the
+model) and ``widgets/`` (terminal UI components), each holding ``<name>.py`` files.
+Installing mirrors the category: ``themes/ocean.py`` goes to
+``~/.minimal/extensions/themes/ocean.py``. There is no index; each file carries
+its own metadata, so concurrent publishes never conflict:
 
 * description: first line of the module docstring (required);
 * version: optional top-level ``__version__ = "x"`` string, default ``""``.
@@ -48,6 +51,8 @@ class Listing:
     description: str
     version: str
     path: Path
+    category: str
+    """Its marketplace folder: one of :data:`~minimal.extensions.CATEGORIES`."""
 
 
 @dataclass
@@ -56,7 +61,7 @@ class Entry:
 
     listing: Listing
     installed: list[str]
-    """Scopes holding ``<name>.py``, ``"global"`` before ``"project"``."""
+    """Scopes holding ``<name>.py`` in the listing's category, ``"global"`` before ``"project"``."""
     outdated: list[str]
     """Scopes whose copy differs from the marketplace file."""
     installed_version: str
@@ -134,6 +139,9 @@ def _check_name(name: str) -> None:
 def describe(path: Path, name: str | None = None) -> Listing:
     """Read an extension's metadata without running it.
 
+    Its category is the name of its folder when that is a category
+    (``themes/ocean.py`` is a theme), else ``extensions``.
+
     Args:
         path: The extension file.
         name: Name to publish it under (default: the file name without ``.py``).
@@ -162,7 +170,8 @@ def describe(path: Path, name: str | None = None) -> Listing:
             and isinstance(node.value.value, str)
         ):
             version = node.value.value
-    return Listing(name, docstring.strip().splitlines()[0], version, path)
+    category = path.parent.name if path.parent.name in extensions.CATEGORIES else "extensions"
+    return Listing(name, docstring.strip().splitlines()[0], version, path, category)
 
 
 def format_listing(listing: Listing) -> str:
@@ -202,23 +211,25 @@ def sync(url: str | None = None) -> Path:
     return target
 
 
-def search(query: str = "", url: str | None = None) -> list[Listing]:
+def search(query: str = "", url: str | None = None, category: str | None = None) -> list[Listing]:
     """Extensions whose name or description contains ``query`` (case-insensitive); all if empty.
 
-    Files with invalid metadata are skipped.
+    Listed by category in :data:`~minimal.extensions.CATEGORIES` order, then by
+    name; only ``category``'s if given. Files with invalid metadata are skipped.
     """
     root = sync(url)
     needle = query.lower()
     listings = []
-    for path in sorted((root / "extensions").glob("*.py")):
-        if path.name.startswith("_"):
-            continue
-        try:
-            listing = describe(path)
-        except ValueError:
-            continue
-        if needle in listing.name.lower() or needle in listing.description.lower():
-            listings.append(listing)
+    for folder in [category] if category else extensions.CATEGORIES:
+        for path in sorted((root / folder).glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            try:
+                listing = describe(path)
+            except ValueError:
+                continue
+            if needle in listing.name.lower() or needle in listing.description.lower():
+                listings.append(listing)
     return listings
 
 
@@ -228,7 +239,7 @@ def catalog(url: str, cwd: str) -> list[Entry]:
     for listing in search("", url):
         installed, outdated = [], []
         for scope in ("global", "project"):
-            path = _target_dir(scope, cwd) / f"{listing.name}.py"
+            path = _target_dir(scope, cwd, listing.category) / f"{listing.name}.py"
             if path.is_file():
                 installed.append(scope)
                 if path.read_bytes() != listing.path.read_bytes():
@@ -236,93 +247,112 @@ def catalog(url: str, cwd: str) -> list[Entry]:
         version = ""
         if installed:
             try:
-                version = describe(_target_dir(installed[0], cwd) / f"{listing.name}.py").version
+                version = describe(_target_dir(installed[0], cwd, listing.category) / f"{listing.name}.py").version
             except ValueError:
                 pass
         entries.append(Entry(listing, installed, outdated, version))
     return entries
 
 
-def _target_dir(scope: str, cwd: str) -> Path:
-    """Extensions folder for ``scope``: ``"global"`` or ``"project"``."""
+def _target_dir(scope: str, cwd: str, category: str = "extensions") -> Path:
+    """Folder for ``category`` files in ``scope``: ``"global"`` or ``"project"``."""
     if scope == "global":
-        return extensions.GLOBAL_EXTENSIONS_DIR
+        return extensions.category_dir(extensions.GLOBAL_EXTENSIONS_DIR, category)
     if scope == "project":
-        return extensions.project_extensions_dir(cwd)
+        return extensions.category_dir(extensions.project_extensions_dir(cwd), category)
     raise ValueError("scope must be global or project")
 
 
-def install(name: str, scope: str = "global", cwd: str = ".", url: str | None = None) -> tuple[Path, bool]:
-    """Copy extension ``name`` from the marketplace into the ``scope`` extensions folder.
+def install(
+    name: str, scope: str = "global", cwd: str = ".", url: str | None = None, category: str | None = None
+) -> tuple[Path, bool]:
+    """Copy extension ``name`` from the marketplace into the ``scope`` folder of its category.
 
     It is not loaded; reload the extensions to activate it.
+
+    Args:
+        category: Where to look; needed only when several categories have ``name``.
 
     Returns:
         ``(dest, updated)``: the installed file, and whether it replaced an existing one.
 
     Raises:
-        ValueError: if the name is invalid or not in the marketplace.
+        ValueError: if the name is invalid, not in the marketplace, or in several categories.
     """
     _check_name(name)
     root = sync(url)
-    src = root / "extensions" / f"{name}.py"
-    if not src.is_file():
+    folders = [category] if category else extensions.CATEGORIES
+    found = [root / folder / f"{name}.py" for folder in folders if (root / folder / f"{name}.py").is_file()]
+    if not found:
         raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
-    return install_from(src, scope, cwd)
+    if len(found) > 1:
+        raise ValueError(f"{name} is in several categories ({', '.join(p.parent.name for p in found)}); pick one")
+    return install_from(found[0], scope, cwd)
 
 
 def install_from(src: Path, scope: str, cwd: str) -> tuple[Path, bool]:
-    """Copy marketplace file ``src`` (from a synced clone) into the ``scope`` folder.
+    """Copy marketplace file ``src`` (from a synced clone) into the ``scope`` folder of its category.
 
     Returns:
         ``(dest, updated)``: the installed file, and whether it replaced an existing one.
     """
-    dest = _target_dir(scope, cwd) / src.name
+    dest = _target_dir(scope, cwd, src.parent.name) / src.name
     dest.parent.mkdir(parents=True, exist_ok=True)
     updated = dest.exists()
     shutil.copyfile(src, dest)
     return dest, updated
 
 
-def uninstall(name: str, scope: str = "global", cwd: str = ".") -> Path:
+def uninstall(name: str, scope: str = "global", cwd: str = ".", category: str = "extensions") -> Path:
     """Delete an installed extension and return its path.
 
     Raises:
-        ValueError: if the name is invalid or the extension is not installed in ``scope``.
+        ValueError: if the name is invalid or the extension is not installed in ``scope``'s ``category`` folder.
     """
     _check_name(name)
-    dest = _target_dir(scope, cwd) / f"{name}.py"
+    dest = _target_dir(scope, cwd, category) / f"{name}.py"
     if not dest.exists():
         raise ValueError(f"{name} is not installed in {dest.parent}")
     dest.unlink()
     return dest
 
 
-def installed(cwd: str) -> list[tuple[str, Path]]:
-    """Installed extensions as ``(scope, path)``: global ones first, then project ones."""
-    return [(scope, p) for scope in ("global", "project") for p in extensions._py_files(_target_dir(scope, cwd))]
+def installed(cwd: str) -> list[tuple[str, str, Path]]:
+    """Installed extensions as ``(scope, category, path)``: global ones first, then project ones."""
+    return [
+        (scope, category, path)
+        for scope in ("global", "project")
+        for category in extensions.CATEGORIES
+        for path in extensions._py_files(_target_dir(scope, cwd, category))
+    ]
 
 
-def publish(path: str | Path, name: str | None = None, url: str | None = None) -> str:
+def publish(path: str | Path, name: str | None = None, url: str | None = None, category: str | None = None) -> str:
     """Propose an extension to the marketplace on a new branch, opening a pull request if ``gh`` is installed.
 
     Never force-pushes: the branch name carries a timestamp, so it is always new.
+
+    Args:
+        category: Marketplace folder (default: the file's own folder if it is a
+            category, such as ``~/.minimal/extensions/themes``, else ``extensions``).
 
     Returns:
         What happened, for the user.
 
     Raises:
-        ValueError: if the file is missing, invalid, or already published unchanged.
+        ValueError: if the file is missing, invalid, or already published unchanged, or the category is unknown.
         RuntimeError: if a git command fails (for example, no push access).
     """
     path = Path(path).resolve()
     if not path.exists():
         raise ValueError(f"{path} not found")
     listing = describe(path, name)
+    category = category or listing.category
+    extensions.category_dir(Path(), category)  # validates it
     url = url or marketplace_url()
     with tempfile.TemporaryDirectory() as tmp:
         _git("clone", "--quiet", url, tmp)
-        dest = Path(tmp, "extensions", f"{listing.name}.py")
+        dest = Path(tmp, category, f"{listing.name}.py")
         if dest.exists() and dest.read_bytes() == path.read_bytes():
             raise ValueError(f"{listing.name} is already published with identical content")
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -330,7 +360,7 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None) -
         branch = f"publish/{listing.name}-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
         title = f"Publish {listing.name} {listing.version}".strip()
         _git("checkout", "-b", branch, cwd=Path(tmp))
-        _git("add", f"extensions/{listing.name}.py", cwd=Path(tmp))
+        _git("add", f"{category}/{listing.name}.py", cwd=Path(tmp))
         _git("commit", "--quiet", "-m", title, cwd=Path(tmp))
         _git("push", "--quiet", "origin", branch, cwd=Path(tmp))
         if shutil.which("gh") is None:
@@ -350,18 +380,25 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None) -
 
 
 def _ext_search(input: dict, ctx: Any) -> str:
-    listings = search(input.get("query", ""))
-    return "\n".join(format_listing(listing) for listing in listings) or "No extensions found."
+    listings = search(input.get("query", ""), category=input.get("category"))
+    return "\n".join(f"{x.category}/{format_listing(x)}" for x in listings) or "No extensions found."
 
 
 def _ext_install(input: dict, ctx: Any) -> str:
     name = input["name"]
-    dest, updated = install(name, input.get("scope", "global"), ctx.cwd)
+    dest, updated = install(name, input.get("scope", "global"), ctx.cwd, category=input.get("category"))
     return f"{'Updated' if updated else 'Installed'} {name} at {dest}. Call reload_extensions to activate it."
 
 
 def _ext_publish(input: dict, ctx: Any) -> str:
-    return publish(Path(ctx.cwd, input["path"]), input.get("name"))
+    return publish(Path(ctx.cwd, input["path"]), input.get("name"), category=input.get("category"))
+
+
+_CATEGORY_SCHEMA = {
+    "type": "string",
+    "enum": list(extensions.CATEGORIES),
+    "description": "extensions (general), themes (colour themes), tools (tools for you) or widgets (UI components)",
+}
 
 
 def register_marketplace_tools(registry: Registry) -> None:
@@ -370,7 +407,7 @@ def register_marketplace_tools(registry: Registry) -> None:
         name="ext_search",
         run=_ext_search,
         description=(
-            "Search the minimal extension marketplace. Returns one line per extension: name, version and "
+            "Search the minimal extension marketplace. Returns one line per extension: category/name, version and "
             "description. Check it before writing a new extension; one may already exist."
         ),
         input_schema={
@@ -379,7 +416,8 @@ def register_marketplace_tools(registry: Registry) -> None:
                 "query": {
                     "type": "string",
                     "description": "Words to match in the name or description; empty lists everything",
-                }
+                },
+                "category": _CATEGORY_SCHEMA,
             },
         },
     )
@@ -387,8 +425,8 @@ def register_marketplace_tools(registry: Registry) -> None:
         name="ext_install",
         run=_ext_install,
         description=(
-            "Install an extension from the marketplace into the global (default) or project extensions folder. "
-            "It is not active until you call reload_extensions."
+            "Install an extension from the marketplace into the global (default) or project extensions folder, "
+            "in the subfolder of its category. It is not active until you call reload_extensions."
         ),
         input_schema={
             "type": "object",
@@ -399,6 +437,7 @@ def register_marketplace_tools(registry: Registry) -> None:
                     "enum": ["global", "project"],
                     "description": "global (every project, default) or project (this folder only)",
                 },
+                "category": {**_CATEGORY_SCHEMA, "description": "Needed only if the name is in several categories"},
             },
             "required": ["name"],
         },
@@ -409,13 +448,15 @@ def register_marketplace_tools(registry: Registry) -> None:
         run=_ext_publish,
         description=(
             "Publish an extension file to the marketplace: pushes a new branch and opens a pull request. "
-            "The file must define register(minimal) and start with a docstring; its first line is the description."
+            "The file must define register(minimal) and start with a docstring; its first line is the description. "
+            "It goes in the category of its folder (for example ~/.minimal/extensions/themes) unless one is given."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "The extension file"},
                 "name": {"type": "string", "description": "Name to publish under (default: the file name)"},
+                "category": _CATEGORY_SCHEMA,
             },
             "required": ["path"],
         },

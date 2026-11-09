@@ -5,8 +5,8 @@ header, then user messages, assistant replies, tool calls and command output),
 the ``bottom`` extension area, the working indicator, the prompt and the status
 line (model, provider, directory, git branch). An optional ``sidebar`` on the
 right holds extension widgets (see
-:meth:`~minimal.registry.Registry.register_widget`). Colours and glyphs come
-from :mod:`minimal.theme`.
+:meth:`~minimal.registry.Registry.register_widget`). Colours come from the
+active theme's CSS variables and glyphs from :mod:`minimal.theme`.
 
 Turns and slash commands run in a worker thread so the UI stays responsive;
 :class:`TuiFrontend` hands their output and confirmations back to the UI
@@ -28,19 +28,19 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from rich.text import Text
 from textual import events, work
 from textual.app import App as TextualApp
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Button, Input, Label, Markdown, OptionList, SelectionList, Static
+from textual.widgets import Input, Label, Markdown, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 from textual.widgets.selection_list import Selection
 
-from minimal import theme
+from minimal import config, theme
 from minimal.app import App, ConsoleFrontend
 from minimal.commands import ExitRepl, find_command, run_command
 
@@ -105,54 +105,44 @@ def _one_line(text: str, limit: int = 160) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
-def _tool_title(call: dict) -> Text:
+def _tool_title(call: dict) -> Content:
     """The tool call's header line, without the state icon: ``$ cmd``, ``read path``, ``name {json}``."""
     name, inp = call["name"], call["input"]
-    title = Text()
     if name == "bash" and isinstance(inp.get("command"), str):
-        title.append("$ ", style=theme.GRAY)
-        title.append(_one_line(inp["command"]), style="bold")
-    elif name in ("read", "write", "edit") and isinstance(inp.get("path"), str):
-        title.append(name, style="bold")
-        title.append(" ")
-        title.append(inp["path"], style=theme.CYAN)
+        return Content.assemble(("$ ", "$muted"), (_one_line(inp["command"]), "bold"))
+    parts: list[str | tuple[str, str]] = [(name, "bold")]
+    if name in ("read", "write", "edit") and isinstance(inp.get("path"), str):
+        parts += [" ", (inp["path"], "$secondary")]
         if name == "read" and ("offset" in inp or "limit" in inp):
             start = inp.get("offset", 1)
             end = f"{start + inp['limit'] - 1}" if isinstance(inp.get("limit"), int) else ""
-            title.append(f":{start}-{end}", style=theme.GRAY)
+            parts.append((f":{start}-{end}", "$muted"))
         if name == "write" and isinstance(inp.get("content"), str):
-            title.append(f" ({len(inp['content'].splitlines())} lines)", style=theme.GRAY)
-    else:
-        title.append(name, style="bold")
-        if inp:
-            title.append(" ")
-            title.append(_one_line(json.dumps(inp, ensure_ascii=False), 120), style=theme.GRAY)
-    return title
+            parts.append((f" ({len(inp['content'].splitlines())} lines)", "$muted"))
+    elif inp:
+        parts += [" ", (_one_line(json.dumps(inp, ensure_ascii=False), 120), "$muted")]
+    return Content.assemble(*parts)
 
 
-def _preview(lines: list[str], style: str, tail: bool = False) -> Text:
+def _preview(lines: list[str], style: str, tail: bool = False) -> Content:
     """At most :data:`PREVIEW_LINES` of ``lines`` (the last ones if ``tail``), saying how many were left out."""
     hidden = len(lines) - PREVIEW_LINES
     shown = (lines[-PREVIEW_LINES:] if tail else lines[:PREVIEW_LINES]) if hidden > 0 else lines
-    text = Text()
+    parts: list[tuple[str, str]] = []
     if hidden > 0 and tail:
-        text.append(f"… {hidden} earlier lines\n", style=theme.DIM_GRAY)
-    text.append("\n".join(shown), style=style)
+        parts.append((f"… {hidden} earlier lines\n", "$dim"))
+    parts.append(("\n".join(shown), style))
     if hidden > 0 and not tail:
-        text.append(f"\n… {hidden} more lines", style=theme.DIM_GRAY)
-    return text
+        parts.append((f"\n… {hidden} more lines", "$dim"))
+    return Content.assemble(*parts)
 
 
-def _edit_diff(inp: dict) -> Text:
+def _edit_diff(inp: dict) -> Content:
     """``old_string`` as removed lines and ``new_string`` as added lines."""
-    text = Text()
-    for sign, key, style in (("-", "old_string", theme.RED), ("+", "new_string", theme.GREEN)):
-        lines = inp[key].splitlines() or [""]
-        part = _preview([f"{sign} {line}" for line in lines], style)
-        if text:
-            text.append("\n")
-        text.append_text(part)
-    return text
+    return Content("\n").join(
+        _preview([f"{sign} {line}" for line in inp[key].splitlines() or [""]], style)
+        for sign, key, style in (("-", "old_string", "$diff-removed"), ("+", "new_string", "$diff-added"))
+    )
 
 
 class ToolBlock(Static):
@@ -164,13 +154,13 @@ class ToolBlock(Static):
     def __init__(self, call: dict) -> None:
         super().__init__(classes="tool -pending")
         self.call = call
-        self.icon = Text(theme.RUNNING, style=theme.YELLOW)
-        self.body: Text | None = None
+        self.icon = Content.styled(theme.RUNNING, "$warning")
+        self.body: Content | None = None
         name, inp = call["name"], call["input"]
         if name == "edit" and isinstance(inp.get("old_string"), str) and isinstance(inp.get("new_string"), str):
             self.body = _edit_diff(inp)
         elif name == "write" and isinstance(inp.get("content"), str):
-            self.body = _preview(inp["content"].splitlines(), theme.GRAY)
+            self.body = _preview(inp["content"].splitlines(), "$muted")
         self.update(self._text())
 
     def finish(self, result: dict) -> None:
@@ -178,43 +168,38 @@ class ToolBlock(Static):
         output = result["content"] if isinstance(result["content"], str) else json.dumps(result["content"])
         lines = output.strip("\n").expandtabs(4).splitlines()
         if result["is_error"]:
-            self.icon = Text(theme.ERROR, style=theme.RED)
-            self.body = _preview(lines, theme.RED)
+            self.icon = Content.styled(theme.ERROR, "$error")
+            self.body = _preview(lines, "$error")
             self.set_classes("tool -error")
         else:
-            self.icon = Text(theme.SUCCESS, style=theme.GREEN)
+            self.icon = Content.styled(theme.SUCCESS, "$success")
             if self.call["name"] not in ("edit", "write") and lines:
-                self.body = _preview(lines, theme.GRAY, tail=self.call["name"] == "bash")
+                self.body = _preview(lines, "$muted", tail=self.call["name"] == "bash")
             self.set_classes("tool -success")
         self.update(self._text())
 
-    def _text(self) -> Text:
-        text = Text.assemble(self.icon, " ", _tool_title(self.call))
-        if self.body:
-            text.append("\n")
-            text.append_text(self.body)
-        return text
+    def _text(self) -> Content:
+        text = Content.assemble(self.icon, " ", _tool_title(self.call))
+        return Content.assemble(text, "\n", self.body) if self.body else text
 
 
 # --- chrome --------------------------------------------------------------------
 
 
-def _header(core: App) -> Text:
+def _header(core: App) -> Content:
     """The welcome block: name and version, key hints, loaded extensions."""
-    text = Text()
-    text.append("minimal", style=f"bold {theme.ACCENT}")
-    text.append(f" v{_version()}" if _version() else "", style=theme.DIM_GRAY)
-    text.append("\n")
+    parts: list[str | tuple[str, str]] = [("minimal", "bold $accent")]
+    if _version():
+        parts.append((f" v{_version()}", "$dim"))
+    parts.append("\n")
     hints = [("/", "commands"), ("ctrl+p", "palette"), ("ctrl+q", "quit")]
     for i, (key, what) in enumerate(hints):
         if i:
-            text.append(theme.DOT, style=theme.DIM_GRAY)
-        text.append(key, style=theme.GRAY)
-        text.append(f" {what}", style=theme.DIM_GRAY)
+            parts.append((theme.DOT, "$dim"))
+        parts += [(key, "$muted"), (f" {what}", "$dim")]
     if core.extensions:
-        text.append("\n\nextensions ", style=theme.DIM_GRAY)
-        text.append(", ".join(p.name for p in core.extensions), style=theme.GRAY)
-    return text
+        parts += [("\n\nextensions ", "$dim"), (", ".join(p.name for p in core.extensions), "$muted")]
+    return Content.assemble(*parts)
 
 
 class Header(Static):
@@ -222,55 +207,92 @@ class Header(Static):
 
 
 class ConfirmScreen(ModalScreen[bool]):
-    """A yes/no question; dismisses with the answer."""
+    """A yes/no question picked with the arrow keys; dismisses with the answer."""
 
     DEFAULT_CSS = """
-    ConfirmScreen { align: center middle; background: $background 30%; }
+    ConfirmScreen { align: center middle; background: $modal-overlay; }
     ConfirmScreen > Vertical {
         width: 80%; max-width: 100; height: auto;
-        padding: 1 2; border: round $warning; background: $surface;
-        border-title-color: $warning; border-title-style: bold;
+        padding: 1 2; background: $surface;
     }
+    ConfirmScreen .title { width: 100%; text-style: bold; margin-bottom: 1; }
     ConfirmScreen #actions { height: auto; margin-top: 1; }
-    ConfirmScreen Button { margin-right: 2; min-width: 12; }
+    ConfirmScreen .choice {
+        width: auto; min-width: 12; margin-right: 2; padding: 0 2;
+        content-align: center middle; background: $panel; color: $muted;
+    }
+    ConfirmScreen #yes.-selected { background: $success; color: $background; text-style: bold; }
+    ConfirmScreen #no.-selected { background: $error; color: $background; text-style: bold; }
     ConfirmScreen #hint { color: $dim; margin-left: 1; }
     """
 
-    BINDINGS = [("y", "answer(True)", "Yes"), ("n", "answer(False)", "No"), ("escape", "answer(False)", "No")]
+    BINDINGS = [
+        ("left,up", "pick(True)", "Allow"),
+        ("right,down", "pick(False)", "Deny"),
+        ("tab", "toggle", "Switch"),
+        ("enter", "confirm", "Confirm"),
+        ("escape", "answer(False)", "Deny"),
+    ]
 
     def __init__(self, question: str) -> None:
         super().__init__()
         self.question = question
+        self.allow = True  # enter on an untouched prompt allows, like most agent harnesses
 
     def compose(self) -> ComposeResult:
-        with Vertical() as box:
-            box.border_title = f"{theme.WARNING} Permission"
+        with Vertical():
+            yield Label(Content.assemble((theme.WARNING, "$warning"), " Permission"), classes="title")
             yield Label(self.question, markup=False)
             with Horizontal(id="actions"):
-                for label, answer, variant in (("Allow  y", "yes", "success"), ("Deny  n", "no", "error")):
-                    button = Button(label, id=answer, variant=variant, compact=True)
-                    button.can_focus = False  # answered with keys or a click; no focus ring
-                    yield button
-                yield Label("esc cancels", id="hint")
+                yield Label("Allow", id="yes", classes="choice -selected")
+                yield Label("Deny", id="no", classes="choice")
+                yield Label("← → choose · enter confirms · esc denies", id="hint")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "yes")
+    def action_pick(self, allow: bool) -> None:
+        self.allow = allow
+        self.query_one("#yes").set_class(allow, "-selected")
+        self.query_one("#no").set_class(not allow, "-selected")
+
+    def action_toggle(self) -> None:
+        self.action_pick(not self.allow)
+
+    def action_confirm(self) -> None:
+        self.dismiss(self.allow)
 
     def action_answer(self, value: bool) -> None:
         self.dismiss(value)
+
+    def on_click(self, event: events.Click) -> None:
+        if event.widget is not None and event.widget.id in ("yes", "no"):
+            self.dismiss(event.widget.id == "yes")
 
 
 class DialogScreen(ModalScreen[Any]):
     """A titled box opened by a command through the frontend; esc cancels (dismisses with ``None``)."""
 
     DEFAULT_CSS = """
-    DialogScreen { align: center middle; background: $background 30%; }
+    DialogScreen { align: center middle; background: $modal-overlay; }
     DialogScreen > Vertical {
         width: 80%; max-width: 100; height: auto; max-height: 80%;
-        padding: 1 2; border: round $accent; background: $surface;
-        border-title-color: $accent; border-title-style: bold;
+        padding: 1 2; background: $surface;
     }
-    DialogScreen OptionList, DialogScreen SelectionList { height: auto; max-height: 20; }
+    DialogScreen .title {
+        width: 100%; text-style: bold; margin-bottom: 1;
+        text-wrap: nowrap; text-overflow: ellipsis;
+    }
+    DialogScreen OptionList, DialogScreen SelectionList { height: auto; max-height: 20; background: $surface; }
+    DialogScreen OptionList:focus, DialogScreen SelectionList:focus { background-tint: $foreground 0%; }
+    DialogScreen OptionList > .option-list--option-highlighted,
+    DialogScreen OptionList:focus > .option-list--option-highlighted,
+    DialogScreen SelectionList > .option-list--option-highlighted,
+    DialogScreen SelectionList:focus > .option-list--option-highlighted {
+        color: $foreground; background: $panel; text-style: bold;
+    }
+    DialogScreen SelectionList > .selection-list--button { color: $border-muted; background: $surface; }
+    DialogScreen SelectionList > .selection-list--button-highlighted { color: $border-muted; background: $panel; }
+    DialogScreen SelectionList > .selection-list--button-selected { color: $success; background: $surface; }
+    DialogScreen SelectionList > .selection-list--button-selected-highlighted { color: $success; background: $panel; }
+    DialogScreen Input.-textual-compact { background: $panel; padding: 0 1; }
     DialogScreen .hint { color: $dim; margin-top: 1; }
     """
 
@@ -282,8 +304,8 @@ class DialogScreen(ModalScreen[Any]):
         self.heading = heading  # not ``title``: Screen.title is a reactive
 
     def compose(self) -> ComposeResult:
-        with Vertical() as box:
-            box.border_title = self.heading
+        with Vertical():
+            yield Label(self.heading, classes="title", markup=False)
             yield self.body()
             yield Label(self.HINT, classes="hint")
 
@@ -305,7 +327,7 @@ class ChoiceScreen(DialogScreen):
         self.options = options
 
     def body(self) -> Widget:
-        return OptionList(*(Option(Text(label), id=value) for value, label in self.options))
+        return OptionList(*(Option(Content(label), id=value) for value, label in self.options), compact=True)
 
     def on_mount(self) -> None:
         if self.options:
@@ -327,7 +349,9 @@ class ChecklistScreen(DialogScreen):
         self.options = options
 
     def body(self) -> Widget:
-        return SelectionList[str](*(Selection(Text(label), value, checked) for value, label, checked in self.options))
+        return SelectionList[str](
+            *(Selection(Content(label), value, checked) for value, label, checked in self.options), compact=True
+        )
 
     def on_mount(self) -> None:
         if self.options:
@@ -344,7 +368,7 @@ class TextScreen(DialogScreen):
     HINT = "enter confirms · esc cancels"
 
     def body(self) -> Widget:
-        return Input()
+        return Input(compact=True)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()  # otherwise MinimalTui.on_input_submitted sends it as a message
@@ -379,7 +403,13 @@ class TuiFrontend:
         self._on_ui(self.tui.end_turn, error)
 
     def reloaded(self) -> None:
-        self._on_ui(self.tui.remount_widgets)
+        self._on_ui(self.tui.extensions_reloaded)
+
+    def themes(self) -> tuple[list[str], str | None]:
+        return list(self.tui.available_themes), self.tui.theme
+
+    def set_theme(self, name: str) -> None:
+        self._on_ui(setattr, self.tui, "theme", name)
 
     def _modal(self, screen: ModalScreen) -> Any:
         """Show ``screen`` from a worker thread and wait for its dismiss value (``None`` on quit)."""
@@ -444,7 +474,8 @@ class MinimalTui(TextualApp):
     Header { padding: 1 1 0 1; }
     .user { background: $user-message-bg; padding: 1 2; margin-top: 1; }
     Markdown.assistant { padding: 0 1; margin-top: 1; }
-    Markdown.assistant MarkdownBlock:dark > .code_inline { background: $surface; color: $md-code; }
+    Markdown.assistant MarkdownBlock:dark > .code_inline,
+    Markdown.assistant MarkdownBlock:light > .code_inline { background: $surface; color: $md-code; }
     Markdown.assistant MarkdownFence { background: $surface; }
     Markdown.assistant MarkdownBullet { color: $accent; }
     .tool { padding: 1 2; margin-top: 1; }
@@ -470,11 +501,10 @@ class MinimalTui(TextualApp):
     #status-right { width: auto; color: $dim; padding: 0 1 0 2; }
     """
 
-    def __init__(self, core: App) -> None:
+    def __init__(self, core: App, theme_name: str | None = None) -> None:
         super().__init__()
-        self.register_theme(theme.THEME)
-        self.theme = theme.THEME.name
         self.core = core
+        self.sync_themes(theme_name)
         self.ui_thread: int | None = None
         self.pending_modal: threading.Event | None = None
         self.assistant: Markdown | None = None
@@ -535,7 +565,7 @@ class MinimalTui(TextualApp):
             transcript.anchor()
 
     def show_error(self, text: str) -> Any:
-        return self._add(Static(Text(f"{theme.ERROR} {text}"), classes="error"))
+        return self._add(Static(Content(f"{theme.ERROR} {text}"), classes="error"))
 
     def on_print(self, event: events.Print) -> None:
         """Show printed text (command output, extension messages) as an output block."""
@@ -576,7 +606,29 @@ class MinimalTui(TextualApp):
             return self.show_error(f"Error: {error}")
         return None
 
-    # --- extension widgets ---------------------------------------------------
+    # --- extension themes and widgets ----------------------------------------
+
+    def sync_themes(self, prefer: str | None = None) -> None:
+        """Offer the built-in theme plus the ones extensions registered, and nothing else.
+
+        Textual's own themes are dropped: they lack the UI's CSS variables.
+        Switches to ``prefer`` if offered, and to the default if the current theme is gone.
+        """
+        wanted = theme.available(self.core.registry)
+        for t in wanted.values():
+            self.register_theme(t)
+        if prefer in wanted:
+            self.theme = prefer
+        elif self.theme not in wanted:
+            self.theme = theme.DEFAULT
+        for name in set(self.available_themes) - set(wanted):
+            self.unregister_theme(name)
+
+    async def extensions_reloaded(self) -> None:
+        """Pick up the reloaded registry: its themes (an edited one repaints) and its widgets."""
+        self.sync_themes()
+        self.refresh_css(animate=False)
+        await self.remount_widgets()
 
     async def remount_widgets(self) -> None:
         """Replace every extension widget with fresh ones from the registry."""
@@ -609,21 +661,22 @@ class MinimalTui(TextualApp):
 
     def refresh_status(self) -> None:
         core = self.core
-        sep = Text(f" {theme.SEPARATOR} ", style=theme.DARK_GRAY)
-        left = Text(" ")
-        left.append(f"{theme.MODEL} {core.model}", style=theme.STATUS_MODEL)
-        left.append(f"{theme.DOT}{core.provider_name}", style=theme.GRAY)
-        left.append_text(sep)
-        left.append(_short_path(core.cwd), style=theme.STATUS_PATH)
+        sep = (f" {theme.SEPARATOR} ", "$border-muted")
+        parts: list[str | tuple[str, str]] = [
+            " ",
+            (f"{theme.MODEL} {core.model}", "$status-model"),
+            (f"{theme.DOT}{core.provider_name}", "$muted"),
+            sep,
+            (_short_path(core.cwd), "$status-path"),
+        ]
         git = git_status(core.cwd)
         if git is not None:
             branch, dirty = git
-            left.append_text(sep)
-            color = theme.STATUS_GIT_DIRTY if dirty else theme.STATUS_GIT_CLEAN
-            left.append(f"{theme.BRANCH} {branch}{' *' if dirty else ''}", style=color)
-        self.query_one("#status-left", Static).update(left)
+            color = "$status-git-dirty" if dirty else "$status-git-clean"
+            parts += [sep, (f"{theme.BRANCH} {branch}{' *' if dirty else ''}", color)]
+        self.query_one("#status-left", Static).update(Content.assemble(*parts))
         self.query_one("#status-right", Static).update(
-            Text(f"{len(core.extensions)} ext{theme.DOT}session {core.session.id}")
+            Content(f"{len(core.extensions)} ext{theme.DOT}session {core.session.id}")
         )
 
     def set_busy(self, busy: bool) -> None:
@@ -641,7 +694,7 @@ class MinimalTui(TextualApp):
         elapsed = time.monotonic() - self.busy_since
         frame = theme.SPINNER[int(elapsed / 0.08) % len(theme.SPINNER)]
         self.query_one("#working", Static).update(
-            Text.assemble((frame, theme.ACCENT), " ", ("Working…", theme.GRAY), (f" {elapsed:.0f}s", theme.DIM_GRAY))
+            Content.assemble((frame, "$accent"), " ", ("Working…", "$muted"), (f" {elapsed:.0f}s", "$dim"))
         )
 
     # --- input ---------------------------------------------------------------
@@ -699,5 +752,9 @@ class MinimalTui(TextualApp):
 
 
 def run_tui(core: App) -> None:
-    """Run the terminal UI until the user quits."""
-    MinimalTui(core).run()
+    """Run the terminal UI until the user quits; remember the theme picked with /theme or ctrl+p."""
+    tui = MinimalTui(core, config.load_theme())
+    started = tui.theme
+    tui.run()
+    if tui.theme != started:
+        config.save_theme(tui.theme)

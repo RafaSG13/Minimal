@@ -36,13 +36,16 @@ BASE_PROMPT = (
 SELF_EXTEND_PROMPT = (
     "You can extend minimal, the harness you are running in. An extension is one Python file defining "
     "register(minimal); minimal is the Registry (API and docstrings: {registry_path}). Save new extensions to "
-    "{global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this project. "
+    "{global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this project; themes, "
+    "tools and UI widgets go in the themes/, tools/ or widgets/ subfolder, as the marketplace groups them. "
     "minimal.register_tool(name, run, description, input_schema, confirm) adds a tool run(input, ctx); "
     "minimal.register_command(name, run, description, terminal=False) adds a slash command run(args, ctx); "
     'minimal.register_provider(...) adds a model; minimal.on("tool_call"|"tool_result"|"turn_end", handler) hooks events; '
     "minimal.append_system_prompt(text) adds instructions; minimal.register_widget(name, create, area) adds a visual "
     'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '
-    "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn. "
+    "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn; "
+    "minimal.register_theme(name, dark=..., background=..., foreground=..., accent=..., **more #rrggbb colours) "
+    "adds a colour theme the user picks with /theme. "
     "After writing or editing an extension, call reload_extensions and fix any reported errors. "
     "Share and reuse extensions with ext_search, ext_install and ext_publish."
 )
@@ -108,6 +111,12 @@ class Frontend(Protocol):
 
     def reloaded(self) -> None:
         """Extensions were reloaded (widgets may have changed)."""
+
+    def themes(self) -> tuple[list[str], str | None]:
+        """The colour themes on offer and the current one; ``([], None)`` if the frontend has none."""
+
+    def set_theme(self, name: str) -> None:
+        """Switch to colour theme ``name``, one of :meth:`themes`."""
 
 
 class ConsoleFrontend:
@@ -183,6 +192,12 @@ class ConsoleFrontend:
 
     def reloaded(self) -> None:
         pass
+
+    def themes(self) -> tuple[list[str], str | None]:
+        return [], None
+
+    def set_theme(self, name: str) -> None:
+        raise ValueError("colour themes only apply to the terminal UI")
 
 
 class App:

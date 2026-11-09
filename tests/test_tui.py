@@ -11,7 +11,15 @@ from minimal.app import App
 from minimal.providers.base import Reply
 from minimal.registry import Registry
 from minimal.session import Session
-from minimal.tui import ChecklistScreen, ConfirmScreen, MinimalTui, TextScreen, ToolBlock, _outside_event_loop
+from minimal.tui import (
+    ChecklistScreen,
+    ChoiceScreen,
+    ConfirmScreen,
+    MinimalTui,
+    TextScreen,
+    ToolBlock,
+    _outside_event_loop,
+)
 
 
 class StreamingFakeProvider:
@@ -101,7 +109,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await self.submit(pilot, "write it")
             await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
             self.assertTrue(app.query_one(ToolBlock).has_class("-pending"))
-            await pilot.press("y")
+            await pilot.press("enter")  # Allow is preselected
             await self.wait_until(pilot, self.idle(app))
             self.assertTrue(app.query_one(ToolBlock).has_class("-success"))
         self.assertEqual((self.tmp / "out.txt").read_text(), "x")
@@ -112,7 +120,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             await self.submit(pilot, "write it")
             await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
-            await pilot.press("n")
+            await pilot.press("right", "enter")
             await self.wait_until(pilot, self.idle(app))
             block = app.query_one(ToolBlock)
             self.assertTrue(block.has_class("-error"))
@@ -155,6 +163,24 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.1)
             self.assertTrue(any("'hi'" in o for o in self.outputs(app)), self.outputs(app))
             self.assertEqual(len(app.query(".user")), 0)
+
+    async def test_theme_command_switches_and_reload_falls_back(self):
+        self.core.registry.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            self.assertEqual(app.theme, "minimal")
+            await self.submit(pilot, "/theme")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, ChoiceScreen))
+            await pilot.press("down", "enter")  # minimal, ocean
+            await self.wait_until(pilot, self.idle(app))
+            self.assertEqual(app.theme, "ocean")
+            await self.submit(pilot, "/theme nord")  # not installed: keeps the current theme
+            await self.wait_until(pilot, self.idle(app))
+            self.assertEqual(app.theme, "ocean")
+            await self.submit(pilot, "/reload")  # rebuilds the registry from disk, where ocean is not
+            await self.wait_until(pilot, self.idle(app))
+            self.assertEqual(app.theme, "minimal")
+            self.assertEqual(list(app.available_themes), ["minimal"])
 
     async def test_terminal_command_can_run_its_own_event_loop(self):
         # /setup's questionary menus call asyncio.run on the UI thread.
