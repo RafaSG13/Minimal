@@ -1,0 +1,14 @@
+README.md
+  h_e81853c41416fb 280,284-286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b726176bf90c05fc7ed32fe25e3591efb2c38d87",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
