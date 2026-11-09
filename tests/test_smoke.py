@@ -1,3 +1,6 @@
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,6 +60,43 @@ class SmokeTest(unittest.TestCase):
     def test_bash(self):
         self.assertRegex(self.run_tool("bash", command="echo ok; exit 3"), r"ok[\s\S]*\[exit 3\]")
         self.assertIn("(timeout)", self.run_tool("bash", command="sleep 5", timeout_ms=100))
+
+    def test_search_tools(self):
+        root = Path(self.cwd)
+        for name, text in {
+            "src/a.py": "def foo():\n    return 1\n",
+            "src/sub/b.py": "FOO = 2\n",
+            "notes.md": "foo\n",
+            ".hidden/c.py": "foo\n",
+        }.items():
+            self.run_tool("write", path=name, content=text)
+        (root / "bin.dat").write_bytes(b"foo\0bar")
+
+        self.assertEqual(
+            self.run_tool("grep", pattern="foo", ignore_case=True, glob="*.py"),
+            "src/a.py:1:def foo():\nsrc/sub/b.py:1:FOO = 2",
+        )
+        out = self.run_tool("grep", pattern="foo")
+        self.assertIn("notes.md:1:foo", out)
+        self.assertNotIn("bin.dat", out)
+        self.assertEqual(self.run_tool("grep", pattern="zzz"), "No matches")
+        with self.assertRaises(re.error):
+            self.run_tool("grep", pattern="(")
+
+        self.assertEqual(self.run_tool("glob", pattern="src/*.py"), "src/a.py")
+        self.assertEqual(self.run_tool("glob", pattern="src/**/*.py"), "src/a.py\nsrc/sub/b.py")
+        self.assertEqual(self.run_tool("glob", pattern="*.{py,md}"), "notes.md\nsrc/a.py\nsrc/sub/b.py")
+        self.assertEqual(self.run_tool("glob", pattern="*.rs"), "No files found")
+        self.assertEqual(self.run_tool("glob", pattern="*.py", path="src/sub"), "src/sub/b.py")
+
+    def test_search_tools_respect_gitignore(self):
+        if shutil.which("git") is None:
+            self.skipTest("git not installed")
+        subprocess.run(["git", "init", "-q"], cwd=self.cwd, check=True)
+        for name, text in {".gitignore": "build/\n", "build/out.py": "foo\n", "main.py": "foo\n"}.items():
+            self.run_tool("write", path=name, content=text)
+        self.assertEqual(self.run_tool("glob", pattern="*.py"), "main.py")
+        self.assertEqual(self.run_tool("grep", pattern="foo", glob="*.py"), "main.py:1:foo")
 
     def test_guardrail(self):
         r = self.registry.emit("tool_call", {"name": "bash", "input": {"command": "rm -rf /"}})

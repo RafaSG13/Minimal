@@ -1,4 +1,4 @@
-"""Built-in tools: ``read``, ``write``, ``edit``, ``bash`` and ``reload_extensions``.
+"""Built-in tools: ``read``, ``write``, ``edit``, ``bash``, ``grep``, ``glob`` and ``reload_extensions``.
 
 Each tool is a function ``(input: dict, ctx) -> str`` followed by its
 :class:`~minimal.registry.Tool` definition (description and JSON schema shown
@@ -9,6 +9,7 @@ the agent loop sends the error back to the model as an ``is_error`` result.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 from pathlib import Path
@@ -44,6 +45,112 @@ def _read_text(path: Path) -> str:
 def _write_text(path: Path, content: str) -> None:
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(content)
+
+
+GREP_LIMIT = 200
+"""Most matching lines :func:`grep` returns."""
+GLOB_LIMIT = 500
+"""Most paths :func:`glob` returns."""
+_LINE_CHARS = 300  # grep output lines are cut to this length (minified files)
+_SKIP_DIRS = frozenset({"node_modules", "__pycache__"})  # pruned outside git, besides hidden dirs
+
+
+def _display(path: Path, ctx: Any) -> str:
+    """``path`` relative to the working directory when inside it, so it can be passed to ``read``."""
+    try:
+        return path.relative_to(Path(ctx.cwd).resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _list_files(root: Path) -> list[Path]:
+    """Sorted files under ``root``: ``git ls-files`` in a repo (honours .gitignore), else a walk."""
+    if not root.exists():
+        raise FileNotFoundError(f"No such file or directory: {root}")
+    if root.is_file():
+        return [root]
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=root,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        names = proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+        # is_file drops deleted-but-tracked files and submodule directories.
+        files = [f for f in (root / p for p in names if p) if f.is_file()]
+    else:
+        files = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS]
+            files.extend(Path(dirpath, name) for name in filenames)
+    return sorted(files)
+
+
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """Translate a glob (``**``, ``*``, ``?``, ``[...]``, ``{a,b}``) into a regex for ``fullmatch``."""
+    parts: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if pattern.startswith("**/", i):
+            parts.append("(?:.*/)?")
+            i += 3
+            continue
+        if pattern.startswith("**", i):
+            parts.append(".*")
+            i += 2
+            continue
+        if c == "*":
+            parts.append("[^/]*")
+        elif c == "?":
+            parts.append("[^/]")
+        elif c == "[":
+            j = pattern.find("]", i + 2)
+            if j == -1:
+                parts.append(re.escape("["))
+            else:
+                body = pattern[i + 1 : j]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                parts.append("[" + body.replace("\\", "\\\\") + "]")
+                i = j
+        elif c == "{":
+            parts.append("(?:")
+            depth += 1
+        elif c == "}" and depth > 0:
+            parts.append(")")
+            depth -= 1
+        elif c == "," and depth > 0:
+            parts.append("|")
+        else:
+            parts.append(re.escape(c))
+        i += 1
+    return re.compile("".join(parts))
+
+
+def _filter_glob(files: list[Path], root: Path, pattern: str) -> list[Path]:
+    """Files matching ``pattern``: by name at any depth if it has no ``/``, else by path relative to ``root``."""
+    pattern = pattern.removeprefix("./")
+    regex = _glob_regex(pattern)
+    if "/" not in pattern:
+        return [f for f in files if regex.fullmatch(f.name)]
+    return [f for f in files if regex.fullmatch(f.name if f == root else f.relative_to(root).as_posix())]
+
+
+def _searchable_text(path: Path) -> str | None:
+    """File contents as text, or ``None`` if unreadable or binary (NUL byte in the first 8 KiB)."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in data[:8192]:
+        return None
+    return data.decode("utf-8", errors="replace")
 
 
 _PATH = {"type": "string", "description": "File path"}
@@ -205,6 +312,93 @@ BASH = Tool(
 )
 
 
+# --- grep --------------------------------------------------------------------
+
+
+def grep(input: dict, ctx: Any) -> str:
+    """Return ``path:line:text`` for each line matching the regex ``pattern``, at most ``GREP_LIMIT``."""
+    regex = re.compile(input["pattern"], re.IGNORECASE if input.get("ignore_case") else 0)
+    root = _resolve(ctx, input.get("path", "."))
+    files = _list_files(root)
+    if input.get("glob"):
+        files = _filter_glob(files, root, input["glob"])
+
+    out: list[str] = []
+    for file in files:
+        text = _searchable_text(file)
+        if text is None:
+            continue
+        shown = _display(file, ctx)
+        for n, line in enumerate(text.splitlines(), 1):
+            if regex.search(line):
+                out.append(f"{shown}:{n}:{line[:_LINE_CHARS]}")
+                if len(out) == GREP_LIMIT:
+                    out.append(f"... [stopped after {GREP_LIMIT} matches; narrow pattern, path or glob]")
+                    return clip("\n".join(out))
+    if not out:
+        return "No matches"
+    return clip("\n".join(out))
+
+
+GREP = Tool(
+    name="grep",
+    description=(
+        "Search file contents with a Python regular expression. Returns path:line:text for each matching line "
+        f"(at most {GREP_LIMIT}). Skips binary files and, in a git repo, files ignored by .gitignore. "
+        "Use glob to filter files, e.g. '*.py' (no '/': matches file names at any depth) or 'src/**/*.ts'."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regular expression (Python re syntax)"},
+            "path": {"type": "string", "description": "File or directory to search (default: working directory)"},
+            "glob": {
+                "type": "string",
+                "description": "Only search files matching this glob, e.g. '*.py' or 'src/**/*.{ts,tsx}'",
+            },
+            "ignore_case": {"type": "boolean", "description": "Case-insensitive match"},
+        },
+        "required": ["pattern"],
+    },
+    run=grep,
+)
+
+
+# --- glob --------------------------------------------------------------------
+
+
+def glob(input: dict, ctx: Any) -> str:
+    """List files under ``path`` matching ``pattern``, sorted by path, at most ``GLOB_LIMIT``."""
+    root = _resolve(ctx, input.get("path", "."))
+    files = _filter_glob(_list_files(root), root, input["pattern"])
+    if not files:
+        return "No files found"
+    out = [_display(f, ctx) for f in files[:GLOB_LIMIT]]
+    if len(files) > GLOB_LIMIT:
+        out.append(f"... [{len(files) - GLOB_LIMIT} more files]")
+    return clip("\n".join(out))
+
+
+GLOB = Tool(
+    name="glob",
+    description=(
+        "Find files by path pattern. '**' matches any number of directories, '*' and '?' stay within one, "
+        "'{a,b}' alternatives and '[abc]' classes work. A pattern without '/' matches file names at any depth "
+        "('*.py'); with '/' it is matched against the path relative to path ('src/**/*.py'). "
+        f"Returns at most {GLOB_LIMIT} paths. In a git repo, files ignored by .gitignore are skipped."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py' or '*.md'"},
+            "path": {"type": "string", "description": "Directory to search (default: working directory)"},
+        },
+        "required": ["pattern"],
+    },
+    run=glob,
+)
+
+
 # --- reload_extensions -------------------------------------------------------
 
 
@@ -233,7 +427,7 @@ RELOAD = Tool(
 
 # --- registration ------------------------------------------------------------
 
-BUILTIN_TOOLS: tuple[Tool, ...] = (READ, WRITE, EDIT, BASH, RELOAD)
+BUILTIN_TOOLS: tuple[Tool, ...] = (READ, WRITE, EDIT, BASH, GREP, GLOB, RELOAD)
 
 
 def register_builtin_tools(registry: Registry) -> None:

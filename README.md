@@ -224,7 +224,7 @@ src/minimal/
     claude_auth.py   browser login (OAuth PKCE) and token storage (~/.minimal/claude-auth.json)
     gemini.py        Gemini via the Google Interactions API
   registry.py        Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
-  tools.py           built-in tools: read, write, edit, bash, reload_extensions
+  tools.py           built-in tools: read, write, edit, bash, grep, glob, reload_extensions
   extensions.py      finds extension files and calls their register(minimal)
   marketplace.py     git-based marketplaces: list, search, install, publish (~/.minimal/marketplace cache)
   session.py         JSONL sessions (~/.minimal/sessions)
