@@ -10,7 +10,7 @@ src/minimal/
     claude.py      Claude via a Pro/Max subscription (browser login)
     claude_auth.py browser login (OAuth PKCE) and token storage (~/.minimal/claude-auth.json)
     gemini.py      Gemini via the Google Interactions API
-  registry.py    Registry, Tool, Command, WidgetSpec: where tools, commands, providers, hooks and widgets are registered
+  registry.py    Registry, Tool, Command, WidgetSpec: where tools, commands, providers, hooks, widgets, themes and the header logo are registered
   tools.py       built-in tools: read, write, edit, bash, reload_extensions
   extensions.py  finds extension files and calls their register(minimal)
   marketplace.py git-based extension marketplaces: list, search, install, publish (~/.minimal/marketplace cache)
@@ -22,16 +22,18 @@ src/minimal/
   setup.py       onboarding wizard: provider, login or API key, model
   theme.py       the built-in black-and-white theme, building extension themes for Textual, and the glyphs of the terminal UI
   tui.py         Textual terminal UI: welcome header, transcript, tool-call blocks, prompt, status line, confirm dialog, extension widget areas
+  logo.py        python -m minimal.logo: turns an image into a header-logo extension (needs Pillow)
   cli.py         option parsing, entry point
 extensions/
   example.py     example extension (tool, command, guardrail, prompt note, sidebar widget)
 tests/
-  test_smoke.py       tools, extensions, hot reload, agent loop, sessions
+  test_smoke.py       tools, extensions, hot reload, agent loop, sessions, logo validation
   test_providers.py   provider conversions (Gemini history/streaming, Anthropic/Claude request)
   test_claude_auth.py browser login round trip, token refresh
   test_config.py      saved keys and config, how the startup provider is chosen
   test_marketplace.py search, install, publish, the /ext picker and saved marketplaces against local bare git repositories
-  test_tui.py         the terminal UI: streaming, confirm, checklist and text dialogs, tool-call states, command output, widgets
+  test_tui.py         the terminal UI: streaming, confirm, checklist and text dialogs, tool-call states, command output, widgets, header wordmark and logo alignment
+  test_logo.py        the image-to-logo converter (skipped without Pillow)
 ```
 
 ## Architecture
@@ -108,6 +110,7 @@ def register(minimal):
     minimal.append_system_prompt("Extra instructions for the model.")
     minimal.register_widget("panel", lambda ctx: MyPanel(), area="sidebar")         # top, bottom or sidebar
     minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
+    minimal.register_logo(["#.#", "###"], {"#": "#4fc3f7"}, align="center")         # pixel art in the header
 ```
 
 `ctx` exposes `cwd`, `messages`, `provider_name`, `model` and `registry`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself.
@@ -115,6 +118,14 @@ def register(minimal):
 A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
 
 A theme needs `background`, `foreground` and `accent` (`#rrggbb`); the other colours (`surface`, `muted`, `error`, `user_bg`, `diff_added`, … see `Registry.register_theme`) are optional and derived when left out. Registered themes appear in `/theme` and ctrl+p → Theme; the built-in `minimal` cannot be replaced. If a reload removes the active theme, the UI goes back to `minimal`.
+
+Without a logo, the welcome header is a left-aligned wordmark, `─●─  m i n i m a l ▌  ─●─`, with the tagline `bare by default. yours by config.` and the version under it. A logo replaces the wordmark with pixel art; `align` (`"left"`, `"center"` by default, or `"right"`) places it and the header text under it. `art` is a list of equal-length strings, one character per pixel (`" "` or `"."` transparent); `colors` maps every other character to `#rrggbb` or a theme variable such as `$accent` or `$foreground`, so the logo can follow `/theme`. Two pixel rows make one terminal row, drawn with half blocks (`▀▄█`) in truecolor. The last logo loaded wins. The marketplace's `widgets/logo.py` is a gradient pixel-art M with the `minimal` wordmark; its colours are constants at the top of the file. To make a logo from any image (pixel art or a picture), convert it with Pillow, which minimal does not depend on:
+
+```bash
+uv run --with pillow python -m minimal.logo logo.png -w 24 -o ~/.minimal/extensions/widgets/logo.py   # then /reload
+```
+
+`-w` is the width in pixels (one terminal column each; images only shrink), `-c` the most colours to keep (default 16; pixel art with no more keeps its exact colours), `--nearest` resizes without smoothing for pixel art. Without `-o` the extension is printed.
 
 ### Self-extension and hot reload
 

@@ -11,6 +11,7 @@ An extension is a ``.py`` file that defines ``register(minimal)``, where ``minim
         minimal.append_system_prompt("Extra instructions.")
         minimal.register_widget("panel", lambda ctx: MyWidget(), area="sidebar")
         minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
+        minimal.register_logo(["#.#", "###"], {"#": "#4fc3f7"})
 
 Search order (each folder in sorted order, files starting with ``_`` skipped):
 
@@ -104,10 +105,10 @@ def extension_files(directory: Path) -> list[Path]:
 
 
 def _py_files(directory: Path) -> list[Path]:
-    """Sorted ``*.py`` files in ``directory`` not starting with ``_``; empty if it doesn't exist."""
+    """Sorted ``*.py`` files in ``directory`` not starting with ``_`` or ``.``; empty if it doesn't exist."""
     if not directory.is_dir():
         return []
-    return sorted(p for p in directory.glob("*.py") if not p.name.startswith("_"))
+    return sorted(p for p in directory.glob("*.py") if not p.name.startswith(("_", ".")))
 
 
 def _load_extension(file: Path, registry: Registry) -> None:

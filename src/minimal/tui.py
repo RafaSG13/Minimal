@@ -1,10 +1,10 @@
 """The interactive terminal UI, built with Textual.
 
 Layout, top to bottom: the ``top`` extension area, the transcript (a welcome
-header, then user messages, assistant replies, tool calls and command output),
-the ``bottom`` extension area, the working indicator, the prompt and the status
-line (model, provider, directory, git branch). An optional ``sidebar`` on the
-right holds extension widgets (see
+header (the built-in wordmark or an extension's pixel-art logo), then user messages, assistant
+replies, tool calls and command output), the ``bottom`` extension area, the
+working indicator, the prompt and the status line (model, provider, directory,
+git branch). An optional ``sidebar`` on the right holds extension widgets (see
 :meth:`~minimal.registry.Registry.register_widget`). Colours come from the
 active theme's CSS variables and glyphs from :mod:`minimal.theme`.
 
@@ -43,9 +43,13 @@ from textual.widgets.selection_list import Selection
 from minimal import config, theme
 from minimal.app import App, ConsoleFrontend
 from minimal.commands import ExitRepl, find_command, run_command
+from minimal.registry import LOGO_ALIGN, LogoSpec
 
 PREVIEW_LINES = 8
 """Most output lines shown under a tool call."""
+
+TAGLINE = "bare by default. yours by config."
+"""Second line of the default welcome header."""
 
 
 @contextmanager
@@ -186,12 +190,54 @@ class ToolBlock(Static):
 # --- chrome --------------------------------------------------------------------
 
 
-def _header(core: App) -> Content:
-    """The welcome block: name and version, key hints, loaded extensions."""
-    parts: list[str | tuple[str, str]] = [("minimal", "bold $accent")]
+def _logo(spec: LogoSpec) -> Content:
+    """``spec``'s pixel art as text: each terminal row draws two pixel rows with half blocks."""
+    rows = list(spec.art)
+    if len(rows) % 2:
+        rows.append("." * len(rows[0]))
+    lines = []
+    for top_row, bottom_row in zip(rows[0::2], rows[1::2]):
+        parts: list[str | tuple[str, str]] = []
+        for t, b in zip(top_row, bottom_row):
+            top, bottom = spec.colors.get(t), spec.colors.get(b)
+            if top is None and bottom is None:
+                parts.append(" ")
+            elif bottom is None:
+                parts.append((theme.UPPER_HALF, top))
+            elif top is None:
+                parts.append((theme.LOWER_HALF, bottom))
+            elif top == bottom:
+                parts.append((theme.FULL_BLOCK, top))
+            else:
+                parts.append((theme.UPPER_HALF, f"{top} on {bottom}"))
+        lines.append(Content.assemble(*parts))
+    return Content("\n").join(lines)
+
+
+def _wordmark() -> Content:
+    """The default welcome header (no extension logo): the spaced name between two nodes, then the tagline and version."""
+    parts: list[str | tuple[str, str]] = [
+        (theme.HEADER_NODE, "$muted"),
+        "  ",
+        ("m i n i m a l", "bold $accent"),
+        " ",
+        (theme.CURSOR, "$accent"),
+        "  ",
+        (theme.HEADER_NODE, "$muted"),
+        "\n",
+        " " * (len(theme.HEADER_NODE) + 2),
+        (TAGLINE, "$muted"),
+    ]
     if _version():
-        parts.append((f" v{_version()}", "$dim"))
-    parts.append("\n")
+        parts.append((f"  v{_version()}", "$dim"))
+    return Content.assemble(*parts)
+
+
+def _header(core: App) -> Content:
+    """The header text: version (only under a logo; the wordmark has its own), key hints, loaded extensions."""
+    parts: list[str | tuple[str, str]] = []
+    if core.registry.logo is not None and _version():
+        parts += [(f"v{_version()}", "$dim"), "\n"]
     hints = [("/", "commands"), ("ctrl+p", "palette"), ("ctrl+q", "quit")]
     for i, (key, what) in enumerate(hints):
         if i:
@@ -202,8 +248,23 @@ def _header(core: App) -> Content:
     return Content.assemble(*parts)
 
 
-class Header(Static):
-    """The welcome block at the top of the transcript."""
+class Header(Vertical):
+    """The welcome block at the top of the transcript: the extension logo or the default wordmark, aligned as the logo asks (left without one), then the header text."""
+
+    def __init__(self, core: App) -> None:
+        super().__init__()
+        self.core = core
+
+    def compose(self) -> ComposeResult:
+        logo = self.core.registry.logo
+        align = logo.align if logo is not None else "left"
+        for value in LOGO_ALIGN:
+            self.set_class(value == align, f"-align-{value}")
+        if logo is not None:
+            yield Static(_logo(logo), classes="logo")
+        else:
+            yield Static(_wordmark(), classes="wordmark")
+        yield Static(_header(self.core), classes="info")
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -471,7 +532,11 @@ class MinimalTui(TextualApp):
     }
     #sidebar.-has-widgets { display: block; }
 
-    Header { padding: 1 1 0 1; }
+    Header { height: auto; padding: 1 1 0 1; }
+    Header.-align-center Static { text-align: center; }
+    Header.-align-right Static { text-align: right; }
+    Header .logo, Header .wordmark { text-wrap: nowrap; text-overflow: clip; }
+    Header .wordmark { margin-bottom: 1; }
     .user { background: $user-message-bg; padding: 1 2; margin-top: 1; }
     Markdown.assistant { padding: 0 1; margin-top: 1; }
     Markdown.assistant MarkdownBlock:dark > .code_inline,
@@ -521,7 +586,7 @@ class MinimalTui(TextualApp):
             with Vertical(id="main"):
                 yield Vertical(id="top")
                 with VerticalScroll(id="transcript"):
-                    yield Header(_header(self.core))
+                    yield Header(self.core)
                 yield Vertical(id="bottom")
                 yield Static(id="working")
                 with Horizontal(id="composer"):
@@ -625,10 +690,12 @@ class MinimalTui(TextualApp):
             self.unregister_theme(name)
 
     async def extensions_reloaded(self) -> None:
-        """Pick up the reloaded registry: its themes (an edited one repaints) and its widgets."""
+        """Pick up the reloaded registry: its themes (an edited one repaints), its widgets and the header (logo and extensions list)."""
         self.sync_themes()
         self.refresh_css(animate=False)
         await self.remount_widgets()
+        for header in self.query(Header):
+            await header.recompose()
 
     async def remount_widgets(self) -> None:
         """Replace every extension widget with fresh ones from the registry."""
@@ -742,7 +809,7 @@ class MinimalTui(TextualApp):
             transcript = self.query_one("#transcript", VerticalScroll)
             transcript.remove_children()
             transcript.anchor(False)
-            transcript.mount(Header(_header(self.core)))
+            transcript.mount(Header(self.core))
             self.shown_session = self.core.session
             self.assistant = None
         self.refresh_status()

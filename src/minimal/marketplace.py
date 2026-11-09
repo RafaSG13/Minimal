@@ -222,7 +222,7 @@ def search(query: str = "", url: str | None = None, category: str | None = None)
     listings = []
     for folder in [category] if category else extensions.CATEGORIES:
         for path in sorted((root / folder).glob("*.py")):
-            if path.name.startswith("_"):
+            if path.name.startswith(("_", ".")):
                 continue
             try:
                 listing = describe(path)

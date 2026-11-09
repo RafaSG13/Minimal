@@ -1,5 +1,6 @@
 """The registry: the one place where tools, slash commands, model providers,
-system-prompt additions, event handlers, UI widgets and UI colour themes are collected.
+system-prompt additions, event handlers, UI widgets, UI colour themes and the
+header logo are collected.
 
 Built-in tools, built-in providers and extensions register through it. The
 agent loop and the terminal UI read from it. Extensions receive it as their
@@ -67,6 +68,14 @@ THEME_COLORS = (
 """Optional colours of :meth:`Registry.register_theme`; the terminal UI derives any left out."""
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+
+LOGO_TRANSPARENT = " ."
+"""Pixel characters of :meth:`Registry.register_logo` art that are not drawn."""
+
+LOGO_ALIGN = ("left", "center", "right")
+"""Values of :meth:`Registry.register_logo`'s ``align``."""
+
+_THEME_VARIABLE = re.compile(r"\$[a-z][a-z0-9-]*")
 
 
 @dataclass
@@ -136,8 +145,24 @@ class ThemeSpec:
     colors: dict[str, str]
 
 
+@dataclass
+class LogoSpec:
+    """Pixel art shown in the terminal UI's welcome header instead of the built-in wordmark (see :meth:`Registry.register_logo`).
+
+    Attributes:
+        art: Pixel rows of equal length, one character per pixel: a key of ``colors``,
+            or ``" "``/``"."`` for a transparent pixel.
+        colors: Colour of each pixel character: ``#rrggbb`` or a theme variable such as ``$accent``.
+        align: Where the header is aligned: ``"left"``, ``"center"`` or ``"right"``.
+    """
+
+    art: list[str]
+    colors: dict[str, str]
+    align: str = "center"
+
+
 class Registry:
-    """Collects tools, commands, providers, prompt additions, event handlers, widgets and themes.
+    """Collects tools, commands, providers, prompt additions, event handlers, widgets, themes and the logo.
 
     Attributes:
         tools: Tools offered to the model, by name, in registration order.
@@ -146,6 +171,7 @@ class Registry:
         prompt_parts: Extra paragraphs appended to the system prompt.
         widgets: Visual components for the terminal UI, by name.
         themes: Colour themes for the terminal UI, by name.
+        logo: Pixel art for the welcome header, or ``None`` for the built-in wordmark.
     """
 
     def __init__(self) -> None:
@@ -155,6 +181,7 @@ class Registry:
         self.prompt_parts: list[str] = []
         self.widgets: dict[str, WidgetSpec] = {}
         self.themes: dict[str, ThemeSpec] = {}
+        self.logo: LogoSpec | None = None
         self._handlers: dict[str, list[EventHandler]] = {}
 
     def reset(self) -> None:
@@ -170,6 +197,7 @@ class Registry:
         self.prompt_parts.clear()
         self.widgets.clear()
         self.themes.clear()
+        self.logo = None
         self._handlers.clear()
 
     def add_tool(self, tool: Tool) -> None:
@@ -268,6 +296,51 @@ class Registry:
         if bad:
             raise ValueError(f"register_theme: not a #rrggbb colour: {', '.join(bad)}")
         self.themes[name] = ThemeSpec(name, bool(dark), palette)
+
+    def register_logo(self, art: list[str], colors: dict[str, str], align: str = "center") -> None:
+        """Replace the default wordmark in the terminal UI's welcome header with pixel art.
+
+        ``art`` is a list of equal-length strings, one character per pixel;
+        ``" "`` and ``"."`` are transparent. Two pixel rows make one terminal
+        row (drawn with half blocks), so pixels are roughly square. ``colors``
+        maps every other character to ``#rrggbb`` or a theme variable
+        (``$accent``, ``$foreground``, ``$muted``, … see :mod:`minimal.theme`),
+        so the art can follow ``/theme``. Lines wider than the terminal are clipped.
+        ``align`` places the logo and the header text under it: ``"left"``,
+        ``"center"`` (default) or ``"right"``.
+
+        A later call replaces an earlier one: with several logo extensions the
+        last one loaded wins (the project folder after the global one,
+        alphabetical within a folder). ``python -m minimal.logo IMAGE`` turns an
+        image into a logo extension.
+
+        Raises:
+            ValueError: if ``align`` is not ``"left"``, ``"center"`` or ``"right"``, the art
+                is empty or ragged, a colour key is not a single drawable character, a colour
+                is not ``#rrggbb`` or ``$variable``, or a pixel has no colour.
+        """
+        if align not in LOGO_ALIGN:
+            raise ValueError(f"register_logo: align must be 'left', 'center' or 'right', not {align!r}")
+        if not art or not all(isinstance(row, str) and row for row in art):
+            raise ValueError("register_logo: art must be a non-empty list of non-empty strings")
+        if len({len(row) for row in art}) != 1:
+            raise ValueError("register_logo: art rows must all have the same length")
+        bad = [key for key in colors if not (isinstance(key, str) and len(key) == 1) or key in LOGO_TRANSPARENT]
+        if bad:
+            raise ValueError(
+                f"register_logo: colour keys must be single characters other than space and '.': {', '.join(map(repr, bad))}"
+            )
+        bad = [
+            key
+            for key, value in colors.items()
+            if not (isinstance(value, str) and (_HEX_COLOR.fullmatch(value) or _THEME_VARIABLE.fullmatch(value)))
+        ]
+        if bad:
+            raise ValueError(f"register_logo: not a #rrggbb colour or $variable: {', '.join(bad)}")
+        missing = sorted(set("".join(art)) - set(colors) - set(LOGO_TRANSPARENT))
+        if missing:
+            raise ValueError(f"register_logo: no colour for pixel(s) {', '.join(map(repr, missing))}")
+        self.logo = LogoSpec(list(art), dict(colors), align)
 
     def add_provider(self, spec: ProviderSpec) -> None:
         """Register a ready-made ``ProviderSpec``, replacing any with the same name."""

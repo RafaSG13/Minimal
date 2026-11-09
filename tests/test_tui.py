@@ -9,7 +9,7 @@ from textual.widgets import Input, Markdown, SelectionList, Static
 from minimal import extensions
 from minimal.app import App
 from minimal.providers.base import Reply
-from minimal.registry import Registry
+from minimal.registry import LogoSpec, Registry
 from minimal.session import Session
 from minimal.tui import (
     ChecklistScreen,
@@ -18,6 +18,7 @@ from minimal.tui import (
     MinimalTui,
     TextScreen,
     ToolBlock,
+    _logo,
     _outside_event_loop,
 )
 
@@ -181,6 +182,41 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await self.wait_until(pilot, self.idle(app))
             self.assertEqual(app.theme, "minimal")
             self.assertEqual(list(app.available_themes), ["minimal"])
+
+    def test_logo_half_blocks(self):
+        content = _logo(LogoSpec(["ab.a", "a.bb", "b..."], {"a": "#ff0000", "b": "#00ff00"}))
+        self.assertEqual(content.plain, "█▀▄▀\n▀   ")
+        self.assertIn("#ff0000 on #00ff00", [str(span.style) for span in content.spans])
+
+    async def test_default_header_is_wordmark(self):
+        app = MinimalTui(self.core)
+        with mock.patch("minimal.tui._version", return_value="9.9"):
+            async with app.run_test():
+                header = app.query_one("Header")
+                self.assertTrue(header.has_class("-align-left"))
+                self.assertEqual(
+                    str(app.query_one("Header .wordmark", Static).render()),
+                    "─●─  m i n i m a l ▌  ─●─\n     bare by default. yours by config.  v9.9",
+                )
+                self.assertNotIn("9.9", str(app.query_one("Header .info", Static).render()))
+
+    async def test_logo_replaces_wordmark_until_reload(self):
+        self.core.registry.register_logo(["aa"], {"a": "$accent"}, align="right")
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            self.assertTrue(app.query_one("Header").has_class("-align-right"))
+            self.assertEqual(len(app.query("Header .wordmark")), 0)
+            self.assertEqual(str(app.query_one("Header .logo", Static).render()), "▀▀")
+            info = str(app.query_one("Header .info", Static).render())
+            self.assertNotIn("minimal", info)
+            self.assertIn("commands", info)
+            await self.submit(pilot, "/reload")  # rebuilds the registry from disk, where the logo is not
+            await self.wait_until(pilot, self.idle(app))
+            self.assertEqual(len(app.query("Header .logo")), 0)
+            header = app.query_one("Header")
+            self.assertTrue(header.has_class("-align-left"))
+            self.assertFalse(header.has_class("-align-right"))
+            self.assertIn("m i n i m a l", str(app.query_one("Header .wordmark", Static).render()))
 
     async def test_terminal_command_can_run_its_own_event_loop(self):
         # /setup's questionary menus call asyncio.run on the UI thread.

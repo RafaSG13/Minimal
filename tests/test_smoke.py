@@ -93,6 +93,20 @@ class SmokeTest(unittest.TestCase):
             self.assertEqual(len(again.messages), 3)
             self.assertEqual(session_mod.list_sessions(), ["x"])
 
+    def test_register_logo_validates(self):
+        registry = Registry()
+        with self.assertRaisesRegex(ValueError, "same length"):
+            registry.register_logo(["ab", "a"], {"a": "#ff0000", "b": "#00ff00"})
+        with self.assertRaisesRegex(ValueError, "no colour for pixel"):
+            registry.register_logo(["ax"], {"a": "#ff0000"})
+        with self.assertRaisesRegex(ValueError, r"not a #rrggbb colour or \$variable"):
+            registry.register_logo(["a"], {"a": "red"})
+        with self.assertRaisesRegex(ValueError, "align must be"):
+            registry.register_logo(["a"], {"a": "#ff0000"}, align="middle")
+        registry.register_logo(["a."], {"a": "$accent"})
+        self.assertEqual(registry.logo.art, ["a."])
+        self.assertEqual(registry.logo.align, "center")
+
 
 HELLO_EXT = 'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 

@@ -46,6 +46,10 @@ SELF_EXTEND_PROMPT = (
     "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn; "
     "minimal.register_theme(name, dark=..., background=..., foreground=..., accent=..., **more #rrggbb colours) "
     "adds a colour theme the user picks with /theme. "
+    "minimal.register_logo(art, colors, align='center') replaces the default wordmark in the welcome header with "
+    "pixel art, aligned 'left', 'center' or 'right': art is a list of "
+    "equal-length strings, one character per pixel (' ' or '.' transparent), two pixel rows per terminal row; colors "
+    "maps every other character to #rrggbb or a theme variable such as $accent. "
     "After writing or editing an extension, call reload_extensions and fix any reported errors. "
     "Share and reuse extensions with ext_search, ext_install and ext_publish."
 )

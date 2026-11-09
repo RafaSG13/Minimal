@@ -137,6 +137,12 @@ class MarketplaceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not in the marketplace"):
             marketplace.install("missing")
 
+    def test_appledouble_sidecar_is_ignored(self):
+        marketplace.install("hello")
+        (self.global_dir / "._hello.py").write_bytes(b"\x00\x05\x16\x07\xb0")
+        loaded, errors = load_extensions(Registry(), str(self.tmp))
+        self.assertEqual((loaded, errors), ([self.global_dir / "hello.py"], []))
+
     def test_picker_installs_updates_removes(self):
         hello = self.global_dir / "hello.py"
         url = str(self.bare)
