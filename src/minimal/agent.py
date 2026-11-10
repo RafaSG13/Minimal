@@ -143,14 +143,19 @@ def _run_tool(call: dict, registry: Registry, ctx: Any) -> str:
     if tool is None:
         raise ValueError(f"unknown tool: {call['name']}")
 
-    for verdict in registry.emit(
-        "tool_call", {"name": call["name"], "input": call["input"]}
-    ):
+    try:
+        verdicts = registry.emit("tool_call", {"name": call["name"], "input": call["input"]}, strict=True)
+    except TurnInterrupted:
+        raise
+    except Exception as e:  # fail closed: a guard that crashed has not approved the call
+        raise RuntimeError(f"blocked: a tool_call handler failed: {e}") from e
+    for verdict in verdicts:
         if isinstance(verdict, dict) and verdict.get("block"):
             raise RuntimeError(verdict.get("reason") or "blocked by an extension")
 
+    needed = tool.confirm(call["input"], ctx) if callable(tool.confirm) else tool.confirm
     confirm = getattr(ctx, "confirm", None)
-    if tool.confirm and confirm and not confirm(call):
+    if needed and confirm and not confirm(call):
         raise RuntimeError("the user denied the execution")
 
     return str(tool.run(call["input"], ctx))

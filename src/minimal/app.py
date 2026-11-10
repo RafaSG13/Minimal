@@ -4,8 +4,8 @@
 widgets, so extensions can read ``ctx.cwd``, ``ctx.messages``,
 ``ctx.provider_name``, ``ctx.model`` and ``ctx.registry``.
 
-What the user sees goes through a :class:`Frontend`: :class:`ConsoleFrontend`
-(plain stdout, used by ``-p``) or the terminal UI's.
+What the user sees goes through a :class:`Frontend`: the terminal UI's, or
+:class:`ConsoleFrontend` (plain stdout, the default of an :class:`App` built without one).
 """
 
 from __future__ import annotations
@@ -20,8 +20,16 @@ from typing import Iterable, Protocol
 
 import minimal.extensions
 import minimal.registry
+from minimal import config
 from minimal.agent import run_agent
-from minimal.extensions import load_extensions, project_extensions_dir
+from minimal.extensions import (
+    ExtensionSource,
+    extension_files,
+    files_digest,
+    load_extensions,
+    project_extensions_dir,
+    read_extensions,
+)
 from minimal.marketplace import register_marketplace_tools
 from minimal.providers import register_builtin_providers
 from minimal.providers.base import Provider
@@ -101,6 +109,19 @@ def reload_summary(loaded: list[Path], errors: list[str]) -> str:
     return summary + "".join(f"\nFailed: {e}" for e in errors)
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _visible(text: str) -> str:
+    """``text`` with control characters (all but tab and newline) written as ``\\xNN``.
+
+    Text from the model or from a tool must not reach the terminal raw: escape
+    sequences can move the cursor and rewrite what is on screen, including the
+    text of a confirmation prompt.
+    """
+    return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
+
+
 class Frontend(Protocol):
     """Shows a turn to the user. Every method is called from the thread running the turn or command."""
 
@@ -139,30 +160,42 @@ class Frontend(Protocol):
 
 
 class ConsoleFrontend:
-    """Plain stdout/stderr and ``input()``: used by ``-p`` and by commands the TUI runs in the terminal."""
+    """Plain stdout/stderr and ``input()``: used by commands the TUI runs in the terminal, and by an :class:`App` with no frontend.
+
+    Model and tool text is shown with control characters escaped (:func:`_visible`),
+    except the answer itself when stdout is not a terminal, so piped output stays exact.
+    """
 
     def text(self, chunk: str) -> None:
-        print(chunk, end="", flush=True)
+        print(_visible(chunk) if sys.stdout.isatty() else chunk, end="", flush=True)
 
     def tool_call(self, call: dict) -> None:
         """Show a dimmed one-line summary of a tool call on stderr."""
-        args = json.dumps(call["input"], ensure_ascii=False)[:120]
-        print(f"\n\x1b[2m› {call['name']} {args}\x1b[0m\n", end="", file=sys.stderr, flush=True)
+        args = _visible(json.dumps(call["input"], ensure_ascii=False)[:120])
+        print(f"\n\x1b[2m› {_visible(call['name'])} {args}\x1b[0m\n", end="", file=sys.stderr, flush=True)
 
     def tool_result(self, call: dict, result: dict) -> None:
         """Show the first line of a failed tool call on stderr."""
         if result["is_error"]:
-            first = result["content"].strip().partition("\n")[0][:200]
-            print(f"\x1b[31m✘ {call['name']}: {first}\x1b[0m", file=sys.stderr, flush=True)
+            first = _visible(result["content"].strip().partition("\n")[0][:200])
+            print(f"\x1b[31m✘ {_visible(call['name'])}: {first}\x1b[0m", file=sys.stderr, flush=True)
 
     def turn_end(self, error: str | None) -> None:
         if error is None:
             print()
         else:
-            print(f"\nError: {error}", file=sys.stderr)
+            print(f"\nError: {_visible(error)}", file=sys.stderr)
 
     def ask(self, question: str) -> bool:
-        """Accepts ``y``/``yes``; EOF means no."""
+        """Accepts ``y``/``yes``; EOF means no, and so does having no terminal to ask in."""
+        question = _visible(question)
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(
+                f"[confirm] denied, no terminal to ask (-y allows tool calls, --trust-project "
+                f"the project's extensions): {question}",
+                file=sys.stderr,
+            )
+            return False
         try:
             answer = input(f"\n{question} [y/N] ")
         except EOFError:
@@ -232,6 +265,7 @@ class App:
         session: Current session (``/new`` and ``/resume`` replace it).
         cwd: Working directory for tools and the system prompt.
         auto_approve: Run ``write``/``edit``/``bash`` without asking.
+        trust_project: Load the project's extensions without asking (``--trust-project``).
         extra_extensions: ``--ext`` paths, loaded again on every reload.
         frontend: Where turns are shown and confirmations asked.
         extensions: Extension files loaded by the last reload.
@@ -246,6 +280,7 @@ class App:
         session: Session,
         cwd: str,
         auto_approve: bool,
+        trust_project: bool = False,
         extra_extensions: Iterable[str] = (),
         frontend: Frontend | None = None,
     ) -> None:
@@ -253,6 +288,7 @@ class App:
         self.session = session
         self.cwd = cwd
         self.auto_approve = auto_approve
+        self.trust_project = trust_project
         self.extra_extensions = list(extra_extensions)
         self.frontend: Frontend = frontend or ConsoleFrontend()
         self.provider: Provider | None = None
@@ -269,17 +305,65 @@ class App:
         tools on its next model request. The current provider instance keeps
         working even if its spec is gone.
 
+        The project's extensions (``<cwd>/.minimal/extensions``) load only if the
+        user trusted exactly those files; otherwise they are skipped and the
+        reason is one of the errors.
+
         Returns:
             ``(loaded, errors)`` as from :func:`~minimal.extensions.load_extensions`.
         """
+        project, skipped = self._trusted_project_extensions()  # may ask: the registry stays usable meanwhile
         self.registry.reset()
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         register_marketplace_tools(self.registry)
-        loaded, errors = load_extensions(self.registry, self.cwd, self.extra_extensions)
+        loaded, errors = load_extensions(self.registry, self.cwd, self.extra_extensions, project=project)
+        if skipped:
+            errors.append(skipped)
         self.extensions, self.extension_errors = loaded, errors
         self.frontend.reloaded()
         return loaded, errors
+
+    def _trusted_project_extensions(self) -> tuple[list[ExtensionSource], str | None]:
+        """The project's extensions that may load, and why the rest are skipped.
+
+        Returns ``(sources, reason)``: the files to load, or ``[]`` and the
+        reason they were skipped (``None`` when there is nothing to skip).
+
+        They are code from the repository, run with the user's permissions, so
+        the user is asked once per set of files: the answer is remembered in
+        :data:`~minimal.config.TRUST_FILE` by folder and by a digest of the
+        files, and any change to them asks again. ``-y`` does not answer this
+        question; only ``--trust-project`` skips it.
+
+        The files are read once here: that snapshot is what is hashed, what the
+        user approves and what the loader runs. Edits made while the prompt is
+        open are ignored until the next reload, which asks again because the
+        digest then differs.
+        """
+        directory = project_extensions_dir(self.cwd)
+        files = extension_files(directory)
+        if not files:
+            return [], None
+        try:
+            sources = read_extensions(files)  # the only read of these files: what is hashed, asked about and run
+            key = str(directory.resolve())
+        except OSError as e:
+            return [], f"{directory}: cannot read the project extensions ({e}), skipped {len(files)}"
+        digest = files_digest(sources)
+        if self.trust_project or config.load_trusted().get(key) == digest:
+            return sources, None
+        names = ", ".join(s.path.relative_to(directory).as_posix() for s in sources)
+        if self.frontend.ask(
+            "Run this project's extensions? They are Python code that runs with your permissions: "
+            f"{directory} ({names})"
+        ):
+            config.save_trusted(key, digest)
+            return sources, None
+        return [], (
+            f"{directory}: not trusted, skipped {len(sources)} project extension(s); "
+            "start minimal in a terminal and accept the prompt, or pass --trust-project"
+        )
 
     def use_provider(self, name: str, model: str | None = None) -> None:
         """Switch to provider ``name`` and to ``model`` (default: the provider's default).

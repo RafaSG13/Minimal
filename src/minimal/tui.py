@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import re
 import subprocess
 import threading
 import time
@@ -77,7 +76,8 @@ def git_status(cwd: str) -> tuple[str, bool] | None:
     """``(branch, dirty)`` for the repository containing ``cwd``, or ``None`` outside one."""
     try:
         result = subprocess.run(
-            ["git", "--no-optional-locks", "status", "--porcelain=v1", "--branch"],
+            # core.fsmonitor=false: a repository's own config must not make git run a command
+            ["git", "-c", "core.fsmonitor=false", "--no-optional-locks", "status", "--porcelain=v1", "--branch"],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -525,11 +525,7 @@ class TuiFrontend:
 
     def ask(self, question: str) -> bool:
         if self._in_terminal():
-            try:
-                answer = input(f"{question} [y/N] ")
-            except EOFError:
-                return False
-            return re.fullmatch(r"y|yes", answer.strip(), re.IGNORECASE) is not None
+            return ConsoleFrontend().ask(question)
         return bool(self._modal(ConfirmScreen(question)))
 
     def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
@@ -617,6 +613,7 @@ class MinimalTui(TextualApp):
         self.shown_session = core.session
         self.busy_since = 0.0
         self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
+        self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -805,6 +802,25 @@ class MinimalTui(TextualApp):
     # --- status line and working indicator -----------------------------------
 
     def refresh_status(self) -> None:
+        """Redraw the status line now, then update its git part in the background."""
+        self._render_status()
+        self.refresh_git()
+
+    @work(thread=True, exclusive=True, group="git", exit_on_error=False)
+    def refresh_git(self) -> None:
+        """Run ``git status`` in a worker thread (it can take up to a second) and show the result."""
+        git = git_status(self.core.cwd)
+        try:
+            self.call_from_thread(self._set_git, git)
+        except RuntimeError:  # the app closed meanwhile
+            pass
+
+    def _set_git(self, git: tuple[str, bool] | None) -> None:
+        if git != self.git:
+            self.git = git
+            self._render_status()
+
+    def _render_status(self) -> None:
         core = self.core
         sep = (f" {theme.SEPARATOR} ", "$border-muted")
         parts: list[str | tuple[str, str]] = [
@@ -814,7 +830,7 @@ class MinimalTui(TextualApp):
             sep,
             (_short_path(core.cwd), "$status-path"),
         ]
-        git = git_status(core.cwd)
+        git = self.git
         if git is not None:
             branch, dirty = git
             color = "$status-git-dirty" if dirty else "$status-git-clean"

@@ -62,17 +62,19 @@ On the first start, setup asks (arrow keys) for the default provider, its creden
 
 ```bash
 minimal                          # interactive terminal UI
-minimal -p "summarize this repo" # single pass: print the answer and exit
 minimal -c                       # resume the last session
 minimal -s <id>                  # open (or create) a specific session
 minimal -e extensions/example.py # load an extension file or folder (repeatable)
 minimal --setup                  # change the default provider, login/key or model
 minimal --login                  # sign in with a Claude Pro/Max subscription
 minimal --logout                 # forget the Claude login
-minimal -y                       # skip confirmations
+minimal -y                       # skip tool confirmations
+minimal --trust-project          # load ./.minimal/extensions without asking
 ```
 
-If an `AGENTS.md` exists in the current directory, it is added to the system prompt. The interactive UI needs a terminal; without one, use `-p`.
+If an `AGENTS.md` exists in the current directory, it is added to the system prompt. minimal needs a terminal, and a turn can only be started from inside its interface: there is no one-shot `minimal -p "prompt"` mode that runs the agent straight from the shell.
+
+**Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
 
 ### Providers
 
@@ -83,7 +85,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | Google Gemini       | `gemini`     | `GEMINI_API_KEY` / `GOOGLE_API_KEY` or a key saved in setup ([get one](https://aistudio.google.com/docs/api-key), free tier) | `gemini-3.8-flash`  |
 | OpenAI-compatible   | `openai`     | `OPENAI_API_KEY` or a key saved in setup; `OPENAI_BASE_URL` points it at OpenRouter, Ollama, LM Studio (local servers accept any key) | `gpt-5.5`           |
 
-**Resolution order.** Provider: `--provider` → `MINIMAL_PROVIDER` → the one saved by setup. Model: `-m` → `MINIMAL_MODEL` → the one saved by setup (if the provider is the saved one) → the provider's default. Keys entered in setup are saved in `~/.minimal/keys.json` and take precedence over environment variables.
+**Resolution order.** Provider: `--provider` → `MINIMAL_PROVIDER` → the one saved by setup. Model: `-m` → `MINIMAL_MODEL` → the one saved by setup (if the provider is the saved one) → the provider's default. Keys entered in setup are saved in `~/.minimal/keys.json` and take precedence over environment variables. They are removed from the environment of `bash` commands; export a key in your shell instead (and remove it from `keys.json`) if commands need it.
 
 ### Slash commands
 
@@ -120,6 +122,8 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 ## Extensions
 
 An extension is a Python file defining `register(minimal)`. Extensions are loaded from `~/.minimal/extensions/`, `./.minimal/extensions/` and any path passed with `--ext`; files starting with `_` or `.` are skipped. Each folder's own files load first, then those in its `themes/`, `tools/` and `widgets/` subfolders, where the marketplace installs those categories.
+
+A project's `./.minimal/extensions/` is code from the repository, so minimal asks before running it and remembers the answer for exactly those files (`~/.minimal/trusted.json`); adding or editing a file asks again. Refused or unanswered (no terminal), they are skipped with a message. `--trust-project` loads them without asking; `-y` does not.
 
 ```python
 def register(minimal):
@@ -213,16 +217,16 @@ flowchart LR
   provider --> anthropic[(Anthropic API)]
   provider --> gemini[(Gemini API)]
   provider --> openai[(OpenAI-compatible API)]
-  agent --> exec[execute_tool_call] --> registry[Registry]
+  agent --> exec[execute_tool_call] --> guard["tool_call handlers: veto, fail closed"] --> confirm[user confirmation] --> registry[Registry]
   registry --> tools[built-in tools]
   registry --> ext[extensions]
-  app --> reload[App.reload_extensions] --> registry
+  app --> reload[App.reload_extensions] --> trust["project extensions trusted?<br/>(~/.minimal/trusted.json)"] --> registry
   turn --> session[Session.save]
 ```
 
-**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If anything fails mid-turn, or the user interrupts it, the turn is dropped from the history. The session file is appended to after every turn.
+**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If anything fails mid-turn, or the user interrupts it, the turn is dropped from the history. The session file is appended to after every turn.
 
-**Frontends.** What the user sees goes through a `Frontend` (`app.py`): the terminal UI, or `ConsoleFrontend` (plain stdout) for `-p`. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
+**Frontends.** What the user sees goes through a `Frontend` (`app.py`): the terminal UI, or `ConsoleFrontend` (plain stdout and `input()`) for commands that need the real terminal. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
 
 **History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
 

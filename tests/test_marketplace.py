@@ -115,6 +115,7 @@ class MarketplaceTest(unittest.TestCase):
             session=Session("t", self.tmp / "t.jsonl"),
             cwd=str(self.tmp),
             auto_approve=True,
+            trust_project=True,
             frontend=ui,
         )
         out = io.StringIO()

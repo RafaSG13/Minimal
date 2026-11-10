@@ -1,5 +1,6 @@
-"""Command-line entry point: parse options, build the :class:`~minimal.app.App`,
-then run a single prompt (``-p``) or the interactive terminal UI.
+"""Command-line entry point: parse options, build the :class:`~minimal.app.App`
+and open the interactive terminal UI. A turn can only be started from inside it:
+there is no one-shot mode that runs the agent from the shell command line.
 """
 
 from __future__ import annotations
@@ -18,13 +19,11 @@ HELP = """minimal — minimal, extensible coding-agent harness
 
 Usage:
   minimal [options]            interactive terminal UI (runs setup first if no provider is chosen yet)
-  minimal -p "prompt"           single pass, print the answer and exit
   minimal --setup              choose the default provider, sign in or enter its key, choose the model
   minimal --login              sign in with a Claude Pro/Max subscription (browser)
   minimal --logout             forget the Claude login
 
 Options:
-  -p, --print <text>    non-interactive mode
   -c, --continue        resume the last session
   -s, --session <id>    open (or create) a specific session
   --provider <name>     model integration: anthropic, claude, gemini, openai, or one added by an extension
@@ -32,6 +31,7 @@ Options:
   -m, --model <name>    model (default $MINIMAL_MODEL, else the one chosen in setup, else the provider's default)
   -e, --ext <path>      load an extension file or folder (repeatable)
   -y, --yes             do not ask for confirmation for write/edit/bash
+  --trust-project       load this project's .minimal/extensions without asking
   -h, --help            this help
 
 Environment:
@@ -65,42 +65,44 @@ def main() -> None:
             sys.exit(1)
         return
 
-    print_mode = opts.print is not None
-    if not print_mode and not setup.can_run():
-        print('The interactive UI needs a terminal; use -p "prompt" for a single pass.', file=sys.stderr)
+    if not setup.can_run():
+        print(
+            "minimal needs a terminal: start it there and type your prompt in the interface.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
+    try:
+        session = open_session(
+            opts.session or (last_session() if opts.cont else None) or new_id()
+        )
+    except ValueError as e:  # a session id that is not a plain name
+        print(e, file=sys.stderr)
+        sys.exit(2)
     app = App(
         registry=Registry(),
-        session=open_session(opts.session or (last_session() if opts.cont else None) or new_id()),
+        session=session,
         cwd=os.getcwd(),
-        auto_approve=opts.yes or print_mode,  # -p has nobody to ask
+        auto_approve=opts.yes,
+        trust_project=opts.trust_project,
         extra_extensions=opts.ext,
     )
     app.reload_extensions()
-    if print_mode:  # the terminal UI shows them itself
-        for e in app.extension_errors:
-            print(f"[extension] could not load {e}", file=sys.stderr)
     try:
         config.apply_keys()
         start_provider(app, opts)
     except KeyboardInterrupt:
         print("\nSetup cancelled.", file=sys.stderr)
         sys.exit(130)
-    except Exception as e:  # unknown provider, missing credentials, failed login, unreadable config
+    except (
+        Exception
+    ) as e:  # unknown provider, missing credentials, failed login, unreadable config
         print(e, file=sys.stderr)
         sys.exit(1)
 
-    if print_mode:
-        try:
-            app.run_turn(opts.print)
-        except KeyboardInterrupt:
-            print("\nInterrupted.", file=sys.stderr)
-            sys.exit(130)
-    else:
-        from minimal.tui import run_tui  # -p never imports textual
+    from minimal.tui import run_tui
 
-        run_tui(app)
+    run_tui(app)
 
 
 def start_provider(app: App, opts: argparse.Namespace) -> None:
@@ -126,7 +128,9 @@ def start_provider(app: App, opts: argparse.Namespace) -> None:
                 raise
             print(f"{e}\n", file=sys.stderr)
     elif not setup.can_run():
-        raise ValueError("No default provider yet: run `minimal --setup` in a terminal, or pass --provider.")
+        raise ValueError(
+            "No default provider yet: run `minimal --setup` in a terminal, or pass --provider."
+        )
     name, saved_model = setup.run_setup(app.registry)
     app.use_provider(name, model or saved_model)
 
@@ -138,13 +142,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace | None:
     after printing the help for unknown or malformed options.
     """
     parser = argparse.ArgumentParser(prog="minimal", add_help=False)
-    parser.add_argument("-p", "--print", default=None)
     parser.add_argument("-c", "--continue", dest="cont", action="store_true")
     parser.add_argument("-s", "--session")
     parser.add_argument("--provider")
     parser.add_argument("-m", "--model")
     parser.add_argument("-e", "--ext", action="append", default=[])
     parser.add_argument("-y", "--yes", action="store_true")
+    parser.add_argument("--trust-project", action="store_true")
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--login", action="store_true")
     parser.add_argument("--logout", action="store_true")
@@ -152,7 +156,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace | None:
 
     try:
         opts, unknown = parser.parse_known_args(argv)
-    except SystemExit:  # malformed option, e.g. -p without a value
+    except SystemExit:  # malformed option, e.g. -s without a value
         print(HELP)
         sys.exit(2)
     if unknown:

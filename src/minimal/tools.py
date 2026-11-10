@@ -12,11 +12,13 @@ import os
 import re
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-from minimal.registry import Registry, Tool
+from minimal import config, extensions
+from minimal.registry import Registry, Tool, TurnInterrupted
 
 MAX_CHARS = 20_000
 """Longest tool output sent to the model; anything beyond is truncated by :func:`clip`."""
@@ -35,6 +37,22 @@ def clip(text: str) -> str:
 def _resolve(ctx: Any, path: str) -> Path:
     """Resolve ``path`` against the working directory (absolute paths are kept)."""
     return Path(ctx.cwd, path).resolve()
+
+
+def _readable_without_asking(path: Path, ctx: Any) -> bool:
+    """Whether resolved ``path`` is in the working directory, minimal's own source or the global extensions folder."""
+    roots = (Path(ctx.cwd).resolve(), Path(__file__).resolve().parent, extensions.GLOBAL_EXTENSIONS_DIR.resolve())
+    return any(path.is_relative_to(root) for root in roots)
+
+
+def _outside_workspace(input: dict, ctx: Any) -> bool:
+    """Whether ``input["path"]`` (default ``.``) resolves outside the working directory,
+    minimal's own source (the system prompt points the model at registry.py) and the global extensions folder.
+
+    The ``confirm`` of the reading tools: those places are read freely, anything
+    else (``~/.ssh``, ``~/.minimal/keys.json``, a symlink leading there) asks first.
+    """
+    return not _readable_without_asking(_resolve(ctx, input.get("path", ".")), ctx)
 
 
 def _read_text(path: Path) -> str:
@@ -72,7 +90,8 @@ def _list_files(root: Path) -> list[Path]:
         return [root]
     try:
         proc = subprocess.run(
-            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            # core.fsmonitor=false: a repository's own config must not make git run a command
+            ["git", "-c", "core.fsmonitor=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=root,
             capture_output=True,
             timeout=30,
@@ -87,7 +106,8 @@ def _list_files(root: Path) -> list[Path]:
         files = []
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS]
-            files.extend(Path(dirpath, name) for name in filenames)
+            # is_file drops devices, FIFOs, sockets and dangling links: reading them could block forever.
+            files.extend(f for f in (Path(dirpath, name) for name in filenames) if f.is_file())
     return sorted(files)
 
 
@@ -143,15 +163,21 @@ def _filter_glob(files: list[Path], root: Path, pattern: str) -> list[Path]:
     return [f for f in files if regex.fullmatch(f.name if f == root else f.relative_to(root).as_posix())]
 
 
-def _searchable_text(path: Path) -> str | None:
-    """File contents as text, or ``None`` if unreadable or binary (NUL byte in the first 8 KiB)."""
+def _search_lines(path: Path) -> Iterator[tuple[int, str]]:
+    """``(number, text)`` of each line of a file, read as it goes; nothing if unreadable or binary (NUL byte in the first 8 KiB).
+
+    Lines are split on ``\\n`` (as :func:`read` numbers them) and lose their
+    ``\\n`` or ``\\r\\n``; invalid UTF-8 is replaced.
+    """
     try:
-        data = path.read_bytes()
+        with open(path, "rb") as f:
+            if b"\0" in f.read(8192):
+                return
+            f.seek(0)
+            for n, raw in enumerate(f, 1):
+                yield n, raw.removesuffix(b"\n").removesuffix(b"\r").decode("utf-8", errors="replace")
     except OSError:
-        return None
-    if b"\0" in data[:8192]:
-        return None
-    return data.decode("utf-8", errors="replace")
+        return
 
 
 _PATH = {"type": "string", "description": "File path"}
@@ -161,19 +187,54 @@ _PATH = {"type": "string", "description": "File path"}
 
 
 def read(input: dict, ctx: Any) -> str:
-    """Return lines ``offset .. offset+limit-1`` of a file, numbered ``N<TAB>line``."""
-    lines = _read_text(_resolve(ctx, input["path"])).split("\n")
-    offset = input.get("offset", 1)
-    limit = input.get("limit", 2000)
+    """Return lines ``offset .. offset+limit-1`` of a file, numbered ``N<TAB>line``.
 
-    start = max(1, offset) - 1
-    window = lines[start : start + limit]
-    out = "\n".join(f"{start + i + 1}\t{line}" for i, line in enumerate(window))
+    The file is read line by line: only the window is decoded and at most about
+    :data:`MAX_CHARS` of it kept, the other lines are only counted. Lines are
+    split on ``\\n``; a ``\\r`` before it is kept.
 
-    remaining = len(lines) - start - limit
-    if remaining > 0:
-        out += f"\n... [{remaining} more lines]"
-    return clip(out)
+    Raises:
+        ValueError: if the path is a directory, device, FIFO or socket.
+        UnicodeDecodeError: if a line in the window is not UTF-8.
+    """
+    path = _resolve(ctx, input["path"])
+    if path.exists() and not path.is_file():
+        raise ValueError(f"not a regular file: {path}")
+    start = max(1, input.get("offset", 1)) - 1
+    stop = start + max(0, input.get("limit", 2000))
+
+    kept: list[str] = []
+    kept_chars = 0  # length of "\n".join(kept), plus one
+    chars = 0  # the same for the whole window
+    total = 0  # lines seen
+    ends_with_newline = True  # an empty file is one empty line
+
+    def take(raw: bytes) -> None:
+        nonlocal kept_chars, chars
+        line = f"{total + 1}\t{raw.decode('utf-8')}"
+        chars += len(line) + 1
+        if kept_chars <= MAX_CHARS:  # enough is kept to cut at MAX_CHARS
+            kept.append(line)
+            kept_chars += len(line) + 1
+
+    with open(path, "rb") as f:
+        for raw in f:
+            if start <= total < stop:
+                take(raw.removesuffix(b"\n"))
+            total += 1
+            ends_with_newline = raw.endswith(b"\n")
+    if ends_with_newline:  # the empty text after the last newline is a line too
+        if start <= total < stop:
+            take(b"")
+        total += 1
+
+    remaining = total - stop
+    footer = f"\n... [{remaining} more lines]" if remaining > 0 else ""
+    full = max(0, chars - 1) + len(footer)
+    result = "\n".join(kept) + footer
+    if full <= MAX_CHARS:
+        return result
+    return result[:MAX_CHARS] + f"\n... [truncated: {full - MAX_CHARS} more characters]"
 
 
 READ = Tool(
@@ -189,6 +250,7 @@ READ = Tool(
         "required": ["path"],
     },
     run=read,
+    confirm=_outside_workspace,
 )
 
 
@@ -263,6 +325,43 @@ EDIT = Tool(
 # --- bash --------------------------------------------------------------------
 
 
+def _command_env() -> dict[str, str]:
+    """The environment for ``bash`` commands: ours without the API keys saved by setup (``~/.minimal/keys.json``).
+
+    Those keys are for the providers; a command the model runs has no use for
+    them and could send them anywhere. Excluded are the names listed in the
+    file now plus every name this process ever copied into ``os.environ``, so
+    deleting or rewriting the file mid-session does not expose them. Variables
+    exported in the shell under other names are kept.
+
+    Raises:
+        ValueError: if the key store exists but cannot be read: the keys can't
+            be told apart from other variables, so no command runs.
+    """
+    saved = config.injected_key_names() | config.load_keys().keys()
+    return {k: v for k, v in os.environ.items() if k not in saved}
+
+
+MAX_CAPTURE = 1_000_000
+"""Bytes of each of a command's streams kept by :func:`bash`; the rest is read and discarded."""
+
+
+def _drain(pipe: Any, chunks: list[bytes]) -> None:
+    """Read ``pipe`` to EOF, keeping its first :data:`MAX_CAPTURE` bytes in ``chunks``."""
+    kept = 0
+    with pipe:
+        # read1 returns whatever is available: data must not sit in the buffer while a child keeps the pipe open
+        for chunk in iter(lambda: pipe.read1(65536), b""):
+            if kept < MAX_CAPTURE:
+                chunk = chunk[: MAX_CAPTURE - kept]
+                chunks.append(chunk)
+                kept += len(chunk)
+
+
+def _decode_output(chunks: list[bytes]) -> str:
+    return b"".join(chunks).decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def bash(input: dict, ctx: Any) -> str:
     """Run a command with ``/bin/bash -c`` and report stdout, stderr and the exit code.
 
@@ -270,46 +369,67 @@ def bash(input: dict, ctx: Any) -> str:
     and the result ends with ``[exit 1 (timeout)]``. The same happens, with
     ``[exit 1 (interrupted)]``, when ``ctx.cancelled`` (a ``threading.Event``,
     if ``ctx`` has one) is set while the command runs.
+
+    The command counts as running until it has exited and closed both pipes
+    (a background child that keeps them open runs into the timeout). Only the
+    first :data:`MAX_CAPTURE` bytes of each stream are kept.
     """
     timeout_s = input.get("timeout_ms", 120_000) / 1000
     proc = subprocess.Popen(
         ["/bin/bash", "-c", input["command"]],
         cwd=ctx.cwd,
+        env=_command_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
         start_new_session=True,  # own process group, so a timeout can kill all of it
     )
+    stdout: list[bytes] = []
+    stderr: list[bytes] = []
+    readers = [
+        threading.Thread(target=_drain, args=(proc.stdout, stdout), daemon=True),
+        threading.Thread(target=_drain, args=(proc.stderr, stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
     deadline = time.monotonic() + timeout_s
     cancelled = getattr(ctx, "cancelled", None)
     while True:
+        slice_end = min(time.monotonic() + 0.2, deadline)
+        for reader in readers:
+            reader.join(max(0.0, slice_end - time.monotonic()))
         try:
-            stdout, stderr = proc.communicate(timeout=min(0.2, max(0.0, deadline - time.monotonic())))
+            proc.wait(max(0.0, slice_end - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        if proc.returncode is not None and not any(reader.is_alive() for reader in readers):
             status = f"exit {proc.returncode}"
             break
-        except subprocess.TimeoutExpired:
-            timed_out = time.monotonic() >= deadline
-            if not timed_out and not (cancelled is not None and cancelled.is_set()):
-                continue
+        timed_out = time.monotonic() >= deadline
+        if timed_out or (cancelled is not None and cancelled.is_set()):
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            stdout, stderr = proc.communicate()
+            proc.wait()
+            for reader in readers:  # a child that left the group may still hold a pipe: don't wait for it
+                reader.join(1)
             status = "exit 1 (timeout)" if timed_out else "exit 1 (interrupted)"
             break
 
-    out = stdout
-    if stderr:
-        out += f"\n[stderr]\n{stderr}"
+    out = _decode_output(stdout)
+    err = _decode_output(stderr)
+    if err:
+        out += f"\n[stderr]\n{err}"
     out += f"\n[{status}]"
     return clip(out.strip())
 
 
 BASH = Tool(
     name="bash",
-    description="Run a shell command in the working directory. Returns stdout, stderr and the exit code.",
+    description=(
+        "Run a shell command in the working directory. Returns stdout, stderr and the exit code. "
+        "API keys saved by minimal's setup are not in its environment."
+    ),
     input_schema={
         "type": "object",
         "properties": {
@@ -327,7 +447,15 @@ BASH = Tool(
 
 
 def grep(input: dict, ctx: Any) -> str:
-    """Return ``path:line:text`` for each line matching the regex ``pattern``, at most ``GREP_LIMIT``."""
+    """Return ``path:line:text`` for each line matching the regex ``pattern``, at most ``GREP_LIMIT``.
+
+    Files are read line by line. A file that is a symlink to somewhere outside
+    the places read freely (see :func:`_outside_workspace`) and outside the
+    searched ``path`` itself is skipped: ``path`` was approved, not its links.
+    Setting ``ctx.cancelled`` (if ``ctx`` has it)
+    stops the search before the next file with :class:`TurnInterrupted`.
+    """
+    cancelled = getattr(ctx, "cancelled", None)
     regex = re.compile(input["pattern"], re.IGNORECASE if input.get("ignore_case") else 0)
     root = _resolve(ctx, input.get("path", "."))
     files = _list_files(root)
@@ -336,11 +464,14 @@ def grep(input: dict, ctx: Any) -> str:
 
     out: list[str] = []
     for file in files:
-        text = _searchable_text(file)
-        if text is None:
+        if cancelled is not None and cancelled.is_set():
+            raise TurnInterrupted("interrupted by the user")
+        # The search root was approved, not what a link inside it points at: open only the resolved target.
+        target = file.resolve()
+        if not _readable_without_asking(target, ctx) and not target.is_relative_to(root):
             continue
         shown = _display(file, ctx)
-        for n, line in enumerate(text.splitlines(), 1):
+        for n, line in _search_lines(target):
             if regex.search(line):
                 out.append(f"{shown}:{n}:{line[:_LINE_CHARS]}")
                 if len(out) == GREP_LIMIT:
@@ -355,7 +486,8 @@ GREP = Tool(
     name="grep",
     description=(
         "Search file contents with a Python regular expression. Returns path:line:text for each matching line "
-        f"(at most {GREP_LIMIT}). Skips binary files and, in a git repo, files ignored by .gitignore. "
+        f"(at most {GREP_LIMIT}). Skips binary files, symlinks that lead outside the workspace and the searched path, "
+        "and, in a git repo, files ignored by .gitignore. "
         "Use glob to filter files, e.g. '*.py' (no '/': matches file names at any depth) or 'src/**/*.ts'."
     ),
     input_schema={
@@ -372,6 +504,7 @@ GREP = Tool(
         "required": ["pattern"],
     },
     run=grep,
+    confirm=_outside_workspace,
 )
 
 
@@ -407,6 +540,7 @@ GLOB = Tool(
         "required": ["pattern"],
     },
     run=glob,
+    confirm=_outside_workspace,
 )
 
 

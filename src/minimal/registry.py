@@ -10,7 +10,8 @@ Events and their payloads:
 
     ``tool_call``    ``{name, input}``
         Fired before a tool runs. A handler may return
-        ``{"block": True, "reason": str}`` to veto the call.
+        ``{"block": True, "reason": str}`` to veto the call. A handler
+        that raises also blocks the call: a guard that crashed did not approve it.
     ``tool_result``  ``{name, input, output, is_error}``
         Fired after a tool runs. A handler may return ``{"output": str}``
         to rewrite what the model sees.
@@ -100,14 +101,15 @@ class Tool:
         description: Tells the model what the tool does and when to use it.
         input_schema: JSON schema of the ``input`` object.
         run: Implementation, called as ``run(input, ctx)``.
-        confirm: Ask the user before running (tools with side effects).
+        confirm: Ask the user before running (tools with side effects): ``True``,
+            or ``confirm(input, ctx) -> bool`` deciding per call.
     """
 
     name: str
     description: str
     input_schema: dict
     run: ToolRun
-    confirm: bool = False
+    confirm: bool | Callable[[dict, Any], bool] = False
 
 
 @dataclass
@@ -223,7 +225,7 @@ class Registry:
         run: ToolRun,
         description: str = "",
         input_schema: dict | None = None,
-        confirm: bool = False,
+        confirm: bool | Callable[[dict, Any], bool] = False,
     ) -> None:
         """Build and register a tool. ``input_schema`` defaults to an empty object.
 
@@ -391,12 +393,16 @@ class Registry:
         """Add a paragraph to the end of the system prompt."""
         self.prompt_parts.append(text)
 
-    def emit(self, event: str, payload: dict) -> list:
+    def emit(self, event: str, payload: dict, *, strict: bool = False) -> list:
         """Call every handler of ``event`` in order and return their non-``None`` results.
 
         A failing handler is reported on stderr and skipped, so one broken
         extension cannot break the agent loop, except :class:`TurnInterrupted`,
         which propagates to the caller.
+
+        With ``strict``, a failing handler's exception propagates instead. The
+        agent loop uses it for ``tool_call``: a guard that crashed has not
+        approved the call, so the call must not run.
         """
         results = []
         for handler in self._handlers.get(event, []):
@@ -405,6 +411,8 @@ class Registry:
             except TurnInterrupted:
                 raise
             except Exception as e:
+                if strict:
+                    raise
                 print(f'[extension] error in "{event}" handler: {e}', file=sys.stderr)
                 continue
             if result is not None:

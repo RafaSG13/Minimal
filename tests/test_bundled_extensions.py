@@ -76,6 +76,7 @@ class BundledExtensionTest(unittest.TestCase):
             session=session,
             cwd=str(self.tmp),
             auto_approve=True,
+            trust_project=True,
             extra_extensions=[str(BUNDLED / extension)],
         )
         _, errors = app.reload_extensions()
