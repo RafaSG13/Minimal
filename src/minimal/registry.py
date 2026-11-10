@@ -1,6 +1,6 @@
 """The registry: the one place where tools, slash commands, model providers,
-system-prompt additions, event handlers, UI widgets, UI colour themes and the
-header logo are collected.
+system-prompt additions, event handlers, UI widgets, status-line segments, UI
+colour themes and the header logo are collected.
 
 Built-in tools, built-in providers and extensions register through it. The
 agent loop and the terminal UI read from it. Extensions receive it as their
@@ -53,6 +53,9 @@ class TurnInterrupted(Exception):
 
 WIDGET_AREAS = ("top", "bottom", "sidebar")
 """Where an extension widget can be placed in the terminal UI."""
+
+STATUS_SIDES = ("left", "right")
+"""Where an extension status-line segment can be placed."""
 
 THEME_COLORS = (
     "surface",
@@ -145,6 +148,22 @@ class WidgetSpec:
 
 
 @dataclass
+class StatusSpec:
+    """A segment an extension adds to the terminal UI's status line (see :meth:`Registry.register_status`).
+
+    Attributes:
+        name: Unique name; registering the same name again replaces it.
+        render: Called as ``render(ctx)`` with the :class:`~minimal.app.App`; returns
+            a ``str``, a ``textual.content.Content`` or ``None`` (no segment this time).
+        side: ``"left"`` (after the git branch) or ``"right"`` (before the model).
+    """
+
+    name: str
+    render: Callable[[Any], Any]
+    side: str = "right"
+
+
+@dataclass
 class ThemeSpec:
     """A colour theme an extension adds to the terminal UI (see :meth:`Registry.register_theme`).
 
@@ -177,7 +196,7 @@ class LogoSpec:
 
 
 class Registry:
-    """Collects tools, commands, providers, prompt additions, event handlers, widgets, themes and the logo.
+    """Collects tools, commands, providers, prompt additions, event handlers, widgets, status segments, themes and the logo.
 
     Attributes:
         tools: Tools offered to the model, by name, in registration order.
@@ -185,6 +204,7 @@ class Registry:
         providers: Model integrations, by name (see :mod:`minimal.providers`).
         prompt_parts: Extra paragraphs appended to the system prompt.
         widgets: Visual components for the terminal UI, by name.
+        status: Status-line segments for the terminal UI, by name.
         themes: Colour themes for the terminal UI, by name.
         logo: Pixel art for the welcome header, or ``None`` for the built-in wordmark.
     """
@@ -195,6 +215,7 @@ class Registry:
         self.providers: dict[str, ProviderSpec] = {}
         self.prompt_parts: list[str] = []
         self.widgets: dict[str, WidgetSpec] = {}
+        self.status: dict[str, StatusSpec] = {}
         self.themes: dict[str, ThemeSpec] = {}
         self.logo: LogoSpec | None = None
         self._handlers: dict[str, list[EventHandler]] = {}
@@ -211,6 +232,7 @@ class Registry:
         self.providers.clear()
         self.prompt_parts.clear()
         self.widgets.clear()
+        self.status.clear()
         self.themes.clear()
         self.logo = None
         self._handlers.clear()
@@ -264,6 +286,11 @@ class Registry:
         do not ``dock`` it (a docked widget leaves the area zero rows tall). If
         the widget has a method ``refresh_state(ctx)``, the TUI calls it after
         mount, after every turn, after every slash command and after every reload.
+        If it has a method ``refresh_live(ctx, event)``, the TUI calls it on the UI
+        thread when a turn or command starts (``{"kind": "start", "turn": bool}``),
+        after each tool call is shown (``{"kind": "tool_call", "call": dict}``) and
+        after each tool result is shown (``{"kind": "tool_result", "call": dict,
+        "result": dict}``, where ``result`` is the ``tool_result`` block).
 
         Raises:
             ValueError: if ``name`` is empty, ``create`` is not callable or ``area`` is unknown.
@@ -275,6 +302,25 @@ class Registry:
                 "register_widget: area must be one of top, bottom, sidebar"
             )
         self.widgets[name] = WidgetSpec(name, create, area)
+
+    def register_status(
+        self, name: str, render: Callable[[Any], Any], side: str = "right"
+    ) -> None:
+        """Add a segment to the terminal UI's status line, replacing any segment with the same name.
+
+        ``render(ctx)`` receives the :class:`~minimal.app.App` and returns a ``str``,
+        a ``textual.content.Content`` or ``None`` to show nothing this time. It is
+        called whenever the status line is redrawn, so keep it cheap. ``side`` is
+        ``"left"`` (after the git branch) or ``"right"`` (before the model).
+
+        Raises:
+            ValueError: if ``name`` is empty, ``render`` is not callable or ``side`` is unknown.
+        """
+        if not name or not callable(render):
+            raise ValueError("register_status: name and render are required")
+        if side not in STATUS_SIDES:
+            raise ValueError("register_status: side must be left or right")
+        self.status[name] = StatusSpec(name, render, side)
 
     def register_theme(
         self, name: str, *, dark: bool, background: str, foreground: str, accent: str, **colors: str

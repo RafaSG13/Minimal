@@ -18,8 +18,10 @@ output, extension messages) is shown in the transcript. Commands marked
 from __future__ import annotations
 
 import asyncio
+import difflib
 import inspect
 import json
+import re
 import subprocess
 import threading
 import time
@@ -34,7 +36,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.highlight import highlight
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widget import Widget
 from textual.widgets import Input, Label, Markdown, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
@@ -42,11 +46,20 @@ from textual.widgets.selection_list import Selection
 
 from minimal import config, theme
 from minimal.app import App, ConsoleFrontend
-from minimal.commands import ExitRepl, find_command, run_command
+from minimal.commands import BUILTIN_COMMANDS, ExitRepl, find_command, run_command
 from minimal.registry import LOGO_ALIGN, LogoSpec
 
 PREVIEW_LINES = 8
 """Most output lines shown under a tool call."""
+
+EXPANDED_LINES = 500
+"""Most output lines shown when a tool call is expanded."""
+
+DIFF_CONTEXT = 2
+"""Unchanged lines kept around each change of an edit's diff."""
+
+MAX_LOCATE_BYTES = 2_000_000
+"""Largest file searched for the line an edit starts at."""
 
 REPLAY_LIMIT = 200
 """Most messages of a resumed session drawn in the transcript."""
@@ -138,55 +151,153 @@ def _tool_title(call: dict) -> Content:
     return Content.assemble(*parts)
 
 
-def _preview(lines: list[str], style: str, tail: bool = False) -> Content:
-    """At most :data:`PREVIEW_LINES` of ``lines`` (the last ones if ``tail``), saying how many were left out."""
-    hidden = len(lines) - PREVIEW_LINES
-    shown = (
-        (lines[-PREVIEW_LINES:] if tail else lines[:PREVIEW_LINES])
-        if hidden > 0
-        else lines
-    )
-    parts: list[tuple[str, str]] = []
-    if hidden > 0 and tail:
-        parts.append((f"… {hidden} earlier lines\n", "$dim"))
-    parts.append(("\n".join(shown), style))
-    if hidden > 0 and not tail:
-        parts.append((f"\n… {hidden} more lines", "$dim"))
-    return Content.assemble(*parts)
+def _edit_start_line(cwd: str | None, inp: dict) -> int | None:
+    """The 1-based line of ``inp["path"]`` where the edit starts, or ``None`` if it cannot be found.
+
+    ``old_string`` is looked for first; ``new_string`` is what a replayed (already applied) edit finds.
+    """
+    path = inp.get("path")
+    if cwd is None or not isinstance(path, str):
+        return None
+    file = Path(cwd, path)
+    try:
+        if file.stat().st_size > MAX_LOCATE_BYTES:
+            return None
+        text = file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for needle in (inp["old_string"], inp["new_string"]):
+        if needle and (idx := text.find(needle)) >= 0:
+            return text.count("\n", 0, idx) + 1
+    return None
 
 
-def _edit_diff(inp: dict) -> Content:
-    """``old_string`` as removed lines and ``new_string`` as added lines."""
-    return Content("\n").join(
-        _preview([f"{sign} {line}" for line in inp[key].splitlines() or [""]], style)
-        for sign, key, style in (
-            ("-", "old_string", "$diff-removed"),
-            ("+", "new_string", "$diff-added"),
-        )
+def _diff_line(gutter: Content, sign: str, text: Content | str, style: str) -> Content:
+    body = text if isinstance(text, Content) else Content.styled(text, style)
+    return Content.assemble(gutter, (f"{sign} ", style), body)
+
+
+def _changed_spans(a: str, b: str) -> tuple[Content, Content]:
+    """``a`` as a removed line and ``b`` as an added line, their differing characters in reverse."""
+    removed: list[tuple[str, str]] = []
+    added: list[tuple[str, str]] = []
+    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    for tag, i1, i2, j1, j2 in ops:
+        same = tag == "equal"
+        if i2 > i1:
+            removed.append((a[i1:i2], "$diff-removed" if same else "$diff-removed reverse"))
+        if j2 > j1:
+            added.append((b[j1:j2], "$diff-added" if same else "$diff-added reverse"))
+    return Content.assemble(*removed), Content.assemble(*added)
+
+
+def _edit_diff(inp: dict, start: int | None) -> list[Content]:
+    """An edit's diff, one line each: changes with :data:`DIFF_CONTEXT` unchanged lines around them.
+
+    With ``start`` (the file line where ``old_string`` begins) every line gets its line number.
+    """
+    old = inp["old_string"].splitlines() or [""]
+    new = inp["new_string"].splitlines() or [""]
+    width = len(str(start + max(len(old), len(new)))) if start is not None else 0
+
+    def gutter(n: int) -> Content:
+        return Content.styled(f"{n:>{width}} ", "$dim") if start is not None else Content("")
+
+    lines: list[Content] = []
+    ops = difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+    for idx, (tag, i1, i2, j1, j2) in enumerate(ops):
+        if tag == "equal":
+            head = DIFF_CONTEXT if idx > 0 else 0
+            tail = DIFF_CONTEXT if idx < len(ops) - 1 else 0
+            keep = list(range(i1, i2))
+            if len(ops) > 1 and len(keep) > head + tail:
+                dropped = len(keep) - head - tail
+                keep = keep[:head] + [-dropped] + (keep[-tail:] if tail else [])
+            for i in keep:
+                if i < 0:
+                    pad = " " * (width + 1) if start is not None else ""
+                    lines.append(Content.styled(f"{pad}⋯ {-i} unchanged lines", "$dim"))
+                else:
+                    lines.append(_diff_line(gutter((start or 0) + i), " ", old[i], "$muted"))
+        elif tag == "replace" and i2 - i1 == j2 - j1:
+            pairs = [_changed_spans(old[i1 + k], new[j1 + k]) for k in range(i2 - i1)]
+            for k, (removed, _) in enumerate(pairs):
+                lines.append(_diff_line(gutter((start or 0) + i1 + k), "-", removed, "$diff-removed"))
+            for k, (_, added) in enumerate(pairs):
+                lines.append(_diff_line(gutter((start or 0) + j1 + k), "+", added, "$diff-added"))
+        else:
+            for i in range(i1, i2):
+                lines.append(_diff_line(gutter((start or 0) + i), "-", old[i], "$diff-removed"))
+            for j in range(j1, j2):
+                lines.append(_diff_line(gutter((start or 0) + j), "+", new[j], "$diff-added"))
+    return lines
+
+
+def _highlighted(text: str, path: str | None) -> list[Content]:
+    """``text`` syntax-highlighted for ``path``'s language, one Content per line."""
+    lines = highlight(text, path=path, tab_size=4).split("\n")
+    if len(lines) != text.count("\n") + 1:  # the highlighter merged or dropped lines
+        return [Content(line.expandtabs(4)) for line in text.split("\n")]
+    return lines
+
+
+_READ_LINE = re.compile(r"(\d+)\t")
+
+
+def _numbered(lines: list[str], path: str | None) -> list[Content]:
+    """``read`` output (``N<TAB>text`` lines) highlighted for ``path``, with dim line numbers; other lines (notes) dim."""
+    matches = [_READ_LINE.match(line) for line in lines]
+    numbers = [m.group(1) for m in matches if m]
+    code = iter(
+        _highlighted("\n".join(line[m.end() :] for line, m in zip(lines, matches) if m), path)
+        if numbers
+        else []
     )
+    width = max(map(len, numbers), default=0)
+    return [
+        Content.assemble((m.group(1).rjust(width), "$dim"), "  ", next(code, Content("")))
+        if m
+        else Content.styled(line.expandtabs(4), "$dim")
+        for line, m in zip(lines, matches)
+    ]
 
 
 class ToolBlock(Static):
-    """One tool call: a header line and a preview, on a background that shows its state.
+    """One tool call: a header line and a preview of its body, on a background that shows its state.
 
     The CSS classes ``-pending``, ``-success`` and ``-error`` select the background.
+    A click expands a body longer than :data:`PREVIEW_LINES`, and collapses it again.
     """
 
-    def __init__(self, call: dict) -> None:
+    def __init__(self, call: dict, cwd: str | None = None) -> None:
         super().__init__(classes="tool -pending")
         self.call = call
         self.icon = Content.styled(theme.RUNNING, "$warning")
-        self.body: Content | None = None
+        self.lines: list[Content] = []  # the body, at most EXPANDED_LINES
+        self.total = 0  # body lines before the cap
+        self.tail = False  # the end of the body matters most (bash output)
+        self.expanded = False
         name, inp = call["name"], call["input"]
         if (
             name == "edit"
             and isinstance(inp.get("old_string"), str)
             and isinstance(inp.get("new_string"), str)
         ):
-            self.body = _edit_diff(inp)
+            self._set_lines(_edit_diff(inp, _edit_start_line(cwd, inp)), len)
         elif name == "write" and isinstance(inp.get("content"), str):
-            self.body = _preview(inp["content"].splitlines(), "$muted")
+            lines = inp["content"].rstrip("\n").split("\n")
+            self._set_lines(_highlighted("\n".join(lines[:EXPANDED_LINES]), self._path()), len(lines))
         self.update(self._text())
+
+    def _path(self) -> str | None:
+        path = self.call["input"].get("path")
+        return path if isinstance(path, str) else None
+
+    def _set_lines(self, lines: list[Content], total: Any, tail: bool = False) -> None:
+        """Keep ``lines`` as the body; ``total`` is the uncapped line count, or ``len`` to count ``lines``."""
+        self.total = len(lines) if total is len else total
+        self.tail = tail
+        self.lines = lines[-EXPANDED_LINES:] if tail else lines[:EXPANDED_LINES]
 
     def finish(self, result: dict) -> None:
         """Show ``result`` (a ``tool_result`` block) and switch to the success or error state."""
@@ -195,27 +306,64 @@ class ToolBlock(Static):
             if isinstance(result["content"], str)
             else json.dumps(result["content"])
         )
-        lines = output.strip("\n").expandtabs(4).splitlines()
+        output = output.strip("\n")
+        name = self.call["name"]
         if result["is_error"]:
             self.icon = Content.styled(theme.ERROR, "$error")
-            self.body = _preview(lines, "$error")
+            lines = output.expandtabs(4).splitlines()
+            self._set_lines([Content.styled(line, "$error") for line in lines], len)
             self.set_classes("tool -error")
         else:
             self.icon = Content.styled(theme.SUCCESS, "$success")
-            if self.call["name"] not in ("edit", "write") and lines:
-                self.body = _preview(lines, "$muted", tail=self.call["name"] == "bash")
+            if name == "read" and output:
+                lines = output.split("\n")
+                self._set_lines(_numbered(lines[:EXPANDED_LINES], self._path()), len(lines))
+            elif name not in ("edit", "write") and output:
+                lines = output.expandtabs(4).splitlines()
+                tail = name == "bash"
+                kept = lines[-EXPANDED_LINES:] if tail else lines[:EXPANDED_LINES]
+                self._set_lines([Content.styled(line, "$muted") for line in kept], len(lines), tail)
             self.set_classes("tool -success")
         self.update(self._text())
 
+    def on_click(self, event: events.Click) -> None:
+        if self.total > PREVIEW_LINES:
+            self.expanded = not self.expanded
+            self.update(self._text())
+
+    def _body(self) -> Content | None:
+        """The body as shown: a :data:`PREVIEW_LINES` preview, or all of it when expanded."""
+        if not self.lines:
+            return None
+        hidden = self.total - PREVIEW_LINES
+        if hidden <= 0:
+            shown = list(self.lines)
+        elif not self.expanded:
+            if self.tail:
+                note = Content.styled(f"… {hidden} earlier lines · click to expand", "$dim")
+                shown = [note, *self.lines[-PREVIEW_LINES:]]
+            else:
+                note = Content.styled(f"… {hidden} more lines · click to expand", "$dim")
+                shown = [*self.lines[:PREVIEW_LINES], note]
+        else:
+            shown = list(self.lines)
+            cut = self.total - len(self.lines)
+            if cut > 0:
+                note = Content.styled(f"… {cut} more lines not shown", "$dim")
+                shown.insert(0 if self.tail else len(shown), note)
+            shown.append(Content.styled("click to collapse", "$dim"))
+        return Content("\n").join(shown)
+
     def _text(self) -> Content:
         text = Content.assemble(self.icon, " ", _tool_title(self.call))
-        return Content.assemble(text, "\n", self.body) if self.body else text
+        body = self._body()
+        return Content.assemble(text, "\n", body) if body is not None else text
 
 
 # --- chrome --------------------------------------------------------------------
 
 
-def _logo(spec: LogoSpec) -> Content:
+def logo_content(spec: LogoSpec) -> Content:
     """``spec``'s pixel art as text: each terminal row draws two pixel rows with half blocks."""
     rows = list(spec.art)
     if len(rows) % 2:
@@ -279,7 +427,7 @@ class Header(Vertical):
         for value in LOGO_ALIGN:
             self.set_class(value == align, f"-align-{value}")
         if logo is not None:
-            yield Static(_logo(logo), classes="logo")
+            yield Static(logo_content(logo), classes="logo")
         else:
             yield Static(_wordmark(), classes="wordmark")
         yield Static(_header(self.core), classes="info")
@@ -401,18 +549,48 @@ class DialogScreen(ModalScreen[Any]):
         self.dismiss(None)
 
 
+class CommandSuggester(Suggester):
+    """Completes a slash command's name in the prompt (→ accepts), built-in and extension commands alike."""
+
+    def __init__(self, core: App) -> None:
+        super().__init__(use_cache=False, case_sensitive=True)  # extension commands change on reload
+        self.core = core
+
+    async def get_suggestion(self, value: str) -> str | None:
+        if not value.startswith("/") or " " in value:
+            return None
+        typed = value[1:]
+        for name in sorted({*BUILTIN_COMMANDS, *self.core.registry.commands}):
+            if name.startswith(typed) and name != typed:
+                return "/" + name
+        return None
+
+
+def _theme_swatch(t: Any) -> Content:
+    """A sample of a Textual theme: ``Aa`` in its text colours, then a block of each accent colour."""
+    parts: list[str | tuple[str, str]] = [(" Aa ", f"{t.foreground} on {t.background}"), " "]
+    for color in (t.primary, t.secondary, t.success, t.warning, t.error):
+        if color is not None:
+            parts.append(("█", color))
+    parts.append("  ")
+    return Content.assemble(*parts)
+
+
 class ChoiceScreen(DialogScreen):
     """Pick one option; dismisses with its value."""
 
     HINT = "enter selects · esc cancels"
 
-    def __init__(self, heading: str, options: list[tuple[str, str]]) -> None:
+    def __init__(self, heading: str, options: list[tuple[str, str | Content]]) -> None:
         super().__init__(heading)
         self.options = options
 
     def body(self) -> Widget:
         return OptionList(
-            *(Option(Content(label), id=value) for value, label in self.options),
+            *(
+                Option(label if isinstance(label, Content) else Content(label), id=value)
+                for value, label in self.options
+            ),
             compact=True,
         )
 
@@ -533,6 +711,17 @@ class TuiFrontend:
             return ConsoleFrontend().choose(title, options)
         return self._modal(ChoiceScreen(title, options))
 
+    def choose_theme(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        """Like :meth:`choose`, each label after a sample of the theme's colours."""
+        if self._in_terminal():
+            return ConsoleFrontend().choose(title, options)
+        themes = self.tui.available_themes
+        decorated: list[tuple[str, str | Content]] = [
+            (value, Content.assemble(_theme_swatch(themes[value]), label) if value in themes else label)
+            for value, label in options
+        ]
+        return self._modal(ChoiceScreen(title, decorated))
+
     def choose_many(
         self, title: str, options: list[tuple[str, str, bool]]
     ) -> list[str] | None:
@@ -551,7 +740,10 @@ class MinimalTui(TextualApp):
 
     TITLE = "minimal"
 
-    BINDINGS = [Binding("escape", "interrupt", "Interrupt turn", show=False)]
+    BINDINGS = [
+        Binding("escape", "interrupt", "Interrupt turn", show=False),
+        Binding("ctrl+b", "toggle_sidebar", "Toggle sidebar", show=False),
+    ]
 
     CSS = """
     #body { height: 1fr; }
@@ -563,6 +755,7 @@ class MinimalTui(TextualApp):
         border-left: solid $border-muted; scrollbar-size-vertical: 1;
     }
     #sidebar.-has-widgets { display: block; }
+    #sidebar.-collapsed { display: none; }
 
     Header { height: auto; padding: 1 1 0 1; }
     Header.-align-center Static { text-align: center; }
@@ -614,6 +807,7 @@ class MinimalTui(TextualApp):
         self.busy_since = 0.0
         self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
         self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
+        self.status_errors: set[str] = set()  # status segments whose error was already shown
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -625,7 +819,11 @@ class MinimalTui(TextualApp):
                 yield Static(id="working")
                 with Horizontal(id="composer"):
                     yield Static(theme.PROMPT, id="prompt-glyph")
-                    yield Input(placeholder="Message, or / for commands", id="prompt")
+                    yield Input(
+                        placeholder="Message, or / for commands",
+                        id="prompt",
+                        suggester=CommandSuggester(self.core),
+                    )
                 with Horizontal(id="statusline"):
                     yield Static(id="status-left")
                     yield Static(id="status-right")
@@ -687,7 +885,7 @@ class MinimalTui(TextualApp):
                 if kind == "text" and message["role"] == "assistant":
                     widgets.append(Markdown(block["text"], classes="assistant"))
                 elif kind == "tool_use":
-                    blocks[block["id"]] = ToolBlock(block)
+                    blocks[block["id"]] = ToolBlock(block, self.core.cwd)
                     widgets.append(blocks[block["id"]])
                 elif kind == "tool_result" and block["tool_use_id"] in blocks:
                     blocks[block["tool_use_id"]].finish(block)
@@ -727,15 +925,18 @@ class MinimalTui(TextualApp):
 
     def show_tool_call(self, call: dict) -> Any:
         self.assistant = None
-        block = ToolBlock(call)
+        block = ToolBlock(call, self.core.cwd)
         self.tool_blocks[call["id"]] = block
-        return self._add(block)
+        mounted = self._add(block)
+        self.refresh_live({"kind": "tool_call", "call": call})
+        return mounted
 
     def show_tool_result(self, call: dict, result: dict) -> None:
         block = self.tool_blocks.pop(call["id"], None)
         if block is not None:
             block.finish(result)
             self.call_after_refresh(self._follow)
+        self.refresh_live({"kind": "tool_result", "call": call, "result": result})
 
     def end_turn(self, error: str | None) -> Any:
         self.assistant = None
@@ -775,6 +976,7 @@ class MinimalTui(TextualApp):
         for area in ("top", "bottom", "sidebar"):
             await self.query_one(f"#{area}").remove_children()
         self.ext_widgets = []
+        self.status_errors.clear()
         for spec in list(self.core.registry.widgets.values()):
             try:
                 widget = spec.create(self.core)
@@ -788,16 +990,29 @@ class MinimalTui(TextualApp):
         self.query_one("#sidebar").set_class(has_sidebar, "-has-widgets")
         self.refresh_widgets()
 
-    def refresh_widgets(self) -> None:
-        """Call ``refresh_state(core)`` on every extension widget that has it."""
+    def _call_widgets(self, method: str, *args: Any) -> None:
+        """Call ``method(*args)`` on every extension widget that has it, showing any error."""
         for name, widget in self.ext_widgets:
-            refresh = getattr(widget, "refresh_state", None)
-            if not callable(refresh):
+            fn = getattr(widget, method, None)
+            if not callable(fn):
                 continue
             try:
-                refresh(self.core)
+                fn(*args)
             except Exception as e:
                 self.show_error(f"[extension] widget {name}: {e}")
+
+    def refresh_widgets(self) -> None:
+        """Call ``refresh_state(core)`` on every extension widget that has it."""
+        self._call_widgets("refresh_state", self.core)
+
+    def refresh_live(self, event: dict) -> None:
+        """Call ``refresh_live(core, event)`` on every extension widget that has it, then redraw the status line."""
+        self._call_widgets("refresh_live", self.core, event)
+        self._render_status()
+
+    def action_toggle_sidebar(self) -> None:
+        """Hide or show the sidebar of extension widgets."""
+        self.query_one("#sidebar").toggle_class("-collapsed")
 
     # --- status line and working indicator -----------------------------------
 
@@ -820,10 +1035,27 @@ class MinimalTui(TextualApp):
             self.git = git
             self._render_status()
 
+    def _status_segments(self, side: str) -> list[Content]:
+        """The extension segments for ``side`` of the status line; a failing one is skipped and reported once."""
+        segments = []
+        for spec in list(self.core.registry.status.values()):
+            if spec.side != side:
+                continue
+            try:
+                value = spec.render(self.core)
+            except Exception as e:
+                if spec.name not in self.status_errors:
+                    self.status_errors.add(spec.name)
+                    self.show_error(f"[extension] status {spec.name}: {e}")
+                continue
+            if value is not None:
+                segments.append(value if isinstance(value, Content) else Content(str(value)))
+        return segments
+
     def _render_status(self) -> None:
         core = self.core
         sep = (f" {theme.SEPARATOR} ", "$border-muted")
-        parts: list[str | tuple[str, str]] = [
+        parts: list[str | tuple[str, str] | Content] = [
             " ",
             (f"{theme.MODEL} {core.model}", "$status-model"),
             (f"{theme.DOT}{core.provider_name}", "$muted"),
@@ -835,12 +1067,16 @@ class MinimalTui(TextualApp):
             branch, dirty = git
             color = "$status-git-dirty" if dirty else "$status-git-clean"
             parts += [sep, (f"{theme.BRANCH} {branch}{' *' if dirty else ''}", color)]
+        for segment in self._status_segments("left"):
+            parts += [sep, segment]
         self.query_one("#status-left", Static).update(Content.assemble(*parts))
         right = f"{len(core.extensions)} ext{theme.DOT}session {core.session.id}"
         tokens = core.context_tokens
         if tokens is not None:
             right = f"{tokens / 1000:.1f}k ctx{theme.DOT}{right}"
-        self.query_one("#status-right", Static).update(Content(right))
+        self.query_one("#status-right", Static).update(
+            Content(theme.DOT).join([*self._status_segments("right"), Content(right)])
+        )
 
     def set_busy(self, busy: bool) -> None:
         """Lock the prompt and show the working indicator while a turn or command runs."""
@@ -880,6 +1116,7 @@ class MinimalTui(TextualApp):
             return
         self.in_turn = not line.startswith("/")
         self.set_busy(True)
+        self.refresh_live({"kind": "start", "turn": self.in_turn})
         if line.startswith("/"):
             cmd = find_command(line[1:].partition(" ")[0], self.core)
             if cmd is not None and cmd.terminal:

@@ -19,8 +19,10 @@ from minimal.tui import (
     MinimalTui,
     TextScreen,
     ToolBlock,
-    _logo,
+    CommandSuggester,
+    _edit_diff,
     _outside_event_loop,
+    logo_content,
 )
 
 
@@ -62,6 +64,13 @@ class Counter(Static):
     def refresh_state(self, ctx):
         Counter.calls += 1
         self.update(f"{len(ctx.messages)} messages")
+
+
+class LiveRecorder(Static):
+    kinds: list[str] = []
+
+    def refresh_live(self, ctx, event):
+        LiveRecorder.kinds.append(event["kind"])
 
 
 class TuiTest(unittest.IsolatedAsyncioTestCase):
@@ -164,6 +173,75 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([m.source for m in app.query(Markdown)], ["old answer"])
             self.assertTrue(app.query_one(ToolBlock).has_class("-success"))
 
+    async def test_refresh_live_reports_tool_events(self):
+        (self.tmp / "a.txt").write_text("hi\n")
+        LiveRecorder.kinds = []
+        self.core.registry.register_widget("recorder", lambda ctx: LiveRecorder(), area="sidebar")
+        self.use_replies(
+            Reply(
+                content=[{"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "a.txt"}}],
+                stop_reason="tool_use",
+            ),
+            Reply(content=[{"type": "text", "text": "done"}], stop_reason="end_turn"),
+        )
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "read it")
+            await self.wait_until(pilot, self.idle(app))
+            self.assertEqual(LiveRecorder.kinds, ["start", "tool_call", "tool_result"])
+
+    async def test_status_segments_render_and_report_errors(self):
+        def boom(ctx):
+            raise RuntimeError("no")
+
+        self.core.registry.register_status("cost", lambda ctx: "$1")
+        self.core.registry.register_status("boom", boom, side="left")
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            self.assertIn("$1", str(app.query_one("#status-right", Static).render()))
+            for _ in range(2):
+                await self.submit(pilot, "/tools")
+                await self.wait_until(pilot, self.idle(app))
+            errors = [str(s.render()) for s in app.query(".error").results(Static)]
+            self.assertEqual(len([e for e in errors if "status boom" in e]), 1, errors)
+
+    def test_edit_diff_numbers_and_highlights_changes(self):
+        lines = _edit_diff({"old_string": "a\nb = 1\nc", "new_string": "a\nb = 2\nc"}, 10)
+        self.assertEqual([line.plain for line in lines], ["10   a", "11 - b = 1", "11 + b = 2", "12   c"])
+        removed = lines[1]
+        changed = [removed.plain[s.start : s.end] for s in removed.spans if str(s.style) == "$diff-removed reverse"]
+        self.assertEqual(changed, ["1"])
+
+    async def test_tool_block_expands_on_click(self):
+        output = "\n".join(f"line {i}" for i in range(20))
+        self.core.session.messages += [
+            {"role": "user", "content": "run"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "seq"}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": output, "is_error": False}],
+            },
+        ]
+        app = MinimalTui(self.core)
+        async with app.run_test(size=(100, 50)) as pilot:
+            block = app.query_one(ToolBlock)
+            self.assertIn("12 earlier lines · click to expand", str(block.render()))
+            self.assertNotIn("line 0\n", str(block.render()))
+            await pilot.click(ToolBlock)
+            self.assertIn("line 0\n", str(block.render()))
+            self.assertIn("click to collapse", str(block.render()))
+
+    async def test_command_suggester(self):
+        self.core.registry.register_command("thanks", lambda args, app: None)
+        suggester = CommandSuggester(self.core)
+        self.assertEqual(await suggester.get_suggestion("/th"), "/thanks")
+        self.assertEqual(await suggester.get_suggestion("/the"), "/theme")
+        self.assertIsNone(await suggester.get_suggestion("/theme x"))
+        self.assertIsNone(await suggester.get_suggestion("hi"))
+
     def use_write_replies(self):
         self.use_replies(
             Reply(
@@ -254,7 +332,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list(app.available_themes), ["minimal"])
 
     def test_logo_half_blocks(self):
-        content = _logo(LogoSpec(["ab.a", "a.bb", "b..."], {"a": "#ff0000", "b": "#00ff00"}))
+        content = logo_content(LogoSpec(["ab.a", "a.bb", "b..."], {"a": "#ff0000", "b": "#00ff00"}))
         self.assertEqual(content.plain, "█▀▄▀\n▀   ")
         self.assertIn("#ff0000 on #00ff00", [str(span.style) for span in content.spans])
 

@@ -10,6 +10,7 @@ An extension is a ``.py`` file that defines ``register(minimal)``, where ``minim
         minimal.on("tool_call", lambda e: {"block": True, "reason": "no"})
         minimal.append_system_prompt("Extra instructions.")
         minimal.register_widget("panel", lambda ctx: MyWidget(), area="sidebar")
+        minimal.register_status("cost", lambda ctx: "$0.12", side="right")
         minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
         minimal.register_logo(["#.#", "###"], {"#": "#4fc3f7"})
 

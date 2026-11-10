@@ -67,6 +67,9 @@ SELF_EXTEND_PROMPT = (
     "minimal.append_system_prompt(text) adds instructions; minimal.register_widget(name, create, area) adds a visual "
     'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '
     "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn; "
+    "an optional refresh_live(ctx, event) method is called live during a turn (event kind 'start', 'tool_call' or "
+    "'tool_result'); minimal.register_status(name, render, side='right') adds a status-line segment: render(ctx) "
+    "returns text or None; "
     "minimal.register_theme(name, dark=..., background=..., foreground=..., accent=..., **more #rrggbb colours) "
     "adds a colour theme the user picks with /theme. "
     "minimal.register_logo(art, colors, align='center') replaces the default wordmark in the welcome header with "
@@ -143,6 +146,9 @@ class Frontend(Protocol):
     def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
         """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled."""
 
+    def choose_theme(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        """Like :meth:`choose`, for colour themes; the frontend may decorate labels."""
+
     def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
         """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if cancelled."""
 
@@ -214,6 +220,10 @@ class ConsoleFrontend:
         if not answer.isdigit() or not 1 <= int(answer) <= len(options):
             return None
         return options[int(answer) - 1][0]
+
+    def choose_theme(self, title: str, options: list[tuple[str, str]]) -> str | None:
+        """Same as :meth:`choose`: a console cannot show the colours."""
+        return self.choose(title, options)
 
     def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
         """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input or EOF cancels."""

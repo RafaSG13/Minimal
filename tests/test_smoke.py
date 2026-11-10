@@ -216,6 +216,15 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(registry.logo.art, ["a."])
         self.assertEqual(registry.logo.align, "center")
 
+    def test_register_status_validates(self):
+        registry = Registry()
+        with self.assertRaisesRegex(ValueError, "side must be"):
+            registry.register_status("x", lambda ctx: "", side="middle")
+        with self.assertRaisesRegex(ValueError, "name and render are required"):
+            registry.register_status("x", "not callable")
+        registry.register_status("x", lambda ctx: "")
+        self.assertEqual(registry.status["x"].side, "right")
+
 
 HELLO_EXT = 'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 

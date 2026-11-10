@@ -120,7 +120,7 @@ def _theme(args: str, app: App) -> None:
         print(f"Only the built-in {names[0]} theme is installed; get more from /ext → Themes.")
         return
     options = [(n, f"{n} (current)" if n == current else n) for n in names]
-    name = args or app.frontend.choose("Theme · more in /ext → Themes", options)
+    name = args or app.frontend.choose_theme("Theme · more in /ext → Themes", options)
     if name is None:
         return
     if name not in names:
