@@ -1,0 +1,32 @@
+.minimal/extensions-plan.md
+  h_e81853c41416fb 1-435
+README.md
+  h_e81853c41416fb 106
+extensions/compact.py
+  h_e81853c41416fb 17,54,61,67,84,110-114,119
+extensions/tools/subagent.py
+  h_e81853c41416fb 4-5,28-33,35-36,38,51-52
+src/minimal/agent.py
+  h_e81853c41416fb 22,26,74,79,96
+src/minimal/app.py
+  h_e81853c41416fb 34-48
+src/minimal/registry.py
+  h_e81853c41416fb 21-22,44-52,398-399,405-406
+src/minimal/tui.py
+  h_e81853c41416fb 853
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 16,44-60,162-195,229-262
+tests/test_smoke.py
+  h_e81853c41416fb 16,21,122-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d6a81b569531b97d672c67ee72783f8e80fe5e34",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
