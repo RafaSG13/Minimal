@@ -10,6 +10,7 @@
 - ``theme.json``: the terminal UI's colour theme, as ``{"theme": name}``.
 - ``trusted.json``: project extension folders the user agreed to run, as
   ``{"projects": {folder: digest}}`` (see :func:`minimal.extensions.files_digest`).
+- ``prompt.md``: optional Markdown text that replaces the packaged base prompt (see :func:`minimal.app.base_prompt`).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ KEYS_FILE = Path.home() / ".minimal" / "keys.json"
 MARKETPLACES_FILE = Path.home() / ".minimal" / "marketplaces.json"
 THEME_FILE = Path.home() / ".minimal" / "theme.json"
 TRUST_FILE = Path.home() / ".minimal" / "trusted.json"
+PROMPT_FILE = Path.home() / ".minimal" / "prompt.md"
 
 
 def load_config() -> dict | None:

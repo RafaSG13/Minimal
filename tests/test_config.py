@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from minimal import config, setup
-from minimal.app import App
+from minimal.app import App, build_system_prompt
 from minimal.cli import start_provider
 from minimal.providers.base import ProviderSpec
 from minimal.registry import Registry
@@ -84,3 +84,43 @@ class ConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromptFileTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cwd = tmp.name
+        self.prompt_file = Path(tmp.name) / "prompt.md"
+        patcher = mock.patch.object(config, "PROMPT_FILE", self.prompt_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def build(self) -> str:
+        return build_system_prompt(Registry(), self.cwd)
+
+    def test_default_prompt_when_no_user_file(self):
+        prompt = self.build()
+        self.assertTrue(prompt.startswith("You are a coding agent"))
+        self.assertIn(f"Working directory: {self.cwd}", prompt)
+        self.assertIn("You can extend minimal", prompt)
+
+    def test_user_file_replaces_base_prompt_only(self):
+        self.prompt_file.write_text("Answer only in Spanish.", encoding="utf-8")
+        Path(self.cwd, "AGENTS.md").write_text("use tabs", encoding="utf-8")
+        prompt = self.build()
+        self.assertTrue(prompt.startswith("Answer only in Spanish."))
+        self.assertNotIn("You are a coding agent", prompt)
+        for kept in ("Working directory:", "You can extend minimal", "use tabs"):
+            self.assertIn(kept, prompt)
+
+    def test_blank_user_file_means_no_base_prompt(self):
+        self.prompt_file.write_text("  \n", encoding="utf-8")
+        prompt = self.build()
+        self.assertTrue(prompt.startswith("Working directory:"))
+        self.assertNotIn("You are a coding agent", prompt)
+
+    def test_unreadable_user_file_is_an_error(self):
+        self.prompt_file.write_bytes(b"\xff\xfe\x00")
+        with self.assertRaisesRegex(ValueError, "prompt.md"):
+            self.build()
