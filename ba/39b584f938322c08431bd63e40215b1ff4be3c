@@ -1,0 +1,64 @@
+.github/workflows/ci.yml
+  h_e81853c41416fb 1-20
+LICENSE
+  h_e81853c41416fb 1-21
+README.md
+  h_e81853c41416fb 22,25,31,84,94,106-107,114,132,141-148,215,223,227,235,240,257-260,282,290-291,295,297,305-306
+extensions/compact.py
+  h_e81853c41416fb 1-113
+extensions/tools/subagent.py
+  h_e81853c41416fb 1-83
+extensions/tools/web_search.py
+  h_e81853c41416fb 1-84
+pyproject.toml
+  h_e81853c41416fb 6-7,15,23-29
+src/minimal/__init__.py
+  h_e81853c41416fb 5
+src/minimal/agent.py
+  h_e81853c41416fb 17,26-36,61-63,74,76-81,83,88-89,95,100,163,172,179-180
+src/minimal/app.py
+  h_e81853c41416fb 16,218,225,249,293-301,313-315,317,333-335
+src/minimal/cli.py
+  h_e81853c41416fb 30,40,95-99
+src/minimal/commands.py
+  h_e81853c41416fb 20,41-63,323
+src/minimal/providers/__init__.py
+  h_e81853c41416fb 18,23
+src/minimal/providers/anthropic.py
+  h_e81853c41416fb 4,11,20-22,56-61,68-80
+src/minimal/providers/base.py
+  h_e81853c41416fb 17-19,27-29,41-50,61,67-74
+src/minimal/providers/gemini.py
+  h_e81853c41416fb 29,76-77,129,143-144,146,157,176,183,213-214,240-247
+src/minimal/providers/openai.py
+  h_e81853c41416fb 1-181
+src/minimal/registry.py
+  h_e81853c41416fb 17,19-20
+src/minimal/session.py
+  h_e81853c41416fb 81-93
+src/minimal/tools.py
+  h_e81853c41416fb 15,270-272,284-286,288-301
+src/minimal/tui.py
+  h_e81853c41416fb 13-15,52-54,262,558-559,619,643-645,672-701,823-827,843-856,865,905,910
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 1-179
+tests/test_providers.py
+  h_e81853c41416fb 6,9,84-85,110-114,141-212
+tests/test_smoke.py
+  h_e81853c41416fb 1-2,7-8,16,18,20,43-45,72-80,130,140-151,165-183
+tests/test_tui.py
+  h_e81853c41416fb 3,43-58,114-148,249-251
+uv.lock
+  h_e81853c41416fb 684,689-694,699,704-726,739-828,1077-1101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "ba39b584f938322c08431bd63e40215b1ff4be3c",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
