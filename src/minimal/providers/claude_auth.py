@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from minimal import config
+
 if TYPE_CHECKING:
     from anthropic.lib.credentials import AccessToken
 
@@ -68,12 +70,7 @@ def load() -> Credentials | None:
 
 def save(creds: Credentials) -> None:
     """Write the login atomically with mode 0600."""
-    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = AUTH_FILE.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(dataclasses.asdict(creds)))
-    os.replace(tmp, AUTH_FILE)
+    config.write_private(AUTH_FILE, dataclasses.asdict(creds))
 
 
 def _token_request(body: dict, headers: dict[str, str] | None = None) -> dict:

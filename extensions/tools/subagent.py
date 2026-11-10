@@ -38,7 +38,7 @@ def _child_registry(parent):
     _sync_tools(parent, child)
 
     def veto(event):
-        for verdict in parent.emit("tool_call", event):
+        for verdict in parent.emit("tool_call", event, strict=True):  # a failing parent guard blocks too
             if isinstance(verdict, dict) and verdict.get("block"):
                 return verdict
         return None

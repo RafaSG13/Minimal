@@ -11,12 +11,19 @@ them by name also sorts them by creation time.
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from minimal import config
+
 SESSIONS_DIR = Path.home() / ".minimal" / "sessions"
 """Folder holding session files. Read at call time, so tests can patch it."""
+
+ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+"""Valid session ids (always ``fullmatch``): a plain file name, so an id cannot point outside :data:`SESSIONS_DIR`."""
 
 
 def new_id() -> str:
@@ -45,7 +52,8 @@ class Session:
         """Append the messages added since the last save to the file."""
         pending = self.messages[self.persisted :]
         if pending:
-            with open(self.file, "a", encoding="utf-8") as f:
+            fd = os.open(self.file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
                 for message in pending:
                     f.write(json.dumps(message, ensure_ascii=False) + "\n")
         self.persisted = len(self.messages)
@@ -56,9 +64,14 @@ def open_session(id: str | None = None) -> Session:
 
     A new id is generated when ``id`` is ``None``. The file itself is only
     created on the first :meth:`Session.save` that has something to write.
+
+    Raises:
+        ValueError: if ``id`` is not a plain name (see :data:`ID_RE`).
     """
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    config.private_dir(SESSIONS_DIR)
     id = id or new_id()
+    if not ID_RE.fullmatch(id):
+        raise ValueError(f"invalid session id {id!r}: use letters, digits, '.', '_' and '-'")
     file = SESSIONS_DIR / f"{id}.jsonl"
     messages: list[dict] = []
     if file.exists():

@@ -41,6 +41,8 @@ DEFAULT_URL = "https://github.com/RafaSG13/minimal-marketplace.git"
 CACHE_ROOT = Path.home() / ".minimal" / "marketplace"
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
 """Valid extension names (always ``fullmatch``): no path separators, no leading ``_``."""
+GIT_TIMEOUT = 120
+"""Seconds a ``git`` or ``gh`` command may take before it is given up (a dead network must not hang ``/ext``)."""
 
 
 @dataclass
@@ -115,17 +117,21 @@ def _git(*args: str, cwd: Path | None = None) -> str:
     """Run ``git`` and return its stdout. Credential prompts fail instead of hanging.
 
     Raises:
-        RuntimeError: if git is missing or exits with an error.
+        RuntimeError: if git is missing, exits with an error or takes longer than :data:`GIT_TIMEOUT`.
     """
     if shutil.which("git") is None:
         raise RuntimeError("git is not installed; the marketplace needs it")
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"git {args[0]} timed out after {GIT_TIMEOUT}s") from None
     if result.returncode != 0:
         raise RuntimeError(f"git {args[0]} failed: {result.stderr.strip() or result.stdout.strip()}")
     return result.stdout
@@ -200,7 +206,7 @@ def sync(url: str | None = None) -> Path:
     shutil.rmtree(fresh, ignore_errors=True)
     fresh.parent.mkdir(parents=True, exist_ok=True)
     try:
-        _git("clone", "--quiet", url, str(fresh))
+        _git("clone", "--quiet", "--", url, str(fresh))  # "--": a URL starting with "-" is not an option
     except RuntimeError:
         if (target / ".git").is_dir():
             print(f"[marketplace] could not update {url}; using the cached copy", file=sys.stderr)
@@ -216,7 +222,12 @@ def search(query: str = "", url: str | None = None, category: str | None = None)
 
     Listed by category in :data:`~minimal.extensions.CATEGORIES` order, then by
     name; only ``category``'s if given. Files with invalid metadata are skipped.
+
+    Raises:
+        ValueError: if ``category`` is not one of :data:`~minimal.extensions.CATEGORIES`.
     """
+    if category:
+        extensions.category_dir(Path(), category)  # validates it: the folder name must not be a path
     root = sync(url)
     needle = query.lower()
     listings = []
@@ -277,8 +288,10 @@ def install(
         ``(dest, updated)``: the installed file, and whether it replaced an existing one.
 
     Raises:
-        ValueError: if the name is invalid, not in the marketplace, or in several categories.
+        ValueError: if the name or category is invalid, or the name is not in the marketplace or in several categories.
     """
+    if category:
+        extensions.category_dir(Path(), category)  # validates it: the folder name must not be a path
     _check_name(name)
     root = sync(url)
     folders = [category] if category else extensions.CATEGORIES
@@ -351,7 +364,7 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
     extensions.category_dir(Path(), category)  # validates it
     url = url or marketplace_url()
     with tempfile.TemporaryDirectory() as tmp:
-        _git("clone", "--quiet", url, tmp)
+        _git("clone", "--quiet", "--", url, tmp)  # "--": a URL starting with "-" is not an option
         dest = Path(tmp, category, f"{listing.name}.py")
         if dest.exists() and dest.read_bytes() == path.read_bytes():
             raise ValueError(f"{listing.name} is already published with identical content")
@@ -365,12 +378,16 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
         _git("push", "--quiet", "origin", branch, cwd=Path(tmp))
         if shutil.which("gh") is None:
             return f"Pushed branch {branch} to {url}; open a pull request to publish it."
-        result = subprocess.run(
-            ["gh", "pr", "create", "--head", branch, "--title", title, "--body", listing.description],
-            cwd=tmp,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "create", "--head", branch, "--title", title, "--body", listing.description],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                timeout=GIT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return f"Pushed branch {branch} to {url}; gh pr create timed out"
         if result.returncode == 0:
             return f"Opened pull request {result.stdout.strip()}"
         return f"Pushed branch {branch} to {url}; gh pr create failed: {result.stderr.strip()}"

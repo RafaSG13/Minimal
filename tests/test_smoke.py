@@ -230,7 +230,9 @@ class ReloadTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.registry = Registry()
         session = Session("t", self.tmp / "t.jsonl")
-        self.app = App(registry=self.registry, session=session, cwd=str(self.tmp), auto_approve=True)
+        self.app = App(
+            registry=self.registry, session=session, cwd=str(self.tmp), auto_approve=True, trust_project=True
+        )
         self.ext_dir = self.tmp / ".minimal" / "extensions"
         self.ext_dir.mkdir(parents=True)
 

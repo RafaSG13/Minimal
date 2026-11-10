@@ -8,18 +8,23 @@
 - ``marketplaces.json``: extension marketplaces added from the ``/ext``
   picker (git URLs or local paths), as ``{"marketplaces": [...]}``.
 - ``theme.json``: the terminal UI's colour theme, as ``{"theme": name}``.
+- ``trusted.json``: project extension folders the user agreed to run, as
+  ``{"projects": {folder: digest}}`` (see :func:`minimal.extensions.files_digest`).
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 CONFIG_FILE = Path.home() / ".minimal" / "config.json"
 KEYS_FILE = Path.home() / ".minimal" / "keys.json"
 MARKETPLACES_FILE = Path.home() / ".minimal" / "marketplaces.json"
 THEME_FILE = Path.home() / ".minimal" / "theme.json"
+TRUST_FILE = Path.home() / ".minimal" / "trusted.json"
 
 
 def load_config() -> dict | None:
@@ -36,7 +41,7 @@ def load_config() -> dict | None:
 
 def save_config(provider: str, model: str) -> None:
     """Save the default provider and model."""
-    _write_private(CONFIG_FILE, {"provider": provider, "model": model})
+    write_private(CONFIG_FILE, {"provider": provider, "model": model})
 
 
 def load_keys() -> dict[str, str]:
@@ -52,7 +57,7 @@ def save_key(name: str, value: str) -> None:
     """Save API key ``value`` under environment-variable ``name`` and set it in ``os.environ``."""
     keys = load_keys()
     keys[name] = value
-    _write_private(KEYS_FILE, keys)
+    write_private(KEYS_FILE, keys)
     os.environ[name] = value
 
 
@@ -76,7 +81,7 @@ def load_marketplaces() -> list[str]:
 
 def save_marketplaces(urls: list[str]) -> None:
     """Replace the saved marketplace URLs with ``urls``."""
-    _write_private(MARKETPLACES_FILE, {"marketplaces": urls})
+    write_private(MARKETPLACES_FILE, {"marketplaces": urls})
 
 
 def load_theme() -> str | None:
@@ -91,7 +96,27 @@ def load_theme() -> str | None:
 
 def save_theme(name: str) -> None:
     """Save the terminal UI's colour theme."""
-    _write_private(THEME_FILE, {"theme": name})
+    write_private(THEME_FILE, {"theme": name})
+
+
+def load_trusted() -> dict[str, str]:
+    """Return the trusted project extension folders: resolved path -> digest of the files the user accepted.
+
+    Empty if nothing was trusted yet or the file is unreadable (an unreadable store trusts nothing).
+    """
+    try:
+        data = _read_json(TRUST_FILE) or {}
+    except ValueError:
+        return {}
+    projects = data.get("projects")
+    if not (isinstance(projects, dict) and all(isinstance(v, str) for v in projects.values())):
+        return {}
+    return projects
+
+
+def save_trusted(directory: str, digest: str) -> None:
+    """Remember that the user trusted the extension files with ``digest`` in project folder ``directory``."""
+    write_private(TRUST_FILE, {"projects": {**load_trusted(), directory: digest}})
 
 
 def _read_json(path: Path) -> dict | None:
@@ -106,11 +131,32 @@ def _read_json(path: Path) -> dict | None:
     return data
 
 
-def _write_private(path: Path, data: dict) -> None:
-    """Write ``data`` as JSON atomically with mode 0600."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(data, indent=2))
-    os.replace(tmp, path)
+def private_dir(path: Path) -> None:
+    """Create folder ``path`` if missing and make it accessible to the owner only (mode 0700).
+
+    Missing parents are created with mode 0700 too (``~/.minimal`` before
+    ``~/.minimal/sessions``); existing parents are left as they are.
+    """
+    if not path.parent.exists():
+        private_dir(path.parent)
+    path.mkdir(exist_ok=True, mode=0o700)
+    if path.stat().st_mode & 0o077:
+        os.chmod(path, 0o700)
+
+
+def write_private(path: Path, data: dict) -> None:
+    """Write ``data`` as JSON atomically with mode 0600, in a folder with mode 0700.
+
+    The temporary file has a fresh random name and is created exclusively, so a
+    file or symlink planted next to ``path`` is never written through.
+    """
+    private_dir(path.parent)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2))
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise

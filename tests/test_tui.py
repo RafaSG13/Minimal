@@ -125,6 +125,24 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("interrupted" in e for e in errors), errors)
             self.assertEqual([m.source for m in app.query(Markdown)], [])
 
+    async def test_slow_git_status_does_not_block_the_ui(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def slow_git_status(cwd):
+            release.wait(5)
+            return ("feature", True)
+
+        app = MinimalTui(self.core)
+        status = lambda: str(app.query_one("#status-left", Static).render())  # noqa: E731
+        with mock.patch("minimal.tui.git_status", slow_git_status):
+            async with app.run_test() as pilot:
+                await pilot.pause(0.1)
+                self.assertIn("fake", status())  # drawn while git is still running
+                self.assertNotIn("feature", status())
+                release.set()
+                await self.wait_until(pilot, lambda: "feature *" in status())
+
     async def test_resumed_session_is_replayed(self):
         self.core.session.messages += [
             {"role": "user", "content": "old question"},

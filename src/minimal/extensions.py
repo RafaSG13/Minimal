@@ -26,6 +26,7 @@ Within each folder, its own files load first, then those of its ``themes/``,
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -57,7 +58,7 @@ def category_dir(directory: Path, category: str) -> Path:
 
 
 def load_extensions(
-    registry: Registry, cwd: str, extra: Iterable[str | Path] = ()
+    registry: Registry, cwd: str, extra: Iterable[str | Path] = (), include_project: bool = True
 ) -> tuple[list[Path], list[str]]:
     """Load every extension found and let it register into ``registry``.
 
@@ -65,6 +66,8 @@ def load_extensions(
         registry: Passed to each extension's ``register(minimal)``.
         cwd: Directory used for the project-local folder and to resolve ``extra``.
         extra: Additional files or folders (the ``--ext`` option).
+        include_project: Whether to load ``<cwd>/.minimal/extensions``; the caller
+            passes ``False`` when the user has not trusted that folder's code.
 
     Returns:
         ``(loaded, errors)``: the files that loaded successfully, and one
@@ -72,7 +75,7 @@ def load_extensions(
         ``"<path>: not found"`` for a missing ``extra`` entry). Failed files are
         skipped; anything they registered before failing stays registered.
     """
-    files, errors = _find_extension_files(cwd, extra)
+    files, errors = _find_extension_files(cwd, extra, include_project)
     loaded = []
     for file in files:
         try:
@@ -83,10 +86,13 @@ def load_extensions(
     return loaded, errors
 
 
-def _find_extension_files(cwd: str, extra: Iterable[str | Path]) -> tuple[list[Path], list[str]]:
+def _find_extension_files(
+    cwd: str, extra: Iterable[str | Path], include_project: bool = True
+) -> tuple[list[Path], list[str]]:
     """Return candidate extension files in load order, and errors for missing ``extra`` paths."""
     files = extension_files(GLOBAL_EXTENSIONS_DIR)
-    files += extension_files(project_extensions_dir(cwd))
+    if include_project:
+        files += extension_files(project_extensions_dir(cwd))
     errors = []
     for entry in extra:
         path = Path(cwd, entry).resolve()
@@ -97,6 +103,14 @@ def _find_extension_files(cwd: str, extra: Iterable[str | Path]) -> tuple[list[P
         else:
             files.append(path)
     return files, errors
+
+
+def files_digest(files: list[Path]) -> str:
+    """SHA-256 over the paths and contents of ``files`` in order: changes when a file is added, removed, renamed or edited."""
+    digest = hashlib.sha256()
+    for file in files:
+        digest.update(file.as_posix().encode() + b"\0" + file.read_bytes() + b"\0")
+    return digest.hexdigest()
 
 
 def extension_files(directory: Path) -> list[Path]:
