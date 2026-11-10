@@ -1,0 +1,20 @@
+src/minimal/app.py
+  h_e81853c41416fb 40-57,84-86,89,101
+src/minimal/config.py
+  h_e81853c41416fb 13,29
+src/minimal/prompt.md
+  h_e81853c41416fb 1-13
+tests/test_config.py
+  h_e81853c41416fb 9,87-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d4b4f6f38b4bd031c88c75fa5caf52b7d91ffb68",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
