@@ -3,8 +3,10 @@ from contextlib import nullcontext
 from types import SimpleNamespace as NS
 
 from minimal.providers.anthropic import AnthropicProvider
+from minimal.providers.base import Usage
 from minimal.providers.claude import CLAUDE_CODE_IDENTITY, ClaudeProvider
 from minimal.providers.gemini import read_stream, to_interaction_input, to_reply
+from minimal.providers.openai import read_chunks, to_chat_messages
 
 GEMINI_STEPS = [
     {"type": "thought", "signature": "sig1"},
@@ -79,7 +81,8 @@ class GeminiStreamTest(unittest.TestCase):
             event("interaction.completed", interaction=NS(status="requires_action")),
         ]
         chunks = []
-        status, steps = read_stream(events, chunks.append)
+        status, steps, usage = read_stream(events, chunks.append)
+        self.assertIsNone(usage)
         reply = to_reply(status, steps)
 
         self.assertEqual(chunks, ["Hel", "lo"])
@@ -103,6 +106,11 @@ class GeminiStreamTest(unittest.TestCase):
     def test_error_event(self):
         with self.assertRaisesRegex(RuntimeError, "quota"):
             read_stream([event("error", error=NS(message="quota exceeded", code="429"))], None)
+
+    def test_usage(self):
+        usage = NS(total_input_tokens=7, total_output_tokens=2, total_thought_tokens=3, total_cached_tokens=None)
+        events = [event("interaction.completed", interaction=NS(status="completed", usage=usage))]
+        self.assertEqual(to_reply(*read_stream(events, None)).usage, Usage(7, 5, 0, 0))
 
 
 class AnthropicRequestTest(unittest.TestCase):
@@ -129,6 +137,78 @@ class AnthropicRequestTest(unittest.TestCase):
             sent["system"],
             [{"type": "text", "text": CLAUDE_CODE_IDENTITY}, {"type": "text", "text": "s"}],
         )
+
+    def test_usage_counts_cached_tokens_as_input(self):
+        usage = NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=100, cache_creation_input_tokens=None)
+        final = NS(content=[], stop_reason="end_turn", usage=usage)
+        client = NS(
+            messages=NS(stream=lambda **kw: nullcontext(NS(text_stream=iter(()), get_final_message=lambda: final)))
+        )
+        reply = AnthropicProvider(client=client).stream(model="m", system="s", messages=[], tools=[], on_text=None)
+        self.assertEqual(reply.usage, Usage(110, 5, 100, 0))
+
+
+def chunk(delta=None, finish_reason=None, usage=None):
+    choices = [] if delta is None else [NS(delta=delta, finish_reason=finish_reason)]
+    return NS(choices=choices, usage=usage)
+
+
+def delta(content=None, tool_calls=None):
+    return NS(content=content, tool_calls=tool_calls)
+
+
+class OpenAITest(unittest.TestCase):
+    def test_history_conversion(self):
+        self.assertEqual(
+            to_chat_messages("s", HISTORY),
+            [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {"name": "read", "arguments": '{"path": "a"}'}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "boom"},
+                {
+                    "role": "assistant",
+                    "content": "ab",
+                    "tool_calls": [
+                        {"id": "x1", "type": "function", "function": {"name": "bash", "arguments": '{"command": "ls"}'}}
+                    ],
+                },
+            ],
+        )
+
+    def test_tool_call_stream(self):
+        chunks = [
+            chunk(delta(content="Hi")),
+            chunk(delta(tool_calls=[NS(index=0, id="c1", function=NS(name="read", arguments='{"pa'))])),
+            chunk(
+                delta(tool_calls=[NS(index=0, id=None, function=NS(name=None, arguments='th": "x"}'))]),
+                finish_reason="tool_calls",
+            ),
+            chunk(usage=NS(prompt_tokens=9, completion_tokens=4, prompt_tokens_details=NS(cached_tokens=6))),
+        ]
+        texts = []
+        reply = read_chunks(chunks, texts.append)
+        self.assertEqual(texts, ["Hi"])
+        self.assertEqual(
+            reply.content,
+            [
+                {"type": "text", "text": "Hi"},
+                {"type": "tool_use", "id": "c1", "name": "read", "input": {"path": "x"}},
+            ],
+        )
+        self.assertEqual(reply.stop_reason, "tool_use")
+        self.assertEqual(reply.usage, Usage(9, 4, 6, 0))
+
+    def test_length_means_max_tokens(self):
+        reply = read_chunks([chunk(delta(content="cut"), finish_reason="length")], None)
+        self.assertEqual(reply.stop_reason, "max_tokens")
+        self.assertIsNone(reply.usage)
 
 
 if __name__ == "__main__":

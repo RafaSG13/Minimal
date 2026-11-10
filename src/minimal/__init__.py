@@ -2,7 +2,7 @@
 
 Modules, from the bottom up:
 
-- :mod:`minimal.providers`  model integrations behind one interface (``base``, ``anthropic``, ``gemini``)
+- :mod:`minimal.providers`  model integrations behind one interface (``base``, ``anthropic``, ``gemini``, ``openai``)
 - :mod:`minimal.registry`   ``Registry``, ``Tool``, ``Command``: where tools, commands, providers, hooks and widgets are registered
 - :mod:`minimal.tools`      built-in tools ``read``, ``write``, ``edit``, ``bash``, ``reload_extensions``
 - :mod:`minimal.extensions` finds extension files and calls their ``register(minimal)``

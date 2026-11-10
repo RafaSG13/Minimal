@@ -17,7 +17,7 @@ from minimal import config, extensions, marketplace, setup
 from minimal.app import App, reload_summary
 from minimal.providers import claude_auth
 from minimal.registry import Command
-from minimal.session import list_sessions, new_id, open_session
+from minimal.session import list_sessions, new_id, open_session, preview
 
 
 class ExitRepl(Exception):
@@ -36,6 +36,29 @@ def _new(args: str, app: App) -> None:
 
 def _sessions(args: str, app: App) -> None:
     print("\n".join(list_sessions()) or "(none)")
+
+
+RESUME_CHOICES = 30
+"""Most sessions offered by the ``/resume`` picker: the newest ones."""
+
+
+def _resume(args: str, app: App) -> None:
+    ids = list_sessions()
+    if args:
+        if args not in ids:  # open_session would quietly start a new session under that id
+            raise ValueError(f"no session {args!r}; /sessions lists them")
+        id = args
+    else:
+        recent = [i for i in reversed(ids) if i != app.session.id][:RESUME_CHOICES]
+        if not recent:
+            print("(none)")
+            return
+        id = app.frontend.choose("Resume session", [(i, f"{i}  {preview(i)}".rstrip()) for i in recent])
+        if id is None:
+            print("Cancelled.")
+            return
+    app.session = open_session(id)
+    print(f"Resumed session {id} ({len(app.messages)} messages)")
 
 
 def _available_models(app: App) -> list[str]:
@@ -297,6 +320,7 @@ BUILTIN_COMMANDS: dict[str, Command] = {
     "help": Command(_help, "show the commands"),
     "new": Command(_new, "start a new session"),
     "sessions": Command(_sessions, "list saved sessions"),
+    "resume": Command(_resume, "resume a saved session: /resume [id]"),
     "model": Command(_model, "list models, or change: /model [number|name]"),
     "provider": Command(_provider, "list providers, or switch: /provider <name> [model]"),
     "tools": Command(_tools, "list the tools"),

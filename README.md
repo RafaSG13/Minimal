@@ -19,16 +19,16 @@
 
 **A minimal, extensible coding-agent harness for the terminal.** minimal is a small agent loop — model → tools → model — wrapped in a Textual terminal UI, written so that every piece can be read in one sitting and replaced from a single Python file. Tools, slash commands, providers, hooks, widgets, themes and even the header logo are registered by extensions, and the agent can write, install and hot-reload its own extensions mid-conversation.
 
-Use Claude through an API key or a Pro/Max subscription, or Gemini through the free tier — and switch providers mid-conversation without losing history. More model integrations are one class away.
+Use Claude through an API key or a Pro/Max subscription, Gemini through the free tier, or any OpenAI-compatible server (OpenAI, OpenRouter, Ollama, LM Studio) — and switch providers mid-conversation without losing history. More model integrations are one class away.
 
 <table>
-<tr><td><b>A real terminal interface</b></td><td>Textual UI with a welcome header, Markdown replies, tool-call blocks coloured by state (running, done, failed), live diffs for edits, a confirm dialog, a command palette (<code>Ctrl+P</code>) and a status line with model, provider, directory and git branch.</td></tr>
+<tr><td><b>A real terminal interface</b></td><td>Textual UI with a welcome header, Markdown replies, tool-call blocks coloured by state (running, done, failed), live diffs for edits, a confirm dialog, a command palette (<code>Ctrl+P</code>), <code>Esc</code> to interrupt a turn, and a status line with model, provider, directory, git branch and context size.</td></tr>
 <tr><td><b>Provider-neutral history</b></td><td>One canonical message format shaped like the Anthropic Messages API. Each provider converts it on every request, so any session can be resumed with any provider, and <code>/provider</code> switches mid-conversation.</td></tr>
 <tr><td><b>Extensions all the way down</b></td><td>A Python file with <code>register(minimal)</code> can add tools, commands, providers, <code>tool_call</code>/<code>tool_result</code>/<code>turn_end</code> hooks, system-prompt notes, sidebar/top/bottom widgets, colour themes and a pixel-art logo.</td></tr>
 <tr><td><b>Self-extending, hot-reloaded</b></td><td>The model knows the extension API. It writes an extension, calls <code>reload_extensions</code>, and the new tools are offered on its very next request — in the middle of a turn, without a restart. Load errors go back to the model so it can fix them.</td></tr>
 <tr><td><b>Git-based marketplace</b></td><td>Browse, install, update, remove and publish extensions from any git repository with <code>/ext</code>. Publishing opens a pull request; the default branch is never pushed to.</td></tr>
 <tr><td><b>Safe by default</b></td><td>Asks before <code>write</code>, <code>edit</code>, <code>bash</code>, <code>reload_extensions</code>, <code>ext_install</code> and <code>ext_publish</code>. Hooks can veto any tool call or rewrite any result. Saved keys are stored with mode <code>0600</code>.</td></tr>
-<tr><td><b>Small and readable</b></td><td>Four runtime dependencies. Every module has a docstring describing its role — start at <code>src/minimal/__init__.py</code>.</td></tr>
+<tr><td><b>Small and readable</b></td><td>Five runtime dependencies. Every module has a docstring describing its role — start at <code>src/minimal/__init__.py</code>.</td></tr>
 </table>
 
 ---
@@ -81,6 +81,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | Anthropic           | `anthropic`  | `ANTHROPIC_API_KEY` or a key saved in setup                                                                      | `claude-sonnet-5-5` |
 | Claude subscription | `claude`     | Browser login in setup, `minimal --login` or `/login`                                                            | `claude-sonnet-5-5` |
 | Google Gemini       | `gemini`     | `GEMINI_API_KEY` / `GOOGLE_API_KEY` or a key saved in setup ([get one](https://aistudio.google.com/docs/api-key), free tier) | `gemini-3.8-flash`  |
+| OpenAI-compatible   | `openai`     | `OPENAI_API_KEY` or a key saved in setup; `OPENAI_BASE_URL` points it at OpenRouter, Ollama, LM Studio (local servers accept any key) | `gpt-5.5`           |
 
 **Resolution order.** Provider: `--provider` → `MINIMAL_PROVIDER` → the one saved by setup. Model: `-m` → `MINIMAL_MODEL` → the one saved by setup (if the provider is the saved one) → the provider's default. Keys entered in setup are saved in `~/.minimal/keys.json` and take precedence over environment variables.
 
@@ -90,6 +91,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | ---------------------------- | -------------------------------------------------------------------------- |
 | `/help`                      | Show the commands, including those added by extensions                     |
 | `/new`, `/sessions`          | Start a new session, list saved sessions                                   |
+| `/resume [id]`               | Resume a saved session: pick one of the latest, or give its id             |
 | `/model [number\|name]`      | List models, or change model                                               |
 | `/provider [name [model]]`   | List providers, or switch for this session and keep the conversation       |
 | `/tools`                     | List the tools                                                             |
@@ -101,12 +103,15 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 
 `/setup` and `/login` run with the UI suspended, in the plain terminal. `/setup` changes the saved default; `/provider` only affects the current session.
 
+`Esc` interrupts the turn in progress: a running `bash` command is killed and the turn is dropped from the history, as when it fails. It takes effect at the next streamed chunk, tool call or model request. Interrupting during an automatic compaction aborts it and drops the turn like any other interrupt. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
+
 ### Environment
 
 | Variable                          | Purpose                                                                                     |
 | --------------------------------- | ------------------------------------------------------------------------------------------- |
 | `ANTHROPIC_API_KEY`               | Key for `--provider anthropic`                                                              |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Key for `--provider gemini`                                                               |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL` | Key for `--provider openai`, and the server it talks to (default: OpenAI)                 |
 | `MINIMAL_PROVIDER`, `MINIMAL_MODEL` | Default provider and model                                                                |
 | `MINIMAL_MARKETPLACE`             | Git URL or local path of a marketplace used by the model's tools and listed first by `/ext` |
 
@@ -124,7 +129,7 @@ def register(minimal):
     minimal.register_provider("myllm", create=MyProvider, default_model="my-model", env_keys=("MYLLM_KEY",))
     minimal.on("tool_call", lambda e: {"block": True, "reason": "no"})              # veto a call
     minimal.on("tool_result", lambda e: {"output": e["output"].upper()})            # rewrite a result
-    minimal.on("turn_end", lambda e: None)                                          # e["messages"]
+    minimal.on("turn_end", lambda e: None)                                          # e["messages"], e["ctx"]
     minimal.append_system_prompt("Extra instructions for the model.")
     minimal.register_widget("panel", lambda ctx: MyPanel(), area="sidebar")         # top, bottom or sidebar
     minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
@@ -132,6 +137,14 @@ def register(minimal):
 ```
 
 `ctx` exposes `cwd`, `messages`, `provider_name`, `model` and `registry`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail, a prompt note and a sidebar widget.
+
+The repository has three more, loaded the same way (`minimal -e extensions/compact.py`) or copied to `~/.minimal/extensions/` (tools in its `tools/` subfolder):
+
+| Extension                        | What it adds                                                                                                                                              |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `extensions/compact.py`          | Summarises the conversation into a new session when the context reaches 100k tokens, and on demand with `/compact`. The old session stays on disk: `/resume <id>` brings it back |
+| `extensions/tools/subagent.py`   | `subagent` tool: runs a task in a fresh agent loop with the same tools and an empty history; only its final message returns to the conversation           |
+| `extensions/tools/web_search.py` | `web_search` tool: results from the [Brave Search API](https://api-dashboard.search.brave.com) (needs `BRAVE_API_KEY`)                                    |
 
 <details>
 <summary><b>Widgets</b></summary>
@@ -199,6 +212,7 @@ flowchart LR
   agent --> provider{Provider}
   provider --> anthropic[(Anthropic API)]
   provider --> gemini[(Gemini API)]
+  provider --> openai[(OpenAI-compatible API)]
   agent --> exec[execute_tool_call] --> registry[Registry]
   registry --> tools[built-in tools]
   registry --> ext[extensions]
@@ -206,11 +220,11 @@ flowchart LR
   turn --> session[Session.save]
 ```
 
-**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If anything fails mid-turn, the turn is dropped from the history. The session file is appended to after every turn.
+**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If anything fails mid-turn, or the user interrupts it, the turn is dropped from the history. The session file is appended to after every turn.
 
 **Frontends.** What the user sees goes through a `Frontend` (`app.py`): the terminal UI, or `ConsoleFrontend` (plain stdout) for `-p`. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
 
-**History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it.
+**History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
 
 <details>
 <summary><b>Project layout</b></summary>
@@ -218,11 +232,12 @@ flowchart LR
 ```
 src/minimal/
   providers/
-    base.py          Provider interface, Reply, canonical message format
+    base.py          Provider interface, Reply, Usage, canonical message format
     anthropic.py     Claude via the Anthropic Messages API (API key)
     claude.py        Claude via a Pro/Max subscription (browser login)
     claude_auth.py   browser login (OAuth PKCE) and token storage (~/.minimal/claude-auth.json)
     gemini.py        Gemini via the Google Interactions API
+    openai.py        OpenAI-compatible servers via the Chat Completions API
   registry.py        Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
   tools.py           built-in tools: read, write, edit, bash, grep, glob, reload_extensions
   extensions.py      finds extension files and calls their register(minimal)
@@ -239,6 +254,10 @@ src/minimal/
   cli.py             option parsing, entry point
 extensions/
   example.py         example extension (tool, command, guardrail, prompt note, sidebar widget)
+  compact.py         history compaction: automatic on turn_end, and /compact
+  tools/
+    subagent.py      subagent tool
+    web_search.py    web_search tool (Brave Search API)
 tests/               unittest suite (see Development)
 ```
 
@@ -260,6 +279,7 @@ Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or f
 
 ```bash
 uv sync
+uv run ruff check
 uv run python -m unittest discover -s tests
 ```
 
@@ -267,28 +287,21 @@ The suite needs no network or API key. It covers:
 
 | Test file             | What's covered                                                                                   |
 | --------------------- | ------------------------------------------------------------------------------------------------ |
-| `test_smoke.py`       | Tools, extensions, hot reload, the agent loop with a fake provider, sessions, logo validation    |
-| `test_providers.py`   | Provider conversions (Gemini history/streaming, Anthropic/Claude requests)                       |
+| `test_smoke.py`       | Tools, extensions, hot reload, the agent loop with a fake provider, interruption, sessions, logo validation |
+| `test_providers.py`   | Provider conversions (Gemini and OpenAI history/streaming, Anthropic/Claude requests, token usage) |
 | `test_claude_auth.py` | Browser login round trip, token refresh                                                          |
 | `test_config.py`      | Saved keys and config, how the startup provider is chosen                                        |
 | `test_marketplace.py` | Search, install, publish, the `/ext` picker and saved marketplaces against local bare git repos  |
-| `test_tui.py`         | The headless terminal UI: streaming, dialogs, tool-call states, command output, widgets, header  |
+| `test_tui.py`         | The headless terminal UI: streaming, interruption, session replay, dialogs, tool-call states, command output, widgets, header |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
-
-### Roadmap ideas
-
-- A web-search tool, as an extension.
-- Compact the history when the session grows (an extension on `turn_end`).
-- Subagents: a tool that calls `run_agent` with its own message history.
-- Prompt caching: add `cache_control` to the system prompt and the last tool.
-- Token usage: record each reply's input/output tokens and show context use in the status line (also tells compaction when to run).
-- An OpenAI-compatible provider (OpenAI, OpenRouter, Ollama, LM Studio) as one class in `providers/`.
-- Hermetic tests: `test_smoke.py` also loads `~/.minimal/extensions/`, so `test_extension_loaded` fails on machines with extensions installed.
+| `test_bundled_extensions.py` | The extensions in `extensions/`: web search, subagent, compaction                         |
 
 ---
 
 ## Contributing
 
 Issues and pull requests are welcome at [RafaSG13/Minimal](https://github.com/RafaSG13/Minimal/issues). Extensions belong in the [marketplace](https://github.com/RafaSG13/minimal-marketplace) — publish one straight from the app with `/ext publish <path>`.
+
+Licensed under the [MIT License](LICENSE).
 
 Built by [RafaSG13](https://github.com/RafaSG13).

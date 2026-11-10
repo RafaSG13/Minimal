@@ -14,8 +14,12 @@ Events and their payloads:
     ``tool_result``  ``{name, input, output, is_error}``
         Fired after a tool runs. A handler may return ``{"output": str}``
         to rewrite what the model sees.
-    ``turn_end``     ``{messages}``
+    ``turn_end``     ``{messages, ctx}``
         Fired when the model finishes answering without further tool calls.
+        ``messages`` is the history of the loop that ended, which is not
+        ``ctx.messages`` when a tool ran its own loop (a subagent).
+        A handler that is slow (compaction) should poll ``ctx.cancelled`` and
+        raise :class:`TurnInterrupted` when it is set.
 """
 
 from __future__ import annotations
@@ -36,6 +40,15 @@ CommandRun = Callable[[str, Any], Any]
 
 EventHandler = Callable[[dict], Any]
 """Event handler: ``handler(payload) -> dict | None``."""
+
+
+class TurnInterrupted(Exception):
+    """The user interrupted the turn in progress (``ctx.cancelled`` was set).
+
+    Raised by :func:`~minimal.agent.run_agent`, and by an event handler to abort the turn;
+    :meth:`Registry.emit` lets it through instead of reporting it like other handler errors.
+    """
+
 
 WIDGET_AREAS = ("top", "bottom", "sidebar")
 """Where an extension widget can be placed in the terminal UI."""
@@ -382,12 +395,15 @@ class Registry:
         """Call every handler of ``event`` in order and return their non-``None`` results.
 
         A failing handler is reported on stderr and skipped, so one broken
-        extension cannot break the agent loop.
+        extension cannot break the agent loop, except :class:`TurnInterrupted`,
+        which propagates to the caller.
         """
         results = []
         for handler in self._handlers.get(event, []):
             try:
                 result = handler(payload)
+            except TurnInterrupted:
+                raise
             except Exception as e:
                 print(f'[extension] error in "{event}" handler: {e}', file=sys.stderr)
                 continue

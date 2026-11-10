@@ -15,12 +15,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from minimal.providers import anthropic, claude, gemini
+from minimal.providers import anthropic, claude, gemini, openai
 
 if TYPE_CHECKING:
     from minimal.registry import Registry
 
-BUILTIN_PROVIDERS = (anthropic.SPEC, claude.SPEC, gemini.SPEC)
+BUILTIN_PROVIDERS = (anthropic.SPEC, claude.SPEC, gemini.SPEC, openai.SPEC)
 
 
 def register_builtin_providers(registry: Registry) -> None:

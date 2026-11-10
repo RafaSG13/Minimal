@@ -10,8 +10,9 @@ active theme's CSS variables and glyphs from :mod:`minimal.theme`.
 
 Turns and slash commands run in a worker thread so the UI stays responsive;
 :class:`TuiFrontend` hands their output and confirmations back to the UI
-thread. Anything printed (slash-command output, extension messages) is shown
-in the transcript. Commands marked ``terminal`` run with the UI suspended.
+thread. Esc interrupts the turn in progress. Anything printed (slash-command
+output, extension messages) is shown in the transcript. Commands marked
+``terminal`` run with the UI suspended.
 """
 
 from __future__ import annotations
@@ -47,6 +48,9 @@ from minimal.registry import LOGO_ALIGN, LogoSpec
 
 PREVIEW_LINES = 8
 """Most output lines shown under a tool call."""
+
+REPLAY_LIMIT = 200
+"""Most messages of a resumed session drawn in the transcript."""
 
 TAGLINE = "bare by default. yours by config."
 """Second line of the default welcome header."""
@@ -255,7 +259,7 @@ def _wordmark() -> Content:
 
 
 def _header(core: App) -> Content:
-    """The header text: version (only under a logo; the wordmark has its own), key hints, loaded extensions."""
+    """The header text under an extension logo: the version (the wordmark shows its own)."""
     parts: list[str | tuple[str, str]] = []
     if core.registry.logo is not None and _version():
         parts += [(f"v{_version()}", "$dim"), "\n"]
@@ -551,6 +555,8 @@ class MinimalTui(TextualApp):
 
     TITLE = "minimal"
 
+    BINDINGS = [Binding("escape", "interrupt", "Interrupt turn", show=False)]
+
     CSS = """
     #body { height: 1fr; }
     #main { width: 1fr; }
@@ -610,6 +616,7 @@ class MinimalTui(TextualApp):
         self.ext_widgets: list[tuple[str, Widget]] = []
         self.shown_session = core.session
         self.busy_since = 0.0
+        self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -633,6 +640,9 @@ class MinimalTui(TextualApp):
         self.core.frontend = TuiFrontend(self)
         self.spinner = self.set_interval(0.08, self.refresh_working, pause=True)
         await self.remount_widgets()
+        pending = self.replay_history()
+        if pending is not None:
+            await pending
         for e in self.core.extension_errors:
             self.show_error(f"[extension] could not load {e}")
         self.refresh_status()
@@ -658,6 +668,36 @@ class MinimalTui(TextualApp):
         transcript = self.query_one("#transcript", VerticalScroll)
         if not transcript.is_anchored and transcript.max_scroll_y > 0:
             transcript.anchor()
+
+    def replay_history(self) -> Any:
+        """Draw the current session's last :data:`REPLAY_LIMIT` messages in the transcript.
+
+        Returns the mount awaitable, or ``None`` if there is nothing to draw.
+        """
+        messages = self.core.messages
+        hidden = max(0, len(messages) - REPLAY_LIMIT)
+        widgets: list[Widget] = []
+        if hidden:
+            widgets.append(Static(f"… {hidden} earlier messages not shown", classes="output"))
+        blocks: dict[str, ToolBlock] = {}
+        for message in messages[hidden:]:
+            content = message["content"]
+            if isinstance(content, str):
+                widgets.append(Static(content, markup=False, classes="user"))
+                continue
+            for block in content:
+                kind = block.get("type")
+                if kind == "text" and message["role"] == "assistant":
+                    widgets.append(Markdown(block["text"], classes="assistant"))
+                elif kind == "tool_use":
+                    blocks[block["id"]] = ToolBlock(block)
+                    widgets.append(blocks[block["id"]])
+                elif kind == "tool_result" and block["tool_use_id"] in blocks:
+                    blocks[block["tool_use_id"]].finish(block)
+        if not widgets:
+            return None
+        self.call_after_refresh(self._follow)
+        return self.query_one("#transcript", VerticalScroll).mount(*widgets)
 
     def show_error(self, text: str) -> Any:
         return self._add(Static(Content(f"{theme.ERROR} {text}"), classes="error"))
@@ -780,9 +820,11 @@ class MinimalTui(TextualApp):
             color = "$status-git-dirty" if dirty else "$status-git-clean"
             parts += [sep, (f"{theme.BRANCH} {branch}{' *' if dirty else ''}", color)]
         self.query_one("#status-left", Static).update(Content.assemble(*parts))
-        self.query_one("#status-right", Static).update(
-            Content(f"{len(core.extensions)} ext{theme.DOT}session {core.session.id}")
-        )
+        right = f"{len(core.extensions)} ext{theme.DOT}session {core.session.id}"
+        tokens = core.context_tokens
+        if tokens is not None:
+            right = f"{tokens / 1000:.1f}k ctx{theme.DOT}{right}"
+        self.query_one("#status-right", Static).update(Content(right))
 
     def set_busy(self, busy: bool) -> None:
         """Lock the prompt and show the working indicator while a turn or command runs."""
@@ -798,14 +840,20 @@ class MinimalTui(TextualApp):
     def refresh_working(self) -> None:
         elapsed = time.monotonic() - self.busy_since
         frame = theme.SPINNER[int(elapsed / 0.08) % len(theme.SPINNER)]
-        self.query_one("#working", Static).update(
-            Content.assemble(
-                (frame, "$accent"),
-                " ",
-                ("Working…", "$muted"),
-                (f" {elapsed:.0f}s", "$dim"),
-            )
-        )
+        parts: list[str | tuple[str, str]] = [(frame, "$accent"), " "]
+        if self.in_turn and self.core.cancelled.is_set():
+            parts.append(("Interrupting…", "$muted"))
+        else:
+            parts += [("Working…", "$muted"), (f" {elapsed:.0f}s", "$dim")]
+            if self.in_turn:
+                parts.append((" · esc interrupts", "$dim"))
+        self.query_one("#working", Static).update(Content.assemble(*parts))
+
+    def action_interrupt(self) -> None:
+        """Ask the turn in progress to stop (see :class:`~minimal.registry.TurnInterrupted`)."""
+        if self.in_turn and not self.core.cancelled.is_set():
+            self.core.cancelled.set()
+            self.refresh_working()
 
     # --- input ---------------------------------------------------------------
 
@@ -814,6 +862,7 @@ class MinimalTui(TextualApp):
         event.input.clear()
         if not line:
             return
+        self.in_turn = not line.startswith("/")
         self.set_busy(True)
         if line.startswith("/"):
             cmd = find_command(line[1:].partition(" ")[0], self.core)
@@ -853,10 +902,12 @@ class MinimalTui(TextualApp):
             transcript.remove_children()
             transcript.anchor(False)
             transcript.mount(Header(self.core))
+            self.replay_history()
             self.shown_session = self.core.session
             self.assistant = None
         self.refresh_status()
         self.refresh_widgets()
+        self.in_turn = False
         self.set_busy(False)
         self.query_one("#prompt", Input).focus()
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-from minimal.providers.base import ProviderSpec, Reply, TextCallback
+from minimal.providers.base import ProviderSpec, Reply, TextCallback, Usage, result_text
 
 MAX_OUTPUT_TOKENS = 8192
 
@@ -73,8 +73,8 @@ class GeminiProvider:
             stream=True,
         )
         with stream:
-            status, steps = read_stream(stream, on_text)
-        return to_reply(status, steps)
+            status, steps, usage = read_stream(stream, on_text)
+        return to_reply(status, steps, usage)
 
 
 # --- canonical history -> Interactions input -----------------------------------
@@ -126,7 +126,7 @@ def _user_block_steps(blocks: list[dict], tool_names: dict[str, str]) -> list[di
             step = {
                 "type": "function_result",
                 "call_id": block["tool_use_id"],
-                "result": [{"type": "text", "text": _result_text(block.get("content", ""))}],
+                "result": [{"type": "text", "text": result_text(block.get("content", ""))}],
                 "is_error": bool(block.get("is_error")),
             }
             if block["tool_use_id"] in tool_names:
@@ -137,19 +137,13 @@ def _user_block_steps(blocks: list[dict], tool_names: dict[str, str]) -> list[di
     return steps
 
 
-def _result_text(content: Any) -> str:
-    """Tool result content may be a string or a list of text blocks."""
-    if isinstance(content, str):
-        return content
-    return "".join(b.get("text", "") for b in content if isinstance(b, dict))
-
-
 # --- streamed events -> reply ---------------------------------------------------
 
 
-def read_stream(events: Iterable[Any], on_text: TextCallback | None) -> tuple[str | None, list[dict]]:
-    """Consume a streamed interaction; return its final status and the reply steps as dicts.
+def read_stream(events: Iterable[Any], on_text: TextCallback | None) -> tuple[str | None, list[dict], Any]:
+    """Consume a streamed interaction; return its final status, the reply steps as dicts and its usage.
 
+    The usage is the SDK's object, or ``None`` if the stream carried none.
     The stream never carries the finished steps, so they are rebuilt from
     ``step.start`` / ``step.delta`` events. Steps are keyed by
     ``(hop, index)`` because the SDK may chain continuation requests into
@@ -160,7 +154,7 @@ def read_stream(events: Iterable[Any], on_text: TextCallback | None) -> tuple[st
     """
     steps: dict[tuple[int, int], dict] = {}
     arguments: dict[tuple[int, int], str] = {}  # partial JSON of function_call arguments
-    hop, status = -1, None
+    hop, status, usage = -1, None, None
     for event in events:
         kind = event.event_type
         if kind == "interaction.created":
@@ -179,13 +173,14 @@ def read_stream(events: Iterable[Any], on_text: TextCallback | None) -> tuple[st
             status = event.status
         elif kind == "interaction.completed":
             status = event.interaction.status
+            usage = getattr(event.interaction, "usage", None)
         elif kind == "error":
             error = event.error
             raise RuntimeError(f"Gemini error: {getattr(error, 'message', None) or getattr(error, 'code', None) or error}")
 
     for key, partial in arguments.items():
         steps[key]["arguments"] = json.loads(partial) if partial.strip() else {}
-    return status, [steps[key] for key in sorted(steps)]
+    return status, [steps[key] for key in sorted(steps)], usage
 
 
 def _apply_delta(
@@ -215,8 +210,8 @@ def _step_dict(model: Any) -> dict:
     return model.model_dump(mode="json")
 
 
-def to_reply(status: str | None, steps: list[dict]) -> Reply:
-    """Turn the reply steps into a canonical :class:`Reply`.
+def to_reply(status: str | None, steps: list[dict], usage: Any = None) -> Reply:
+    """Turn the reply steps, and the SDK's usage object if any, into a canonical :class:`Reply`.
 
     Raises:
         RuntimeError: if the interaction failed, was cancelled or exceeded its budget.
@@ -242,7 +237,14 @@ def to_reply(status: str | None, steps: list[dict]) -> Reply:
         stop_reason = "max_tokens"
     else:
         stop_reason = "end_turn"
-    return Reply(content=content, stop_reason=stop_reason, provider_data=steps)
+    counts = None
+    if usage is not None:
+        counts = Usage(
+            input_tokens=usage.total_input_tokens or 0,
+            output_tokens=(usage.total_output_tokens or 0) + (usage.total_thought_tokens or 0),
+            cache_read_tokens=usage.total_cached_tokens or 0,
+        )
+    return Reply(content=content, stop_reason=stop_reason, provider_data=steps, usage=counts)
 
 
 SPEC = ProviderSpec(

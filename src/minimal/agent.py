@@ -14,12 +14,20 @@ The loop only sees the canonical message format described in
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from typing import Any
 
 from minimal.providers.base import Provider, Reply
-from minimal.registry import Registry
+from minimal.registry import Registry, TurnInterrupted
 from minimal.tools import clip
+
+
+def raise_if_cancelled(ctx: Any) -> None:
+    """Raise :class:`TurnInterrupted` if ``ctx`` has a ``cancelled`` event and it is set."""
+    cancelled = getattr(ctx, "cancelled", None)
+    if cancelled is not None and cancelled.is_set():
+        raise TurnInterrupted("interrupted by the user")
 
 
 def run_agent(
@@ -46,6 +54,9 @@ def run_agent(
         registry: Source of tools and event handlers.
         ctx: Passed to every tool. If it has a ``confirm(call) -> bool``
             attribute, it is asked before running tools marked ``confirm``.
+            If it has a ``cancelled`` attribute (a ``threading.Event``),
+            setting it interrupts the turn: at the next text chunk, before
+            the next model request or before the next tool.
         on_text: Called with each streamed text chunk.
         on_tool: Called with each ``tool_use`` block before it runs.
         on_tool_result: Called with each ``tool_use`` block and its ``tool_result`` block after it runs.
@@ -56,24 +67,33 @@ def run_agent(
 
     Raises:
         RuntimeError: if the model is still calling tools after ``max_turns`` requests.
+        TurnInterrupted: if ``ctx.cancelled`` is set while the turn runs.
     """
+
+    def stream_text(chunk: str) -> None:
+        raise_if_cancelled(ctx)
+        if on_text:
+            on_text(chunk)
+
     for _ in range(max_turns):
+        raise_if_cancelled(ctx)
         reply = provider.stream(
             model=model,
             system=system,
             messages=messages,
-            tools=_tool_specs(registry),
-            on_text=on_text,
+            tools=tool_specs(registry),
+            on_text=stream_text,
         )
         messages.append(_assistant_message(provider, reply))
 
         calls = [block for block in reply.content if block["type"] == "tool_use"]
         if reply.stop_reason != "tool_use" or not calls:
-            registry.emit("turn_end", {"messages": messages})
+            registry.emit("turn_end", {"messages": messages, "ctx": ctx})
             return reply
 
         results = []
         for call in calls:
+            raise_if_cancelled(ctx)
             if on_tool:
                 on_tool(call)
             result = execute_tool_call(call, registry, ctx)
@@ -136,7 +156,7 @@ def _run_tool(call: dict, registry: Registry, ctx: Any) -> str:
     return str(tool.run(call["input"], ctx))
 
 
-def _tool_specs(registry: Registry) -> list[dict]:
+def tool_specs(registry: Registry) -> list[dict]:
     """Describe every registered tool in the provider-neutral form."""
     return [
         {"name": t.name, "description": t.description, "input_schema": t.input_schema}
@@ -145,11 +165,13 @@ def _tool_specs(registry: Registry) -> list[dict]:
 
 
 def _assistant_message(provider: Provider, reply: Reply) -> dict:
-    """Build the canonical assistant message for ``reply``, tagging any provider data."""
+    """Build the canonical assistant message for ``reply``, tagging any provider data and adding its usage."""
     message: dict = {"role": "assistant", "content": reply.content}
     if reply.provider_data is not None:
         message["provider_data"] = {
             "provider": provider.name,
             "data": reply.provider_data,
         }
+    if reply.usage is not None:
+        message["usage"] = dataclasses.asdict(reply.usage)
     return message

@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -37,6 +38,22 @@ class StreamingFakeProvider:
                 for chunk in (text[: len(text) // 2], text[len(text) // 2 :]):
                     kw["on_text"](chunk)
         return reply
+
+
+class BlockingFakeProvider:
+    """Blocks inside ``stream`` until released, then streams one late chunk."""
+
+    name = "fake"
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def stream(self, **kw):
+        self.started.set()
+        self.release.wait(5)
+        kw["on_text"]("late")
+        return Reply(content=[{"type": "text", "text": "late"}], stop_reason="end_turn")
 
 
 class Counter(Static):
@@ -93,6 +110,41 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(sidebar.has_class("-has-widgets"))
             self.assertEqual(len(sidebar.query(Counter)), 1)
             self.assertGreaterEqual(Counter.calls, 2)
+
+    async def test_escape_interrupts_turn(self):
+        provider = self.core.provider = BlockingFakeProvider()
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "hi")
+            await self.wait_until(pilot, provider.started.is_set)
+            await pilot.press("escape")
+            provider.release.set()
+            await self.wait_until(pilot, self.idle(app))
+            self.assertEqual(self.core.messages, [])
+            errors = [str(s.render()) for s in app.query(".error").results(Static)]
+            self.assertTrue(any("interrupted" in e for e in errors), errors)
+            self.assertEqual([m.source for m in app.query(Markdown)], [])
+
+    async def test_resumed_session_is_replayed(self):
+        self.core.session.messages += [
+            {"role": "user", "content": "old question"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "old answer"},
+                    {"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "a.txt"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1: hi", "is_error": False}],
+            },
+        ]
+        app = MinimalTui(self.core)
+        async with app.run_test():
+            self.assertEqual([str(s.render()) for s in app.query(".user").results(Static)], ["old question"])
+            self.assertEqual([m.source for m in app.query(Markdown)], ["old answer"])
+            self.assertTrue(app.query_one(ToolBlock).has_class("-success"))
 
     def use_write_replies(self):
         self.use_replies(
@@ -194,10 +246,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             async with app.run_test():
                 header = app.query_one("Header")
                 self.assertTrue(header.has_class("-align-left"))
-                self.assertEqual(
-                    str(app.query_one("Header .wordmark", Static).render()),
-                    "─●─  m i n i m a l ▌  ─●─\n     bare by default. yours by config.  v9.9",
-                )
+                wordmark = str(app.query_one("Header .wordmark", Static).render())
+                self.assertIn("m i n i m a l", wordmark)
+                self.assertTrue(wordmark.endswith("v9.9"), wordmark)
                 self.assertNotIn("9.9", str(app.query_one("Header .info", Static).render()))
 
     async def test_logo_replaces_wordmark_until_reload(self):
@@ -209,7 +260,6 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(str(app.query_one("Header .logo", Static).render()), "▀▀")
             info = str(app.query_one("Header .info", Static).render())
             self.assertNotIn("minimal", info)
-            self.assertIn("commands", info)
             await self.submit(pilot, "/reload")  # rebuilds the registry from disk, where the logo is not
             await self.wait_until(pilot, self.idle(app))
             self.assertEqual(len(app.query("Header .logo")), 0)
