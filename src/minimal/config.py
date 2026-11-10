@@ -53,17 +53,29 @@ def load_keys() -> dict[str, str]:
     return _read_json(KEYS_FILE) or {}
 
 
+_injected_keys: set[str] = set()
+"""Names this process copied into ``os.environ`` from the key store; kept even if the file later changes."""
+
+
+def injected_key_names() -> frozenset[str]:
+    """Names of the saved keys this process put in ``os.environ`` (by :func:`apply_keys` or :func:`save_key`)."""
+    return frozenset(_injected_keys)
+
+
 def save_key(name: str, value: str) -> None:
     """Save API key ``value`` under environment-variable ``name`` and set it in ``os.environ``."""
     keys = load_keys()
     keys[name] = value
     write_private(KEYS_FILE, keys)
     os.environ[name] = value
+    _injected_keys.add(name)
 
 
 def apply_keys() -> None:
     """Copy the saved API keys into ``os.environ``, overriding the shell's values."""
-    os.environ.update(load_keys())
+    keys = load_keys()
+    os.environ.update(keys)
+    _injected_keys.update(keys)
 
 
 def load_marketplaces() -> list[str]:

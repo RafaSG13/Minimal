@@ -42,6 +42,7 @@ class TempDirTest(unittest.TestCase):
             mock.patch.object(config, "KEYS_FILE", self.home / "keys.json"),
             mock.patch.object(session_mod, "SESSIONS_DIR", self.home / "sessions"),
             mock.patch.dict(os.environ),
+            mock.patch.object(config, "_injected_keys", set()),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -110,7 +111,7 @@ class ProjectTrustTest(TempDirTest):
         self.app.reload_extensions()
         self.assertIn("hello", self.app.registry.tools)
         self.assertEqual(self.app.extension_errors, [])
-        digest = extensions.files_digest([self.ext_dir / "hello.py"])
+        digest = extensions.files_digest(extensions.read_extensions([self.ext_dir / "hello.py"]))
         self.assertEqual(
             json.loads(config.TRUST_FILE.read_text()),
             {"projects": {str(self.ext_dir): digest}},
@@ -124,6 +125,27 @@ class ProjectTrustTest(TempDirTest):
         self.app.reload_extensions()
         self.assertEqual(self.frontend.ask.call_count, 2)
         self.assertEqual(self.app.registry.tools["hello"].run({}, self.app), "v2")
+
+    def test_files_changed_while_the_prompt_is_open_run_as_approved(self):
+        hello = self.ext_dir / "hello.py"
+        approved = extensions.files_digest(extensions.read_extensions([hello]))
+
+        def edit_then_accept(question):
+            hello.write_text(HELLO_EXT.format(reply="evil"))
+            (self.ext_dir / "extra.py").write_text(HELLO_EXT.format(reply="extra").replace('"hello"', '"extra"'))
+            return True
+
+        self.frontend.ask.side_effect = edit_then_accept
+        self.app.reload_extensions()
+        self.assertEqual(self.app.registry.tools["hello"].run({}, self.app), "v1")
+        self.assertNotIn("extra", self.app.registry.tools)
+        self.assertEqual(json.loads(config.TRUST_FILE.read_text()), {"projects": {str(self.ext_dir): approved}})
+
+        self.frontend.ask.side_effect = None
+        self.frontend.ask.return_value = False
+        self.app.reload_extensions()  # the edited folder no longer matches the approved digest
+        self.assertEqual(self.frontend.ask.call_count, 2)
+        self.assertNotIn("hello", self.app.registry.tools)
 
     def test_trust_project_option_does_not_ask(self):
         self.app.trust_project = True
@@ -218,6 +240,36 @@ class OutsideWorkspaceTest(ToolTest):
                 self.assertIn("denied", result["content"])
                 self.assertNotIn("hunter2", result["content"])
 
+    def test_grep_does_not_follow_links_out_of_the_searched_directory(self):
+        secret = self.tmp / "secret.txt"
+        secret.write_text("hunter2")
+        (self.cwd / "link.txt").symlink_to(secret)
+        (self.cwd / "inside.txt").write_text("hunter3")
+        (self.cwd / "alias.txt").symlink_to(self.cwd / "inside.txt")
+
+        result = self.call("grep", pattern="hunter")
+        self.assertFalse(result["is_error"])
+        self.assertNotIn("hunter2", result["content"])
+        self.assertNotIn("link.txt", result["content"])
+        self.assertIn("inside.txt:1:hunter3", result["content"])
+        self.assertIn("alias.txt:1:hunter3", result["content"])  # a link within the workspace is fine
+        self.confirm.assert_not_called()
+
+    def test_grep_of_an_approved_outside_directory_covers_its_own_files_only(self):
+        self.confirm.return_value = True
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "own.txt").write_text("hunter1")
+        (outside / "sibling-link.txt").symlink_to(outside / "own.txt")
+        other = self.tmp / "other.txt"
+        other.write_text("hunter2")
+        (outside / "escape.txt").symlink_to(other)
+
+        result = self.call("grep", pattern="hunter", path=str(outside))
+        self.assertIn("own.txt:1:hunter1", result["content"])
+        self.assertIn("sibling-link.txt:1:hunter1", result["content"])
+        self.assertNotIn("hunter2", result["content"])
+
 
 class BashEnvironmentTest(ToolTest):
     def test_saved_keys_are_not_in_the_command_environment(self):
@@ -227,6 +279,35 @@ class BashEnvironmentTest(ToolTest):
         self.assertEqual(os.environ["X_KEY"], "s3cret")  # providers still read it
         result = self.call("bash", command='echo "[$X_KEY][$SHELL_ONLY]"')
         self.assertTrue(result["content"].startswith("[][kept]"), result["content"])
+
+    def test_keys_stay_out_after_the_store_is_deleted_or_a_key_removed(self):
+        self.confirm.return_value = True
+        config.save_key("X_KEY", "s3cret")
+        config.save_key("Y_KEY", "other")
+        probe = {"command": 'echo "[$X_KEY][$Y_KEY]"'}
+
+        config.write_private(config.KEYS_FILE, {"Y_KEY": "other"})  # X_KEY removed from the file
+        self.assertTrue(self.call("bash", **probe)["content"].startswith("[][]"))
+
+        config.KEYS_FILE.unlink()
+        self.assertTrue(self.call("bash", **probe)["content"].startswith("[][]"))
+
+    def test_keys_applied_at_startup_stay_out_after_the_store_is_deleted(self):
+        self.confirm.return_value = True
+        config.write_private(config.KEYS_FILE, {"X_KEY": "s3cret"})
+        config.apply_keys()
+        config.KEYS_FILE.unlink()
+        result = self.call("bash", command='echo "[$X_KEY]"')
+        self.assertTrue(result["content"].startswith("[]"), result["content"])
+
+    def test_an_unreadable_store_blocks_commands_instead_of_leaking_keys(self):
+        self.confirm.return_value = True
+        config.save_key("X_KEY", "s3cret")
+        config.KEYS_FILE.write_text("{not json")
+        result = self.call("bash", command='echo "[$X_KEY]"')
+        self.assertTrue(result["is_error"])
+        self.assertIn("unreadable", result["content"])
+        self.assertNotIn("s3cret", result["content"])
 
 
 class GuardHookTest(ToolTest):

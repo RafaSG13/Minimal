@@ -16,7 +16,7 @@ An extension is a ``.py`` file that defines ``register(minimal)``, where ``minim
 Search order (each folder in sorted order, files starting with ``_`` skipped):
 
 1. ``~/.minimal/extensions/``
-2. ``<cwd>/.minimal/extensions/``
+2. ``<cwd>/.minimal/extensions/`` (from a snapshot the caller read and had approved)
 3. every ``--ext`` path (a file or a folder)
 
 Within each folder, its own files load first, then those of its ``themes/``,
@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -46,6 +47,19 @@ def project_extensions_dir(cwd: str) -> Path:
     return Path(cwd) / ".minimal" / "extensions"
 
 
+@dataclass(frozen=True)
+class ExtensionSource:
+    """An extension file as read once: its path and the exact bytes that were reviewed and will run."""
+
+    path: Path
+    data: bytes
+
+
+def read_extensions(files: list[Path]) -> list[ExtensionSource]:
+    """Read ``files`` once, in order. Raises ``OSError`` if any cannot be read."""
+    return [ExtensionSource(file, file.read_bytes()) for file in files]
+
+
 def category_dir(directory: Path, category: str) -> Path:
     """Where files of ``category`` live inside extensions folder ``directory``.
 
@@ -58,16 +72,17 @@ def category_dir(directory: Path, category: str) -> Path:
 
 
 def load_extensions(
-    registry: Registry, cwd: str, extra: Iterable[str | Path] = (), include_project: bool = True
+    registry: Registry, cwd: str, extra: Iterable[str | Path] = (), project: Iterable[ExtensionSource] = ()
 ) -> tuple[list[Path], list[str]]:
     """Load every extension found and let it register into ``registry``.
 
     Args:
         registry: Passed to each extension's ``register(minimal)``.
-        cwd: Directory used for the project-local folder and to resolve ``extra``.
+        cwd: Directory used to resolve ``extra``.
         extra: Additional files or folders (the ``--ext`` option).
-        include_project: Whether to load ``<cwd>/.minimal/extensions``; the caller
-            passes ``False`` when the user has not trusted that folder's code.
+        project: Project extensions the caller already reviewed, loaded from these
+            bytes and never re-read from disk; the project folder is not scanned
+            here. Empty means none (untrusted or absent).
 
     Returns:
         ``(loaded, errors)``: the files that loaded successfully, and one
@@ -75,11 +90,14 @@ def load_extensions(
         ``"<path>: not found"`` for a missing ``extra`` entry). Failed files are
         skipped; anything they registered before failing stays registered.
     """
-    files, errors = _find_extension_files(cwd, extra, include_project)
+    project = list(project)
+    pinned = {s.path: s.data for s in project}
+    files, errors = _find_extension_files(cwd, extra, [s.path for s in project])
     loaded = []
     for file in files:
         try:
-            _load_extension(file, registry)
+            data = pinned[file] if file in pinned else file.read_bytes()
+            _load_extension(file, data, registry)
             loaded.append(file)
         except Exception as e:
             errors.append(f"{file}: {type(e).__name__}: {e}")
@@ -87,12 +105,11 @@ def load_extensions(
 
 
 def _find_extension_files(
-    cwd: str, extra: Iterable[str | Path], include_project: bool = True
+    cwd: str, extra: Iterable[str | Path], project_files: list[Path]
 ) -> tuple[list[Path], list[str]]:
     """Return candidate extension files in load order, and errors for missing ``extra`` paths."""
     files = extension_files(GLOBAL_EXTENSIONS_DIR)
-    if include_project:
-        files += extension_files(project_extensions_dir(cwd))
+    files += project_files
     errors = []
     for entry in extra:
         path = Path(cwd, entry).resolve()
@@ -105,11 +122,11 @@ def _find_extension_files(
     return files, errors
 
 
-def files_digest(files: list[Path]) -> str:
-    """SHA-256 over the paths and contents of ``files`` in order: changes when a file is added, removed, renamed or edited."""
+def files_digest(sources: list[ExtensionSource]) -> str:
+    """SHA-256 over the paths and contents of ``sources`` in order: changes when a file is added, removed, renamed or edited."""
     digest = hashlib.sha256()
-    for file in files:
-        digest.update(file.as_posix().encode() + b"\0" + file.read_bytes() + b"\0")
+    for s in sources:
+        digest.update(s.path.as_posix().encode() + b"\0" + s.data + b"\0")
     return digest.hexdigest()
 
 
@@ -125,8 +142,8 @@ def _py_files(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.py") if not p.name.startswith(("_", ".")))
 
 
-def _load_extension(file: Path, registry: Registry) -> None:
-    """Run ``file`` as a module and call its ``register(registry)``.
+def _load_extension(file: Path, data: bytes, registry: Registry) -> None:
+    """Run the source ``data`` of ``file`` as a module and call its ``register(registry)``.
 
     The source is compiled directly instead of through the import system, whose
     ``__pycache__`` check (whole-second mtime and size) could run stale code
@@ -140,7 +157,7 @@ def _load_extension(file: Path, registry: Registry) -> None:
         raise ValueError("cannot import file")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    exec(compile(file.read_text(encoding="utf-8"), str(file), "exec"), module.__dict__)
+    exec(compile(data.decode("utf-8"), str(file), "exec"), module.__dict__)
 
     register = getattr(module, "register", None)
     if not callable(register):

@@ -24,6 +24,9 @@ class ConfigTest(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"GOOGLE_API_KEY": "stale-shell-key"}, clear=False)
         env.start()
         self.addCleanup(env.stop)
+        injected = mock.patch.object(config, "_injected_keys", set())
+        injected.start()
+        self.addCleanup(injected.stop)
         for var in ("MINIMAL_PROVIDER", "MINIMAL_MODEL"):
             os.environ.pop(var, None)
 

@@ -39,6 +39,12 @@ def _resolve(ctx: Any, path: str) -> Path:
     return Path(ctx.cwd, path).resolve()
 
 
+def _readable_without_asking(path: Path, ctx: Any) -> bool:
+    """Whether resolved ``path`` is in the working directory, minimal's own source or the global extensions folder."""
+    roots = (Path(ctx.cwd).resolve(), Path(__file__).resolve().parent, extensions.GLOBAL_EXTENSIONS_DIR.resolve())
+    return any(path.is_relative_to(root) for root in roots)
+
+
 def _outside_workspace(input: dict, ctx: Any) -> bool:
     """Whether ``input["path"]`` (default ``.``) resolves outside the working directory,
     minimal's own source (the system prompt points the model at registry.py) and the global extensions folder.
@@ -46,9 +52,7 @@ def _outside_workspace(input: dict, ctx: Any) -> bool:
     The ``confirm`` of the reading tools: those places are read freely, anything
     else (``~/.ssh``, ``~/.minimal/keys.json``, a symlink leading there) asks first.
     """
-    path = _resolve(ctx, input.get("path", "."))
-    roots = (Path(ctx.cwd).resolve(), Path(__file__).resolve().parent, extensions.GLOBAL_EXTENSIONS_DIR.resolve())
-    return not any(path.is_relative_to(root) for root in roots)
+    return not _readable_without_asking(_resolve(ctx, input.get("path", ".")), ctx)
 
 
 def _read_text(path: Path) -> str:
@@ -325,13 +329,16 @@ def _command_env() -> dict[str, str]:
     """The environment for ``bash`` commands: ours without the API keys saved by setup (``~/.minimal/keys.json``).
 
     Those keys are for the providers; a command the model runs has no use for
-    them and could send them anywhere. Variables exported in the shell under
-    other names are kept.
+    them and could send them anywhere. Excluded are the names listed in the
+    file now plus every name this process ever copied into ``os.environ``, so
+    deleting or rewriting the file mid-session does not expose them. Variables
+    exported in the shell under other names are kept.
+
+    Raises:
+        ValueError: if the key store exists but cannot be read: the keys can't
+            be told apart from other variables, so no command runs.
     """
-    try:
-        saved = set(config.load_keys())
-    except ValueError:
-        saved = set()
+    saved = config.injected_key_names() | config.load_keys().keys()
     return {k: v for k, v in os.environ.items() if k not in saved}
 
 
@@ -442,7 +449,10 @@ BASH = Tool(
 def grep(input: dict, ctx: Any) -> str:
     """Return ``path:line:text`` for each line matching the regex ``pattern``, at most ``GREP_LIMIT``.
 
-    Files are read line by line. Setting ``ctx.cancelled`` (if ``ctx`` has it)
+    Files are read line by line. A file that is a symlink to somewhere outside
+    the places read freely (see :func:`_outside_workspace`) and outside the
+    searched ``path`` itself is skipped: ``path`` was approved, not its links.
+    Setting ``ctx.cancelled`` (if ``ctx`` has it)
     stops the search before the next file with :class:`TurnInterrupted`.
     """
     cancelled = getattr(ctx, "cancelled", None)
@@ -456,8 +466,12 @@ def grep(input: dict, ctx: Any) -> str:
     for file in files:
         if cancelled is not None and cancelled.is_set():
             raise TurnInterrupted("interrupted by the user")
+        # The search root was approved, not what a link inside it points at: open only the resolved target.
+        target = file.resolve()
+        if not _readable_without_asking(target, ctx) and not target.is_relative_to(root):
+            continue
         shown = _display(file, ctx)
-        for n, line in _search_lines(file):
+        for n, line in _search_lines(target):
             if regex.search(line):
                 out.append(f"{shown}:{n}:{line[:_LINE_CHARS]}")
                 if len(out) == GREP_LIMIT:
@@ -472,7 +486,8 @@ GREP = Tool(
     name="grep",
     description=(
         "Search file contents with a Python regular expression. Returns path:line:text for each matching line "
-        f"(at most {GREP_LIMIT}). Skips binary files and, in a git repo, files ignored by .gitignore. "
+        f"(at most {GREP_LIMIT}). Skips binary files, symlinks that lead outside the workspace and the searched path, "
+        "and, in a git repo, files ignored by .gitignore. "
         "Use glob to filter files, e.g. '*.py' (no '/': matches file names at any depth) or 'src/**/*.ts'."
     ),
     input_schema={

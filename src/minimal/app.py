@@ -22,7 +22,14 @@ import minimal.extensions
 import minimal.registry
 from minimal import config
 from minimal.agent import run_agent
-from minimal.extensions import extension_files, files_digest, load_extensions, project_extensions_dir
+from minimal.extensions import (
+    ExtensionSource,
+    extension_files,
+    files_digest,
+    load_extensions,
+    project_extensions_dir,
+    read_extensions,
+)
 from minimal.marketplace import register_marketplace_tools
 from minimal.providers import register_builtin_providers
 from minimal.providers.base import Provider
@@ -305,48 +312,56 @@ class App:
         Returns:
             ``(loaded, errors)`` as from :func:`~minimal.extensions.load_extensions`.
         """
-        skipped = self._untrusted_project_extensions()  # may ask: the registry stays usable meanwhile
+        project, skipped = self._trusted_project_extensions()  # may ask: the registry stays usable meanwhile
         self.registry.reset()
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         register_marketplace_tools(self.registry)
-        loaded, errors = load_extensions(
-            self.registry, self.cwd, self.extra_extensions, include_project=skipped is None
-        )
+        loaded, errors = load_extensions(self.registry, self.cwd, self.extra_extensions, project=project)
         if skipped:
             errors.append(skipped)
         self.extensions, self.extension_errors = loaded, errors
         self.frontend.reloaded()
         return loaded, errors
 
-    def _untrusted_project_extensions(self) -> str | None:
-        """Why the project's extensions must be skipped, or ``None`` when they may load.
+    def _trusted_project_extensions(self) -> tuple[list[ExtensionSource], str | None]:
+        """The project's extensions that may load, and why the rest are skipped.
+
+        Returns ``(sources, reason)``: the files to load, or ``[]`` and the
+        reason they were skipped (``None`` when there is nothing to skip).
 
         They are code from the repository, run with the user's permissions, so
         the user is asked once per set of files: the answer is remembered in
         :data:`~minimal.config.TRUST_FILE` by folder and by a digest of the
         files, and any change to them asks again. ``-y`` does not answer this
         question; only ``--trust-project`` skips it.
+
+        The files are read once here: that snapshot is what is hashed, what the
+        user approves and what the loader runs. Edits made while the prompt is
+        open are ignored until the next reload, which asks again because the
+        digest then differs.
         """
         directory = project_extensions_dir(self.cwd)
         files = extension_files(directory)
-        if not files or self.trust_project:
-            return None
+        if not files:
+            return [], None
         try:
-            key, digest = str(directory.resolve()), files_digest(files)
+            sources = read_extensions(files)  # the only read of these files: what is hashed, asked about and run
+            key = str(directory.resolve())
         except OSError as e:
-            return f"{directory}: cannot read the project extensions ({e}), skipped {len(files)}"
-        if config.load_trusted().get(key) == digest:
-            return None
-        names = ", ".join(f.relative_to(directory).as_posix() for f in files)
+            return [], f"{directory}: cannot read the project extensions ({e}), skipped {len(files)}"
+        digest = files_digest(sources)
+        if self.trust_project or config.load_trusted().get(key) == digest:
+            return sources, None
+        names = ", ".join(s.path.relative_to(directory).as_posix() for s in sources)
         if self.frontend.ask(
             "Run this project's extensions? They are Python code that runs with your permissions: "
             f"{directory} ({names})"
         ):
             config.save_trusted(key, digest)
-            return None
-        return (
-            f"{directory}: not trusted, skipped {len(files)} project extension(s); "
+            return sources, None
+        return [], (
+            f"{directory}: not trusted, skipped {len(sources)} project extension(s); "
             "start minimal in a terminal and accept the prompt, or pass --trust-project"
         )
 
