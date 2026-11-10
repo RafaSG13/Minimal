@@ -37,24 +37,24 @@ from minimal.registry import Registry
 from minimal.session import Session
 from minimal.tools import register_builtin_tools
 
-BASE_PROMPT = (
-    "You are a coding agent working in the user's terminal. Use the tools to read, edit and run things; "
-    "do not invent file contents, paths or command output.\n\n"
-    "Working method:\n"
-    "- Explore before changing: search and read the relevant code first, and follow the conventions already there.\n"
-    "- Read a file before editing it. Prefer small targeted edits over rewriting whole files.\n"
-    "- Make independent tool calls in the same turn; make a call only after the ones it depends on have returned.\n"
-    "- Verify your work: run the tests, build or linter when they exist, and fix what you broke. "
-    "If you could not verify something, say so.\n"
-    "- Do only what was asked. Mention related problems you notice instead of fixing them unasked.\n"
-    "- Ask before destructive or hard-to-undo actions (deleting files, force-pushing, resetting history), "
-    "and never touch secrets or files outside the working directory without being asked.\n"
-    "- If a request is ambiguous and a wrong guess would be costly, ask one short question. Otherwise pick "
-    "the most reasonable reading and say which one you chose.\n"
-    "- If something fails, find the cause instead of retrying the same call or working around it silently.\n\n"
-    "Style: be concise. Answer directly, without preamble or filler. Refer to code as path:line. "
-    "When you finish, say briefly what changed and what you verified."
-)
+DEFAULT_PROMPT_FILE = Path(__file__).with_name("prompt.md")
+
+
+def base_prompt() -> str:
+    """The base prompt: ``config.PROMPT_FILE`` if it exists, else the ``prompt.md`` shipped in the package.
+
+    The user's file replaces the shipped one entirely; a blank file means no base prompt.
+    It is read on every turn, so edits apply from the next one without ``/reload``.
+
+    Raises:
+        ValueError: if the file cannot be read as UTF-8 text.
+    """
+    path = config.PROMPT_FILE if config.PROMPT_FILE.exists() else DEFAULT_PROMPT_FILE
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"{path} is unreadable ({e}); fix it or delete it to use the default prompt") from e
+
 
 SELF_EXTEND_PROMPT = (
     "You can extend minimal, the harness you are running in. An extension is one Python file defining "
@@ -81,12 +81,12 @@ SELF_EXTEND_PROMPT = (
 def build_system_prompt(registry: Registry, cwd: str) -> str:
     """Assemble the system prompt.
 
-    Parts, separated by blank lines: the base prompt, the working directory and
-    today's date, how to extend minimal, ``AGENTS.md`` from ``cwd`` if present,
-    and the paragraphs added by extensions.
+    Parts, separated by blank lines: the base prompt (``~/.minimal/prompt.md`` or the
+    packaged default), the working directory and today's date, how to extend minimal,
+    ``AGENTS.md`` from ``cwd`` if present, and the paragraphs added by extensions.
     """
     parts = [
-        BASE_PROMPT,
+        base_prompt(),
         f"Working directory: {cwd}\nDate: {datetime.now(timezone.utc).date().isoformat()}",
         SELF_EXTEND_PROMPT.format(
             registry_path=Path(minimal.registry.__file__),
@@ -98,7 +98,7 @@ def build_system_prompt(registry: Registry, cwd: str) -> str:
     if agents_md.exists():
         parts.append(f"Project instructions (AGENTS.md):\n{agents_md.read_text(encoding='utf-8')}")
     parts.extend(registry.prompt_parts)
-    return "\n\n".join(parts)
+    return "\n\n".join(p for p in parts if p)
 
 
 def reload_summary(loaded: list[Path], errors: list[str]) -> str:
