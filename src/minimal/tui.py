@@ -91,7 +91,9 @@ def git_status(cwd: str) -> tuple[str, bool] | None:
 def _short_path(path: str) -> str:
     """``path`` with the home directory written as ``~``."""
     home = str(Path.home())
-    return "~" + path[len(home) :] if path == home or path.startswith(home + "/") else path
+    return (
+        "~" + path[len(home) :] if path == home or path.startswith(home + "/") else path
+    )
 
 
 def _version() -> str:
@@ -119,7 +121,11 @@ def _tool_title(call: dict) -> Content:
         parts += [" ", (inp["path"], "$secondary")]
         if name == "read" and ("offset" in inp or "limit" in inp):
             start = inp.get("offset", 1)
-            end = f"{start + inp['limit'] - 1}" if isinstance(inp.get("limit"), int) else ""
+            end = (
+                f"{start + inp['limit'] - 1}"
+                if isinstance(inp.get("limit"), int)
+                else ""
+            )
             parts.append((f":{start}-{end}", "$muted"))
         if name == "write" and isinstance(inp.get("content"), str):
             parts.append((f" ({len(inp['content'].splitlines())} lines)", "$muted"))
@@ -131,7 +137,11 @@ def _tool_title(call: dict) -> Content:
 def _preview(lines: list[str], style: str, tail: bool = False) -> Content:
     """At most :data:`PREVIEW_LINES` of ``lines`` (the last ones if ``tail``), saying how many were left out."""
     hidden = len(lines) - PREVIEW_LINES
-    shown = (lines[-PREVIEW_LINES:] if tail else lines[:PREVIEW_LINES]) if hidden > 0 else lines
+    shown = (
+        (lines[-PREVIEW_LINES:] if tail else lines[:PREVIEW_LINES])
+        if hidden > 0
+        else lines
+    )
     parts: list[tuple[str, str]] = []
     if hidden > 0 and tail:
         parts.append((f"… {hidden} earlier lines\n", "$dim"))
@@ -145,7 +155,10 @@ def _edit_diff(inp: dict) -> Content:
     """``old_string`` as removed lines and ``new_string`` as added lines."""
     return Content("\n").join(
         _preview([f"{sign} {line}" for line in inp[key].splitlines() or [""]], style)
-        for sign, key, style in (("-", "old_string", "$diff-removed"), ("+", "new_string", "$diff-added"))
+        for sign, key, style in (
+            ("-", "old_string", "$diff-removed"),
+            ("+", "new_string", "$diff-added"),
+        )
     )
 
 
@@ -161,7 +174,11 @@ class ToolBlock(Static):
         self.icon = Content.styled(theme.RUNNING, "$warning")
         self.body: Content | None = None
         name, inp = call["name"], call["input"]
-        if name == "edit" and isinstance(inp.get("old_string"), str) and isinstance(inp.get("new_string"), str):
+        if (
+            name == "edit"
+            and isinstance(inp.get("old_string"), str)
+            and isinstance(inp.get("new_string"), str)
+        ):
             self.body = _edit_diff(inp)
         elif name == "write" and isinstance(inp.get("content"), str):
             self.body = _preview(inp["content"].splitlines(), "$muted")
@@ -169,7 +186,11 @@ class ToolBlock(Static):
 
     def finish(self, result: dict) -> None:
         """Show ``result`` (a ``tool_result`` block) and switch to the success or error state."""
-        output = result["content"] if isinstance(result["content"], str) else json.dumps(result["content"])
+        output = (
+            result["content"]
+            if isinstance(result["content"], str)
+            else json.dumps(result["content"])
+        )
         lines = output.strip("\n").expandtabs(4).splitlines()
         if result["is_error"]:
             self.icon = Content.styled(theme.ERROR, "$error")
@@ -229,7 +250,7 @@ def _wordmark() -> Content:
         (TAGLINE, "$muted"),
     ]
     if _version():
-        parts.append((f"  v{_version()}", "$dim"))
+        parts.append((f" v{_version()}", "$dim"))
     return Content.assemble(*parts)
 
 
@@ -238,13 +259,6 @@ def _header(core: App) -> Content:
     parts: list[str | tuple[str, str]] = []
     if core.registry.logo is not None and _version():
         parts += [(f"v{_version()}", "$dim"), "\n"]
-    hints = [("/", "commands"), ("ctrl+p", "palette"), ("ctrl+q", "quit")]
-    for i, (key, what) in enumerate(hints):
-        if i:
-            parts.append((theme.DOT, "$dim"))
-        parts += [(key, "$muted"), (f" {what}", "$dim")]
-    if core.extensions:
-        parts += [("\n\nextensions ", "$dim"), (", ".join(p.name for p in core.extensions), "$muted")]
     return Content.assemble(*parts)
 
 
@@ -298,11 +312,16 @@ class ConfirmScreen(ModalScreen[bool]):
     def __init__(self, question: str) -> None:
         super().__init__()
         self.question = question
-        self.allow = True  # enter on an untouched prompt allows, like most agent harnesses
+        self.allow = (
+            True  # enter on an untouched prompt allows, like most agent harnesses
+        )
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(Content.assemble((theme.WARNING, "$warning"), " Permission"), classes="title")
+            yield Label(
+                Content.assemble((theme.WARNING, "$warning"), " Permission"),
+                classes="title",
+            )
             yield Label(self.question, markup=False)
             with Horizontal(id="actions"):
                 yield Label("Allow", id="yes", classes="choice -selected")
@@ -388,7 +407,10 @@ class ChoiceScreen(DialogScreen):
         self.options = options
 
     def body(self) -> Widget:
-        return OptionList(*(Option(Content(label), id=value) for value, label in self.options), compact=True)
+        return OptionList(
+            *(Option(Content(label), id=value) for value, label in self.options),
+            compact=True,
+        )
 
     def on_mount(self) -> None:
         if self.options:
@@ -411,7 +433,11 @@ class ChecklistScreen(DialogScreen):
 
     def body(self) -> Widget:
         return SelectionList[str](
-            *(Selection(Content(label), value, checked) for value, label, checked in self.options), compact=True
+            *(
+                Selection(Content(label), value, checked)
+                for value, label, checked in self.options
+            ),
+            compact=True,
         )
 
     def on_mount(self) -> None:
@@ -482,7 +508,9 @@ class TuiFrontend:
             done.set()
 
         self.tui.pending_modal = done
-        self.tui.call_from_thread(lambda: self.tui.push_screen(screen, callback=on_done))
+        self.tui.call_from_thread(
+            lambda: self.tui.push_screen(screen, callback=on_done)
+        )
         done.wait()
         self.tui.pending_modal = None
         return result[0] if result else None
@@ -505,7 +533,9 @@ class TuiFrontend:
             return ConsoleFrontend().choose(title, options)
         return self._modal(ChoiceScreen(title, options))
 
-    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
+    def choose_many(
+        self, title: str, options: list[tuple[str, str, bool]]
+    ) -> list[str] | None:
         if self._in_terminal():
             return ConsoleFrontend().choose_many(title, options)
         return self._modal(ChecklistScreen(title, options))
@@ -636,8 +666,14 @@ class MinimalTui(TextualApp):
         """Show printed text (command output, extension messages) as an output block."""
         transcript = self.query_one("#transcript", VerticalScroll)
         last = transcript.children[-1] if transcript.children else None
-        if self.output_block is None or last is not self.output_block or self.output_stderr != event.stderr:
-            self.output_block = Static("", markup=False, classes="error" if event.stderr else "output")
+        if (
+            self.output_block is None
+            or last is not self.output_block
+            or self.output_stderr != event.stderr
+        ):
+            self.output_block = Static(
+                "", markup=False, classes="error" if event.stderr else "output"
+            )
             self.output_buffer = []
             self.output_stderr = event.stderr
             self._add(self.output_block)
@@ -709,7 +745,9 @@ class MinimalTui(TextualApp):
                 self.ext_widgets.append((spec.name, widget))
             except Exception as e:
                 self.show_error(f"[extension] widget {spec.name}: {e}")
-        has_sidebar = any(spec.area == "sidebar" for spec in self.core.registry.widgets.values())
+        has_sidebar = any(
+            spec.area == "sidebar" for spec in self.core.registry.widgets.values()
+        )
         self.query_one("#sidebar").set_class(has_sidebar, "-has-widgets")
         self.refresh_widgets()
 
@@ -761,7 +799,12 @@ class MinimalTui(TextualApp):
         elapsed = time.monotonic() - self.busy_since
         frame = theme.SPINNER[int(elapsed / 0.08) % len(theme.SPINNER)]
         self.query_one("#working", Static).update(
-            Content.assemble((frame, "$accent"), " ", ("Working…", "$muted"), (f" {elapsed:.0f}s", "$dim"))
+            Content.assemble(
+                (frame, "$accent"),
+                " ",
+                ("Working…", "$muted"),
+                (f" {elapsed:.0f}s", "$dim"),
+            )
         )
 
     # --- input ---------------------------------------------------------------
