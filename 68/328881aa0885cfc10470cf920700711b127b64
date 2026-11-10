@@ -1,0 +1,14 @@
+src/minimal/tui.py
+  h_e81853c41416fb 94-96,124-128,140-144,158-161,177-181,189-193,253,315-317,321-324,410-413,436-440,511-513,536-538,669-676,748-750,802-807
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "68328881aa0885cfc10470cf920700711b127b64",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
