@@ -27,7 +27,7 @@ Options:
   -p, --print <text>    non-interactive mode
   -c, --continue        resume the last session
   -s, --session <id>    open (or create) a specific session
-  --provider <name>     model integration: anthropic, claude, gemini, or one added by an extension
+  --provider <name>     model integration: anthropic, claude, gemini, openai, or one added by an extension
                         (default $MINIMAL_PROVIDER, else the one chosen in setup)
   -m, --model <name>    model (default $MINIMAL_MODEL, else the one chosen in setup, else the provider's default)
   -e, --ext <path>      load an extension file or folder (repeatable)
@@ -37,6 +37,7 @@ Options:
 Environment:
   ANTHROPIC_API_KEY             for --provider anthropic
   GEMINI_API_KEY/GOOGLE_API_KEY for --provider gemini
+  OPENAI_API_KEY                for --provider openai (OPENAI_BASE_URL points it at OpenRouter, Ollama, LM Studio)
                                 (a key entered in setup is saved in ~/.minimal/keys.json and wins over these)
   --provider claude uses the login from minimal --login
   MINIMAL_PROVIDER, MINIMAL_MODEL
@@ -91,7 +92,11 @@ def main() -> None:
         sys.exit(1)
 
     if print_mode:
-        app.run_turn(opts.print)
+        try:
+            app.run_turn(opts.print)
+        except KeyboardInterrupt:
+            print("\nInterrupted.", file=sys.stderr)
+            sys.exit(130)
     else:
         from minimal.tui import run_tui  # -p never imports textual
 

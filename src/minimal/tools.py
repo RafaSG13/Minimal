@@ -12,6 +12,7 @@ import os
 import re
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -266,7 +267,9 @@ def bash(input: dict, ctx: Any) -> str:
     """Run a command with ``/bin/bash -c`` and report stdout, stderr and the exit code.
 
     On timeout the whole process group is killed, so child processes die too,
-    and the result ends with ``[exit 1 (timeout)]``.
+    and the result ends with ``[exit 1 (timeout)]``. The same happens, with
+    ``[exit 1 (interrupted)]``, when ``ctx.cancelled`` (a ``threading.Event``,
+    if ``ctx`` has one) is set while the command runs.
     """
     timeout_s = input.get("timeout_ms", 120_000) / 1000
     proc = subprocess.Popen(
@@ -278,16 +281,24 @@ def bash(input: dict, ctx: Any) -> str:
         errors="replace",
         start_new_session=True,  # own process group, so a timeout can kill all of it
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
-        status = f"exit {proc.returncode}"
-    except subprocess.TimeoutExpired:
+    deadline = time.monotonic() + timeout_s
+    cancelled = getattr(ctx, "cancelled", None)
+    while True:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        stdout, stderr = proc.communicate()
-        status = "exit 1 (timeout)"
+            stdout, stderr = proc.communicate(timeout=min(0.2, max(0.0, deadline - time.monotonic())))
+            status = f"exit {proc.returncode}"
+            break
+        except subprocess.TimeoutExpired:
+            timed_out = time.monotonic() >= deadline
+            if not timed_out and not (cancelled is not None and cancelled.is_set()):
+                continue
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
+            status = "exit 1 (timeout)" if timed_out else "exit 1 (interrupted)"
+            break
 
     out = stdout
     if stderr:

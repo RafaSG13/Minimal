@@ -14,8 +14,10 @@ Events and their payloads:
     ``tool_result``  ``{name, input, output, is_error}``
         Fired after a tool runs. A handler may return ``{"output": str}``
         to rewrite what the model sees.
-    ``turn_end``     ``{messages}``
+    ``turn_end``     ``{messages, ctx}``
         Fired when the model finishes answering without further tool calls.
+        ``messages`` is the history of the loop that ended, which is not
+        ``ctx.messages`` when a tool ran its own loop (a subagent).
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
@@ -214,13 +215,14 @@ class App:
         provider_name: Registry name of ``provider``.
         model: Current model name (``/model`` changes it).
         registry: Tools, commands, providers, event handlers and widgets.
-        session: Current session (``/new`` replaces it).
+        session: Current session (``/new`` and ``/resume`` replace it).
         cwd: Working directory for tools and the system prompt.
         auto_approve: Run ``write``/``edit``/``bash`` without asking.
         extra_extensions: ``--ext`` paths, loaded again on every reload.
         frontend: Where turns are shown and confirmations asked.
         extensions: Extension files loaded by the last reload.
         extension_errors: Failures of the last reload.
+        cancelled: Set to interrupt the turn in progress.
     """
 
     def __init__(
@@ -244,6 +246,7 @@ class App:
         self.model = ""
         self.extensions: list[Path] = []
         self.extension_errors: list[str] = []
+        self.cancelled = threading.Event()
 
     def reload_extensions(self) -> tuple[list[Path], list[str]]:
         """Rebuild the registry: built-ins, marketplace tools, then every extension from disk.
@@ -287,6 +290,15 @@ class App:
         """Messages of the current session."""
         return self.session.messages
 
+    @property
+    def context_tokens(self) -> int | None:
+        """Size of the context after the last reply that reported usage (its input plus its output), else ``None``."""
+        for message in reversed(self.messages):
+            usage = message.get("usage")
+            if usage:
+                return usage["input_tokens"] + usage["output_tokens"]
+        return None
+
     def confirm(self, call: dict) -> bool:
         """Ask the user, through the frontend, whether a tool call may run."""
         if self.auto_approve:
@@ -298,9 +310,11 @@ class App:
     def run_turn(self, text: str) -> None:
         """Send ``text`` to the model, stream the answer to the frontend and save the session.
 
-        If the turn fails, its messages are discarded so the history never ends
-        with a ``tool_use`` that has no result, and the frontend gets the error.
+        If the turn fails or is interrupted, its messages are discarded so the
+        history never ends with a ``tool_use`` that has no result, and the
+        frontend gets the error.
         """
+        self.cancelled.clear()
         before = len(self.messages)
         self.messages.append({"role": "user", "content": text})
         error = None
@@ -316,6 +330,9 @@ class App:
                 on_tool=self.frontend.tool_call,
                 on_tool_result=self.frontend.tool_result,
             )
+        except KeyboardInterrupt:
+            del self.messages[before:]
+            raise
         except Exception as e:
             del self.messages[before:]
             error = str(e)

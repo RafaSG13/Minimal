@@ -1,7 +1,11 @@
+import contextlib
+import io
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,10 +13,11 @@ from unittest import mock
 
 from minimal import extensions
 from minimal import session as session_mod
-from minimal.agent import run_agent
+from minimal.agent import TurnInterrupted, run_agent
 from minimal.app import App
+from minimal.commands import run_command
 from minimal.extensions import load_extensions
-from minimal.providers.base import Reply
+from minimal.providers.base import Reply, Usage
 from minimal.registry import Registry
 from minimal.session import Session
 from minimal.tools import register_builtin_tools
@@ -35,6 +40,9 @@ class SmokeTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.cwd = self._tmp.name
+        patcher = mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", Path(self.cwd) / "global")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.registry = Registry()
         register_builtin_tools(self.registry)
         self.loaded, self.errors = load_extensions(self.registry, self.cwd, extra=[EXAMPLE])
@@ -60,6 +68,15 @@ class SmokeTest(unittest.TestCase):
     def test_bash(self):
         self.assertRegex(self.run_tool("bash", command="echo ok; exit 3"), r"ok[\s\S]*\[exit 3\]")
         self.assertIn("(timeout)", self.run_tool("bash", command="sleep 5", timeout_ms=100))
+
+    def test_bash_interrupted(self):
+        self.ctx.cancelled = threading.Event()
+        timer = threading.Timer(0.3, self.ctx.cancelled.set)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        start = time.monotonic()
+        self.assertIn("(interrupted)", self.run_tool("bash", command="sleep 5"))
+        self.assertLess(time.monotonic() - start, 3)
 
     def test_search_tools(self):
         root = Path(self.cwd)
@@ -110,7 +127,7 @@ class SmokeTest(unittest.TestCase):
                     stop_reason="tool_use",
                     provider_data=["raw"],
                 ),
-                Reply(content=[{"type": "text", "text": "done"}], stop_reason="end_turn"),
+                Reply(content=[{"type": "text", "text": "done"}], stop_reason="end_turn", usage=Usage(3, 4)),
             ]
         )
         messages = [{"role": "user", "content": "time?"}]
@@ -120,6 +137,18 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(messages[2]["content"][0]["type"], "tool_result")
         self.assertIs(messages[2]["content"][0]["is_error"], False)
         self.assertNotIn("provider_data", messages[3])
+        self.assertNotIn("usage", messages[1])
+        self.assertEqual(messages[3]["usage"]["input_tokens"], 3)
+
+    def test_agent_loop_interrupted(self):
+        self.ctx.cancelled = threading.Event()
+        self.ctx.cancelled.set()
+        messages = [{"role": "user", "content": "hi"}]
+        with self.assertRaises(TurnInterrupted):  # FakeProvider([]) would raise IndexError if asked
+            run_agent(
+                provider=FakeProvider([]), model="m", system="s", messages=messages, registry=self.registry, ctx=self.ctx
+            )
+        self.assertEqual(len(messages), 1)
 
     def test_session_round_trip(self):
         with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
@@ -132,6 +161,25 @@ class SmokeTest(unittest.TestCase):
             self.assertEqual(again.messages, s.messages)
             self.assertEqual(len(again.messages), 3)
             self.assertEqual(session_mod.list_sessions(), ["x"])
+
+    def test_resume_command(self):
+        with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
+            saved = session_mod.open_session("a")
+            saved.messages += [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": [{"type": "text", "text": "r"}]},
+            ]
+            saved.save()
+            app = App(registry=self.registry, session=session_mod.open_session("b"), cwd=self.cwd, auto_approve=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_command("/resume a", app)
+            self.assertEqual(app.session.id, "a")
+            self.assertEqual(len(app.messages), 2)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                run_command("/resume zzz", app)
+            self.assertEqual(app.session.id, "a")
+            self.assertIn("no session 'zzz'", stderr.getvalue())
 
     def test_register_logo_validates(self):
         registry = Registry()

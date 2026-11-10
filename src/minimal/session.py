@@ -78,3 +78,16 @@ def last_session() -> str | None:
     """Return the id of the most recent session, or ``None`` if there are none."""
     sessions = list_sessions()
     return sessions[-1] if sessions else None
+
+
+def preview(id: str) -> str:
+    """The start of session ``id``'s first message on one line (60 characters at most), for pickers.
+
+    Empty if the file is missing, empty or not valid JSON, or the message is not plain text.
+    """
+    try:
+        with open(SESSIONS_DIR / f"{id}.jsonl", encoding="utf-8") as f:
+            content = json.loads(f.readline()).get("content")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return " ".join(content.split())[:60] if isinstance(content, str) else ""
