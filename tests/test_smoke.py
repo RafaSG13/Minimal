@@ -13,12 +13,12 @@ from unittest import mock
 
 from minimal import extensions
 from minimal import session as session_mod
-from minimal.agent import TurnInterrupted, run_agent
+from minimal.agent import run_agent
 from minimal.app import App
 from minimal.commands import run_command
 from minimal.extensions import load_extensions
 from minimal.providers.base import Reply, Usage
-from minimal.registry import Registry
+from minimal.registry import Registry, TurnInterrupted
 from minimal.session import Session
 from minimal.tools import register_builtin_tools
 
@@ -118,6 +118,27 @@ class SmokeTest(unittest.TestCase):
     def test_guardrail(self):
         r = self.registry.emit("tool_call", {"name": "bash", "input": {"command": "rm -rf /"}})
         self.assertIs(r[0]["block"], True)
+
+    def test_emit_reports_a_failing_handler_and_continues(self):
+        registry = Registry()
+        registry.on("x", lambda p: 1 / 0)
+        registry.on("x", lambda p: "after")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(registry.emit("x", {}), ["after"])
+        self.assertIn("division by zero", err.getvalue())
+
+    def test_emit_lets_turn_interrupted_through(self):
+        registry, later = Registry(), mock.Mock()
+
+        def stop(payload):
+            raise TurnInterrupted("stop")
+
+        registry.on("x", stop)
+        registry.on("x", later)
+        with self.assertRaises(TurnInterrupted):
+            registry.emit("x", {})
+        later.assert_not_called()
 
     def test_agent_loop(self):
         provider = FakeProvider(

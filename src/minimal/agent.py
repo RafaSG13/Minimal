@@ -19,15 +19,11 @@ from collections.abc import Callable
 from typing import Any
 
 from minimal.providers.base import Provider, Reply
-from minimal.registry import Registry
+from minimal.registry import Registry, TurnInterrupted
 from minimal.tools import clip
 
 
-class TurnInterrupted(Exception):
-    """Raised by :func:`run_agent` when ``ctx.cancelled`` is set."""
-
-
-def _raise_if_cancelled(ctx: Any) -> None:
+def raise_if_cancelled(ctx: Any) -> None:
     """Raise :class:`TurnInterrupted` if ``ctx`` has a ``cancelled`` event and it is set."""
     cancelled = getattr(ctx, "cancelled", None)
     if cancelled is not None and cancelled.is_set():
@@ -75,12 +71,12 @@ def run_agent(
     """
 
     def stream_text(chunk: str) -> None:
-        _raise_if_cancelled(ctx)
+        raise_if_cancelled(ctx)
         if on_text:
             on_text(chunk)
 
     for _ in range(max_turns):
-        _raise_if_cancelled(ctx)
+        raise_if_cancelled(ctx)
         reply = provider.stream(
             model=model,
             system=system,
@@ -97,7 +93,7 @@ def run_agent(
 
         results = []
         for call in calls:
-            _raise_if_cancelled(ctx)
+            raise_if_cancelled(ctx)
             if on_tool:
                 on_tool(call)
             result = execute_tool_call(call, registry, ctx)

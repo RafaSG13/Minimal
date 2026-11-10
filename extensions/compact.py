@@ -14,7 +14,7 @@ file to ``~/.minimal/extensions/`` to always have it.
 
 import sys
 
-from minimal.agent import tool_specs
+from minimal.agent import raise_if_cancelled, tool_specs
 from minimal.app import build_system_prompt
 from minimal.session import new_id, open_session
 
@@ -51,18 +51,20 @@ def compact(ctx):
 
     Raises:
         ValueError: if there is no finished exchange to compact, or the model returned no summary.
+        TurnInterrupted: if ``ctx.cancelled`` is set before the session is switched; nothing is saved or changed then.
     """
     messages = ctx.messages
     asked = [i for i, m in enumerate(messages) if m["role"] == "user" and isinstance(m["content"], str)]
     if not asked or messages[-1]["role"] != "assistant":
         raise ValueError("nothing to compact")
 
+    raise_if_cancelled(ctx)
     reply = ctx.provider.stream(
         model=ctx.model,
         system=build_system_prompt(ctx.registry, ctx.cwd),
         messages=[*messages, {"role": "user", "content": SUMMARY_REQUEST}],
         tools=tool_specs(ctx.registry),
-        on_text=None,
+        on_text=lambda _chunk: raise_if_cancelled(ctx),
     )
     summary = _text(reply.content)
     if not summary or any(block["type"] == "tool_use" for block in reply.content):
@@ -79,6 +81,7 @@ def compact(ctx):
             {"role": "assistant", "content": answer},
         ]
 
+    raise_if_cancelled(ctx)  # before anything is saved: the interrupted turn is dropped from history
     old = ctx.session
     old.save()
     ctx.session = open_session(new_id())
@@ -104,10 +107,15 @@ def _on_turn_end(event):
         print(f"[compact] skipped: {e}", file=sys.stderr)
 
 
+def _compact_command(args, ctx):
+    ctx.cancelled.clear()  # a slash command has no Esc; the flag may be left over from an interrupted turn
+    print(compact(ctx))
+
+
 def register(minimal):
     minimal.on("turn_end", _on_turn_end)
     minimal.register_command(
         "compact",
-        lambda args, ctx: print(compact(ctx)),
+        _compact_command,
         description="summarise the conversation into a new session",
     )

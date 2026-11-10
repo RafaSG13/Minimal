@@ -1,7 +1,8 @@
 """Subagent tool: delegates a task to a fresh agent loop with its own history.
 
 The subagent uses the current provider, model and tools (except this one, so
-subagents do not start subagents) and starts from an empty history. Only its
+subagents do not start subagents; tools reloaded with reload_extensions take
+effect on its next request) and starts from an empty history. Only its
 last message returns to the caller, which keeps long searches and
 investigations out of the main conversation. The user sees the subagent's
 tool calls, is asked for the same confirmations, and can interrupt it.
@@ -24,12 +25,17 @@ SUBAGENT_NOTE = (
 )
 
 
+def _sync_tools(parent, child):
+    """Make ``child.tools`` hold ``parent``'s current tools except this one, in place."""
+    child.tools.clear()
+    child.tools.update((name, tool) for name, tool in parent.tools.items() if name != NAME)
+
+
 def _child_registry(parent):
-    """A registry with ``parent``'s tools except this one, whose tool events go to ``parent``'s handlers."""
+    """A registry that mirrors ``parent``'s tools except this one (re-synced after every tool call, so reloads
+    reach it) and sends tool events to ``parent``'s handlers."""
     child = Registry()
-    for tool in parent.tools.values():
-        if tool.name != NAME:
-            child.add_tool(tool)
+    _sync_tools(parent, child)
 
     def veto(event):
         for verdict in parent.emit("tool_call", event):
@@ -42,6 +48,8 @@ def _child_registry(parent):
         for result in parent.emit("tool_result", event):
             if isinstance(result, dict) and isinstance(result.get("output"), str):
                 output = result["output"]
+        # a tool (reload_extensions) may have rebuilt the parent's registry
+        _sync_tools(parent, child)
         return None if output is None else {"output": output}
 
     child.on("tool_call", veto)

@@ -103,7 +103,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 
 `/setup` and `/login` run with the UI suspended, in the plain terminal. `/setup` changes the saved default; `/provider` only affects the current session.
 
-`Esc` interrupts the turn in progress: a running `bash` command is killed and the turn is dropped from the history, as when it fails. It takes effect at the next streamed chunk, tool call or model request. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
+`Esc` interrupts the turn in progress: a running `bash` command is killed and the turn is dropped from the history, as when it fails. It takes effect at the next streamed chunk, tool call or model request. Interrupting during an automatic compaction aborts it and drops the turn like any other interrupt. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
 
 ### Environment
 

@@ -13,6 +13,7 @@ from unittest import mock
 from minimal import extensions
 from minimal import session as session_mod
 from minimal.app import App
+from minimal.commands import run_command
 from minimal.extensions import load_extensions
 from minimal.providers.base import Reply, Usage
 from minimal.registry import Registry
@@ -38,6 +39,23 @@ class RecordingProvider:
 
 def text_reply(text, **kw):
     return Reply(content=[{"type": "text", "text": text}], stop_reason="end_turn", **kw)
+
+
+class InterruptingProvider(RecordingProvider):
+    """Like RecordingProvider, but ``app.cancelled`` is set while the second request (the summary) is in flight."""
+
+    def __init__(self, app_getter, replies, stream_chunks):
+        super().__init__(replies)
+        self.app_getter = app_getter
+        self.stream_chunks = stream_chunks
+
+    def stream(self, **kw):
+        reply = super().stream(**kw)
+        if len(self.requests) == 2:
+            self.app_getter().cancelled.set()
+            if self.stream_chunks and kw["on_text"]:
+                kw["on_text"]("partial")  # a real provider streams a chunk; raising here aborts the request
+        return reply
 
 
 class BundledExtensionTest(unittest.TestCase):
@@ -141,6 +159,40 @@ class SubagentTest(BundledExtensionTest):
         self.assertNotIn("subagent", inner.tools)
         self.assertIn("subagent", final.tools)
 
+    def test_subagent_sees_tools_reloaded_during_its_run(self):
+        ext_dir = self.tmp / ".minimal" / "extensions"
+        ext_dir.mkdir(parents=True)
+        hello = ext_dir / "hello.py"
+        hello.write_text('def register(minimal):\n    minimal.register_tool(name="hello", run=lambda i, c: "v1")\n')
+        call = {"type": "tool_use", "id": "t1", "name": "subagent", "input": {"prompt": "reload"}}
+        reload = {"type": "tool_use", "id": "r1", "name": "reload_extensions", "input": {}}
+        use = [
+            {"type": "tool_use", "id": "h1", "name": "hello", "input": {}},
+            {"type": "tool_use", "id": "b1", "name": "bye", "input": {}},
+        ]
+        app = self.make_app(
+            "tools/subagent.py",
+            Session("t", self.tmp / "t.jsonl"),
+            [
+                Reply(content=[call], stop_reason="tool_use"),
+                Reply(content=[reload], stop_reason="tool_use"),
+                Reply(content=use, stop_reason="tool_use"),
+                text_reply("sub done"),
+                text_reply("ok"),
+            ],
+        )
+        hello.write_text(
+            "def register(minimal):\n"
+            '    minimal.register_tool(name="hello", run=lambda i, c: "v2")\n'
+            '    minimal.register_tool(name="bye", run=lambda i, c: "bye")\n'
+        )
+        self.run_turn(app, "go")
+        _, _, after_reload, last_inner, _ = app.provider.requests
+        self.assertIn("bye", after_reload.tools)
+        self.assertNotIn("subagent", after_reload.tools)
+        results = {r["tool_use_id"]: r["content"] for r in last_inner.messages[-1]["content"]}
+        self.assertEqual(results, {"h1": "v2", "b1": "bye"})
+
 
 class CompactTest(BundledExtensionTest):
     def setUp(self):
@@ -173,6 +225,40 @@ class CompactTest(BundledExtensionTest):
         self.run_turn(app, "q")
         self.assertEqual(app.session.id, "old")
         self.assertEqual(len(app.provider.requests), 1)
+
+    def interrupted_turn(self, stream_chunks):
+        """Run a turn that reaches the threshold, with Esc pressed while the summary request is in flight."""
+        ext, app = self.ext, self.app
+        app.provider = InterruptingProvider(
+            lambda: app,
+            [text_reply("answer", usage=Usage(input_tokens=ext.COMPACT_AT + 1, output_tokens=1)), text_reply("SUMMARY")],
+            stream_chunks,
+        )
+        out = self.run_turn(app, "q")
+        self.assertEqual(app.session.id, "old")
+        self.assertEqual(app.messages, [])
+        self.assertEqual(session_mod.list_sessions(), [])
+        self.assertIn("interrupted by the user", out)
+        self.assertNotIn("[extension] error", out)
+
+    def test_interrupt_while_summarising_streams(self):
+        self.interrupted_turn(stream_chunks=True)
+
+    def test_interrupt_after_summary_reply_is_not_applied(self):
+        self.interrupted_turn(stream_chunks=False)
+
+    def test_compact_command_ignores_a_stale_interrupt(self):
+        app = self.app
+        app.messages[:] = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": [{"type": "text", "text": "a"}]},
+        ]
+        app.provider.replies = [text_reply("SUMMARY")]
+        app.cancelled.set()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            run_command("/compact", app)
+        self.assertNotEqual(app.session.id, "old")
+        self.assertEqual(app.messages[0]["content"], self.ext.SUMMARY_PREFIX + "SUMMARY")
 
 
 if __name__ == "__main__":

@@ -850,7 +850,7 @@ class MinimalTui(TextualApp):
         self.query_one("#working", Static).update(Content.assemble(*parts))
 
     def action_interrupt(self) -> None:
-        """Ask the turn in progress to stop (see :class:`~minimal.agent.TurnInterrupted`)."""
+        """Ask the turn in progress to stop (see :class:`~minimal.registry.TurnInterrupted`)."""
         if self.in_turn and not self.core.cancelled.is_set():
             self.core.cancelled.set()
             self.refresh_working()
