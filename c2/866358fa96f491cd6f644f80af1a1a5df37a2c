@@ -1,0 +1,16 @@
+src/minimal/cli.py
+  h_e81853c41416fb 69-72,76-78,97-99,131-133,163
+tests/test_security.py
+  h_e81853c41416fb 38-40,64-66,114-117,189-191,246-249,251-253,281-283,288-290,317-319,333-335,338,362-364,368-377,380-383,388-391,414-416
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c2866358fa96f491cd6f644f80af1a1a5df37a2c",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
