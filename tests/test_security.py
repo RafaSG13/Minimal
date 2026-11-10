@@ -35,7 +35,9 @@ class TempDirTest(unittest.TestCase):
         self.cwd = self.tmp / "work"
         self.cwd.mkdir()
         for patcher in (
-            mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", self.home / "extensions"),
+            mock.patch.object(
+                extensions, "GLOBAL_EXTENSIONS_DIR", self.home / "extensions"
+            ),
             mock.patch.object(config, "TRUST_FILE", self.home / "trusted.json"),
             mock.patch.object(config, "KEYS_FILE", self.home / "keys.json"),
             mock.patch.object(session_mod, "SESSIONS_DIR", self.home / "sessions"),
@@ -59,7 +61,9 @@ class PrivateFilesTest(TempDirTest):
         self.assertEqual(mode(config.KEYS_FILE), 0o600)
         self.assertEqual(mode(self.home), 0o700)
         self.assertEqual(planted.read_text(), "")
-        self.assertEqual(sorted(p.name for p in self.home.iterdir()), ["keys.json", "keys.tmp"])
+        self.assertEqual(
+            sorted(p.name for p in self.home.iterdir()), ["keys.json", "keys.tmp"]
+        )
 
     def test_sessions_are_private(self):
         session_mod.SESSIONS_DIR.mkdir(parents=True, mode=0o755)
@@ -107,7 +111,10 @@ class ProjectTrustTest(TempDirTest):
         self.assertIn("hello", self.app.registry.tools)
         self.assertEqual(self.app.extension_errors, [])
         digest = extensions.files_digest([self.ext_dir / "hello.py"])
-        self.assertEqual(json.loads(config.TRUST_FILE.read_text()), {"projects": {str(self.ext_dir): digest}})
+        self.assertEqual(
+            json.loads(config.TRUST_FILE.read_text()),
+            {"projects": {str(self.ext_dir): digest}},
+        )
 
         self.app.reload_extensions()
         self.app.reload_extensions()
@@ -145,14 +152,6 @@ class CliTest(TempDirTest):
         self.stopped = stopped.exception
         return err.getvalue(), app
 
-    def test_a_prompt_cannot_be_run_from_the_command_line(self):
-        for argv in (("-p", "x"), ("--print", "x"), ("-y", "-p", "x")):
-            with self.subTest(argv=argv):
-                err, app = self.main(*argv)
-                self.assertEqual(getattr(self.stopped, "code", None), 2)
-                self.assertIn("-p was removed", err)
-                app.assert_not_called()
-
     def test_without_a_terminal_nothing_starts(self):
         err, app = self.main(terminal=False)
         self.assertEqual(getattr(self.stopped, "code", None), 2)
@@ -187,7 +186,9 @@ class ToolTest(TempDirTest):
 
     def call(self, name, **input):
         with contextlib.redirect_stderr(io.StringIO()):
-            return execute_tool_call({"id": "t", "name": name, "input": input}, self.registry, self.ctx)
+            return execute_tool_call(
+                {"id": "t", "name": name, "input": input}, self.registry, self.ctx
+            )
 
     def run_tool(self, name, **input):
         """Run the tool directly: its exceptions propagate."""
@@ -242,9 +243,14 @@ class GuardHookTest(ToolTest):
 class PathValidationTest(TempDirTest):
     def test_session_id_cannot_be_a_path(self):
         for id in ("../x", "a/b", ".hidden", "-s", ""):
-            with self.subTest(id=id), self.assertRaisesRegex(ValueError, "invalid session id"):
+            with (
+                self.subTest(id=id),
+                self.assertRaisesRegex(ValueError, "invalid session id"),
+            ):
                 session_mod.open_session(id or "/")
-        self.assertEqual(session_mod.open_session("2026-10-28T21-19-43-183Z").messages, [])
+        self.assertEqual(
+            session_mod.open_session("2026-10-28T21-19-43-183Z").messages, []
+        )
         self.assertFalse((self.home / "x.jsonl").exists())
 
     def test_cli_rejects_a_session_path(self):
@@ -272,12 +278,16 @@ class PathValidationTest(TempDirTest):
 class GitTest(ToolTest):
     def setUp(self):
         super().setUp()
-        patcher = mock.patch.object(marketplace, "CACHE_ROOT", self.home / "marketplace")
+        patcher = mock.patch.object(
+            marketplace, "CACHE_ROOT", self.home / "marketplace"
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_marketplace_path_starting_with_a_dash_is_not_a_git_option(self):
-        subprocess.run(["git", "init", "--quiet", "--bare", "./-m"], cwd=self.cwd, check=True)
+        subprocess.run(
+            ["git", "init", "--quiet", "--bare", "./-m"], cwd=self.cwd, check=True
+        )
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.cwd)
         self.assertTrue((marketplace.sync("-m") / ".git").is_dir())
@@ -304,7 +314,9 @@ class GitTest(ToolTest):
         hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
         hook.chmod(0o755)
         subprocess.run(["git", "init", "--quiet"], cwd=self.cwd, check=True)
-        subprocess.run(["git", "config", "core.fsmonitor", str(hook)], cwd=self.cwd, check=True)
+        subprocess.run(
+            ["git", "config", "core.fsmonitor", str(hook)], cwd=self.cwd, check=True
+        )
         (self.cwd / "a.py").write_text("x = 1\n")
 
         self.assertEqual(self.call("glob", pattern="*.py")["content"], "a.py")
@@ -318,10 +330,12 @@ class ConsoleOutputTest(unittest.TestCase):
         call = {"name": "bash", "input": {"command": "printf '\x9b2J'"}}
         with contextlib.redirect_stderr(err):
             ConsoleFrontend().tool_call(call)
-            ConsoleFrontend().tool_result(call, {"is_error": True, "content": "\x1b[2Jboom\rAllow?"})
+            ConsoleFrontend().tool_result(
+                call, {"is_error": True, "content": "\x1b[2Jboom\rAllow?"}
+            )
         self.assertEqual(
             err.getvalue(),
-            "\n\x1b[2m› bash {\"command\": \"printf '\\x9b2J'\"}\x1b[0m\n"
+            '\n\x1b[2m› bash {"command": "printf \'\\x9b2J\'"}\x1b[0m\n'
             "\x1b[31m✘ bash: \\x1b[2Jboom\\x0dAllow?\x1b[0m\n",
         )
 
@@ -345,21 +359,36 @@ class ReadTest(ToolTest):
         self.assertEqual(self.read("a\nb\n"), "1\ta\n2\tb\n3\t")
         self.assertEqual(self.read("a\r\nb"), "1\ta\r\n2\tb")
         self.assertEqual(self.read("a\nb\n", offset=10), "")
-        self.assertEqual(self.read("a\nb\nc", offset=2, limit=1), "2\tb\n... [1 more lines]")
+        self.assertEqual(
+            self.read("a\nb\nc", offset=2, limit=1), "2\tb\n... [1 more lines]"
+        )
 
     def test_long_files_are_cut(self):
         short = "x\n" * 2999  # 2999 lines and an empty last one
-        self.assertTrue(self.read(short).endswith("1999\tx\n2000\tx\n... [1000 more lines]"))
-        numbered = "".join(f"line {i}\n" for i in range(1, 3000))  # the window alone is over MAX_CHARS
-        window = "\n".join(f"{i}\tline {i}" for i in range(1, 2001)) + "\n... [1000 more lines]"
+        self.assertTrue(
+            self.read(short).endswith("1999\tx\n2000\tx\n... [1000 more lines]")
+        )
+        numbered = "".join(
+            f"line {i}\n" for i in range(1, 3000)
+        )  # the window alone is over MAX_CHARS
+        window = (
+            "\n".join(f"{i}\tline {i}" for i in range(1, 2001))
+            + "\n... [1000 more lines]"
+        )
         self.assertEqual(self.read(numbered), clip(window))
         long_line = "x" * 30_000
-        self.assertEqual(self.read(long_line), "1\t" + "x" * 19_998 + "\n... [truncated: 10002 more characters]")
+        self.assertEqual(
+            self.read(long_line),
+            "1\t" + "x" * 19_998 + "\n... [truncated: 10002 more characters]",
+        )
 
     def test_only_regular_files_are_read(self):
         os.mkfifo(self.cwd / "fifo")
         for path in (".", "fifo"):
-            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "not a regular file"):
+            with (
+                self.subTest(path=path),
+                self.assertRaisesRegex(ValueError, "not a regular file"),
+            ):
                 self.run_tool("read", path=path)
 
 
@@ -382,7 +411,9 @@ class BashCaptureTest(ToolTest):
     def test_output_kept_is_bounded(self):
         out = self.run_tool("bash", command="head -c 3000000 /dev/zero | tr '\\0' a")
         # 1 000 000 captured bytes + "\n[exit 0]" - 20 000 shown; without the cap it would be 2 980 009
-        self.assertEqual(out, "a" * 20_000 + "\n... [truncated: 980009 more characters]")
+        self.assertEqual(
+            out, "a" * 20_000 + "\n... [truncated: 980009 more characters]"
+        )
 
     def test_background_child_holding_the_pipe_runs_into_the_timeout(self):
         start = time.monotonic()

@@ -66,11 +66,16 @@ def main() -> None:
         return
 
     if not setup.can_run():
-        print("minimal needs a terminal: start it there and type your prompt in the interface.", file=sys.stderr)
+        print(
+            "minimal needs a terminal: start it there and type your prompt in the interface.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     try:
-        session = open_session(opts.session or (last_session() if opts.cont else None) or new_id())
+        session = open_session(
+            opts.session or (last_session() if opts.cont else None) or new_id()
+        )
     except ValueError as e:  # a session id that is not a plain name
         print(e, file=sys.stderr)
         sys.exit(2)
@@ -89,7 +94,9 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nSetup cancelled.", file=sys.stderr)
         sys.exit(130)
-    except Exception as e:  # unknown provider, missing credentials, failed login, unreadable config
+    except (
+        Exception
+    ) as e:  # unknown provider, missing credentials, failed login, unreadable config
         print(e, file=sys.stderr)
         sys.exit(1)
 
@@ -121,7 +128,9 @@ def start_provider(app: App, opts: argparse.Namespace) -> None:
                 raise
             print(f"{e}\n", file=sys.stderr)
     elif not setup.can_run():
-        raise ValueError("No default provider yet: run `minimal --setup` in a terminal, or pass --provider.")
+        raise ValueError(
+            "No default provider yet: run `minimal --setup` in a terminal, or pass --provider."
+        )
     name, saved_model = setup.run_setup(app.registry)
     app.use_provider(name, model or saved_model)
 
@@ -151,10 +160,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace | None:
         print(HELP)
         sys.exit(2)
     if unknown:
-        if unknown[0] in ("-p", "--print"):
-            print("-p was removed: start minimal and type your prompt in its interface.\n", file=sys.stderr)
-        else:
-            print(f"Unknown option: {unknown[0]}\n", file=sys.stderr)
+        print(f"Unknown option: {unknown[0]}\n", file=sys.stderr)
         print(HELP)
         sys.exit(2)
     if opts.help:
