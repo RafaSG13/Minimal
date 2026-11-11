@@ -301,6 +301,8 @@ def _pick_marketplace(app: App) -> str | None:
 
 def _entry_label(entry: marketplace.Entry) -> str:
     label = marketplace.format_listing(entry.listing)
+    if entry.release.newer is not None:
+        label += f" · latest for this minimal (newer needs API {entry.release.newer.api})"
     if entry.outdated:
         label += " · update available"
         old, new = entry.installed_version, entry.listing.version
@@ -308,6 +310,8 @@ def _entry_label(entry: marketplace.Entry) -> str:
             label += f" ({old} → {new})"
     elif entry.installed:
         label += f" · installed ({', '.join(entry.installed)})"
+        if entry.modified:
+            label += " · local changes"
     if not entry.listing.compatible:
         label += f" · not for this minimal (API {entry.listing.api})"
     return label
@@ -322,8 +326,9 @@ def _category_label(category: str, entries: list[marketplace.Entry]) -> str:
 def _ext_picker(app: App) -> None:
     """Pick a marketplace and a category, then tick its extensions: ticking installs, unticking uninstalls.
 
-    Ticked extensions whose installed copy differs from the marketplace are
-    offered for update. Nothing changes on disk until every question is answered.
+    Ticked extensions whose installed copy is not the offered version (the newest one written for
+    this minimal's API) are offered for update; those with local changes start unticked and say
+    that updating overwrites them. Nothing changes on disk until every question is answered.
     """
     url = _pick_marketplace(app)
     if url is None:
@@ -372,7 +377,17 @@ def _ext_picker(app: App) -> None:
             return
     to_update = []
     if outdated:
-        picked = app.frontend.choose_many("Update these?", [(e.listing.name, _entry_label(e), True) for e in outdated])
+        picked = app.frontend.choose_many(
+            "Update these?",
+            [
+                (
+                    e.listing.name,
+                    _entry_label(e) + (" · local changes will be overwritten" if set(e.modified) & set(e.outdated) else ""),
+                    not set(e.modified) & set(e.outdated),
+                )
+                for e in outdated
+            ],
+        )
         if picked is None:
             print("Cancelled.")
             return
@@ -380,17 +395,17 @@ def _ext_picker(app: App) -> None:
     if not (to_install or to_remove or to_update):
         print("No changes.")
         return
-    to_review = [e.listing.path for e in to_install if scope == "global"]
-    to_review += [e.listing.path for e in to_update if "global" in e.outdated]
+    to_review = [e.release for e in to_install if scope == "global"]
+    to_review += [e.release for e in to_update if "global" in e.outdated]
     if to_review and not marketplace.confirm_global(to_review, app.frontend.ask):
         print("Cancelled.")
         return
     for e in to_install:
-        dest, _ = marketplace.install_from(e.listing.path, scope, app.cwd)
+        dest, _ = marketplace.install_release(e.release, scope, app.cwd)
         print(f"Installed {e.listing.name} at {dest}")
     for e in to_update:
         for s in e.outdated:
-            dest, _ = marketplace.install_from(e.listing.path, s, app.cwd)
+            dest, _ = marketplace.install_release(e.release, s, app.cwd)
             print(f"Updated {e.listing.name} at {dest}")
     for e in to_remove:
         for s in e.installed:

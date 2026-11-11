@@ -1,11 +1,14 @@
 import contextlib
+import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from minimal import cli, config
@@ -142,6 +145,20 @@ class MarketplaceTest(unittest.TestCase):
         git("add", ".", cwd=self.work)
         git("commit", "--quiet", "-m", relative, cwd=self.work)
         git("push", "--quiet", "origin", "main", cwd=self.work)
+
+    def head(self):
+        """The commit the marketplace's main branch is at."""
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.work, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def lock(self, directory=None):
+        """The parsed ``.lock.json`` of an extensions folder (default: the global one)."""
+        return json.loads(((directory or self.global_dir) / ".lock.json").read_text())
+
+    def entry(self, name):
+        [entry] = [e for e in marketplace.catalog(str(self.bare), str(self.tmp)) if e.listing.name == name]
+        return entry
 
     def run_ext(self, answers):
         """Run ``/ext`` or ``/extensions`` with scripted dialog answers; return the frontend and the printed output."""
@@ -441,6 +458,179 @@ class MarketplaceTest(unittest.TestCase):
     def test_compatible_listing_has_no_problem(self):
         [listing] = marketplace.search("hello")
         self.assertEqual((listing.api, listing.problem, listing.compatible), ("1", None, True))
+
+    def test_install_records_a_lock_entry_and_uninstall_removes_it(self):
+        marketplace.install("hello")
+        digest = hashlib.sha256(HELLO.encode()).hexdigest()
+        self.assertEqual(
+            self.lock(),
+            {"hello": {"marketplace": str(self.bare), "commit": self.head(), "version": "1.0", "api": "1", "sha256": digest}},
+        )
+        self.assertEqual((self.global_dir / ".lock.json").stat().st_mode & 0o777, 0o600)
+        registry = Registry()
+        loaded, errors = load_extensions(registry, str(self.tmp), config.Settings())
+        self.assertEqual((loaded, errors), ([self.global_dir / "hello.py"], []))  # the lock is not an extension
+
+        self.push_file("themes/ocean.py", OCEAN)
+        marketplace.install("ocean")
+        self.assertEqual(sorted(self.lock()), ["hello", "themes/ocean"])
+        marketplace.uninstall("ocean", category="themes")
+        self.assertEqual(sorted(self.lock()), ["hello"])
+        marketplace.uninstall("hello")
+        self.assertFalse((self.global_dir / ".lock.json").exists())
+
+    def test_project_scope_has_its_own_lock(self):
+        marketplace.install("hello", "project", str(self.tmp))
+        folder = self.tmp / ".minimal" / "extensions"
+        self.assertEqual(self.lock(folder)["hello"]["commit"], self.head())
+        self.assertFalse((self.global_dir / ".lock.json").exists())
+        self.assertEqual(loader.extension_entries(folder), [folder / "hello.py"])  # the lock is not an extension
+
+        # A copy installed from a local folder no longer comes from the marketplace.
+        marketplace.install_from(self.work / "extensions" / "hello.py", "project", str(self.tmp))
+        self.assertFalse((folder / ".lock.json").exists())
+
+    def test_an_older_compatible_version_is_offered_and_installed(self):
+        compatible = self.head()
+        self.push_hello(HELLO.replace('"1.0"', '"2.0"').replace('__api__ = "1"', '__api__ = "9"'))
+
+        [listing] = marketplace.search("hello")
+        self.assertEqual((listing.version, listing.api, listing.compatible), ("1.0", "1", True))
+        [release] = marketplace.releases("hello")
+        self.assertEqual((release.commit, release.newer.api), (compatible, "9"))
+        entry = self.entry("hello")
+        self.assertEqual((entry.listing.version, entry.release.commit), ("1.0", compatible))
+        self.assertIn("[latest for this minimal; newer needs API 9]", marketplace._ext_search({"query": "hello"}, None))
+
+        dest, updated = marketplace.install("hello")
+        self.assertEqual((dest.read_text(), updated), (HELLO, False))
+        self.assertEqual(self.lock()["hello"]["commit"], compatible)
+        self.assertEqual(self.entry("hello").outdated, [])  # installed the offered version
+
+        ui, _ = self.run_ext({"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["hello"]})
+        [(_, label, _)] = next(opts for title, opts in ui.asked if title.startswith("Extensions"))
+        self.assertIn("latest for this minimal (newer needs API 9)", label)
+
+    def test_global_review_scans_the_older_version_it_installs(self):
+        self.push_file("extensions/risky.py", RISKY)
+        self.push_file("extensions/risky.py", HELLO.replace('__api__ = "1"', '__api__ = "9"'))  # HEAD: harmless, API 9
+        picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["risky"], "Install": "global"}
+        _, out = self.run_ext({**picked, "Allow": False})
+        self.assertIn("runs commands", out)  # the scan is of the API 1 version, not of HEAD
+        self.assertFalse((self.global_dir / "risky.py").exists())
+
+    def test_an_older_compatible_package_version_is_installed(self):
+        self.push_file("tools/pkg/__init__.py", PKG_INIT)
+        self.push_file("tools/pkg/helpers.py", 'REPLY = "v1"\n')
+        old = self.head()
+        self.push_file("tools/pkg/__init__.py", PKG_INIT.replace('__api__ = "1"', '__api__ = "9"'))
+        self.push_file("tools/pkg/helpers.py", 'REPLY = "v2"\n')
+
+        dest, _ = marketplace.install("pkg")
+        self.assertEqual((dest / "helpers.py").read_text(), 'REPLY = "v1"\n')
+        self.assertEqual(self.lock()["tools/pkg"]["commit"], old)
+        self.assertEqual(self.entry("pkg").outdated, [])
+
+    def test_an_extension_with_no_compatible_version_stays_listed_but_is_not_installed(self):
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "1"', '__api__ = "9"'))
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "1"', '__api__ = "8"'))
+        [release] = marketplace.releases("future")
+        self.assertEqual((release.listing.compatible, release.listing.api, release.commit), (False, "8", self.head()))
+        with self.assertRaisesRegex(ValueError, "future: written for minimal API 8"):
+            marketplace.install("future")
+        self.assertFalse((self.global_dir / "future.py").exists())
+
+    def test_a_new_version_is_outdated_by_commit(self):
+        marketplace.install("hello")
+        self.assertEqual((self.entry("hello").outdated, self.entry("hello").modified), ([], []))
+        first = self.head()
+        self.push_hello(HELLO.replace('"1.0"', '"1.1"'))
+        entry = self.entry("hello")
+        self.assertEqual((entry.outdated, entry.modified, entry.installed_version), (["global"], [], "1.0"))
+
+        _, out = self.run_ext(
+            {
+                "Marketplace": str(self.bare),
+                "Category": "extensions",
+                "Extensions": ["hello"],
+                "Update": ["hello"],
+                "Allow": True,
+            }
+        )
+        self.assertIn("Updated hello at", out)
+        self.assertIn('"1.1"', (self.global_dir / "hello.py").read_text())
+        self.assertNotEqual(self.lock()["hello"]["commit"], first)
+        self.assertEqual(self.lock()["hello"]["commit"], self.head())
+        self.assertEqual(self.entry("hello").outdated, [])
+
+    def test_local_changes_are_detected_and_not_pre_ticked(self):
+        hello = self.global_dir / "hello.py"
+        marketplace.install("hello")
+        hello.write_text(HELLO + "# mine\n")
+        entry = self.entry("hello")
+        self.assertEqual((entry.outdated, entry.modified), ([], ["global"]))  # a local edit is not an update
+
+        self.push_hello(HELLO.replace('"1.0"', '"1.1"'))
+        entry = self.entry("hello")
+        self.assertEqual((entry.outdated, entry.modified), (["global"], ["global"]))
+        ui, _ = self.run_ext(
+            {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["hello"], "Update": []}
+        )
+        [(_, label, checked)] = next(opts for title, opts in ui.asked if title.startswith("Update"))
+        self.assertFalse(checked)
+        self.assertIn("update available", label)
+        self.assertIn("local changes will be overwritten", label)
+        self.assertIn("# mine", hello.read_text())  # unticked: left alone
+
+        self.run_ext(
+            {
+                "Marketplace": str(self.bare),
+                "Category": "extensions",
+                "Extensions": ["hello"],
+                "Update": ["hello"],
+                "Allow": True,
+            }
+        )
+        self.assertEqual(hello.read_text(), HELLO.replace('"1.0"', '"1.1"'))  # ticking it updates anyway
+        self.assertEqual(self.entry("hello").modified, [])
+
+    def test_ext_install_refuses_to_overwrite_local_changes_without_force(self):
+        hello = self.global_dir / "hello.py"
+        marketplace.install("hello")
+        hello.write_text(HELLO + "# mine\n")
+        ctx = SimpleNamespace(cwd=str(self.tmp), ui=SimpleNamespace(ask=lambda question: True))
+        with self.assertRaisesRegex(ValueError, "hello has local changes in .*hello.py.*force"):
+            marketplace._ext_install({"name": "hello", "marketplace": str(self.bare)}, ctx)
+        with self.assertRaisesRegex(ValueError, "local changes"):
+            marketplace.install("hello")
+        self.assertIn("# mine", hello.read_text())
+
+        out = marketplace._ext_install({"name": "hello", "marketplace": str(self.bare), "force": True}, ctx)
+        self.assertTrue(out.startswith("Updated hello at"), out)
+        self.assertEqual(hello.read_text(), HELLO)
+        self.assertEqual(self.entry("hello").modified, [])
+        schema = Registry()
+        marketplace.register_marketplace_tools(schema)
+        self.assertEqual(schema.tools["ext_install"].input_schema["properties"]["force"]["type"], "boolean")
+
+    def test_a_copy_without_a_lock_entry_is_compared_by_bytes(self):
+        hello = self.global_dir / "hello.py"
+        hello.parent.mkdir(parents=True)
+        hello.write_text(HELLO)  # installed by hand
+        entry = self.entry("hello")
+        self.assertEqual((entry.installed, entry.outdated, entry.modified), (["global"], [], []))
+        hello.write_text(HELLO + "# mine\n")
+        entry = self.entry("hello")
+        self.assertEqual((entry.outdated, entry.modified), (["global"], []))  # nothing to call a local change
+        marketplace.install("hello")  # no lock entry, so nothing to protect
+        self.assertEqual(hello.read_text(), HELLO)
+
+        # An entry from another marketplace says nothing about this one: bytes again.
+        lock = self.lock()
+        lock["hello"]["marketplace"] = "https://example.com/other.git"
+        lock["hello"]["commit"] = "0" * 40
+        (self.global_dir / ".lock.json").write_text(json.dumps(lock))
+        self.assertEqual(self.entry("hello").outdated, [])
 
     def test_describe_requires_an_api(self):
         path = self.tmp / "noapi.py"
