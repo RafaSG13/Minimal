@@ -1,0 +1,22 @@
+README.md
+  h_e81853c41416fb 24-37
+assets/screenshots/bare.svg
+  h_e81853c41416fb 1-241
+assets/screenshots/custom-bulbasaur.svg
+  h_e81853c41416fb 1-257
+assets/screenshots/custom-coffee.svg
+  h_e81853c41416fb 1-351
+assets/screenshots/custom-theme.svg
+  h_e81853c41416fb 1-247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "22ef4835984af4cc201e179a605d2b35f04110ad",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
