@@ -25,6 +25,13 @@
   `cd /tmp && rm -rf x` got past it. It now also matches every command inside a compound one (between `;`, `&&`,
   `||`, `&`, `|`, newlines, `$( )`, backticks, `( )` and `{ }`). It still does not see inside `sh -c`, `eval`,
   `xargs`, `find -exec` or wrappers such as `sudo`; use a leading `*` for those. Allow rules are unchanged.
+- OpenAI-compatible and Gemini replies cut off in the middle of a tool call crashed the turn with a `JSONDecodeError`,
+  and a cut-off reply that had tool calls was reported as `tool_use`, so the tool-call fix above never applied to
+  them. Now a reply cut off by the limit (`finish_reason == "length"`, Gemini `incomplete`), or whose arguments are not
+  valid JSON, is reported as `max_tokens` even when it has tool calls; the agent loop answers each call with an error.
+- A crash in the middle of saving left a cut-off last line in the session file, and `minimal -c` or `/resume` failed
+  to open it. Opening now ignores that last line and says so, and the next save removes it so the file stays valid.
+  A bad line anywhere else is still an error.
 
 ### Removed
 
