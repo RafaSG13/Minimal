@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### Breaking
 
@@ -68,6 +68,9 @@
 - The migration of minimal 0.1's `config.json`, `theme.json`, `marketplaces.json` and `prompt.md` into
   `settings.json` (`config.migrate_legacy`, `config.LEGACY_FILES`), and the "Migrating from 0.1" sections of the docs.
   Settings from 0.1 are no longer read or moved; set them in `~/.minimal/settings.json`.
+- `extensions/compact.py`, `extensions/tools/subagent.py` and `extensions/tools/web_search.py` left the repository:
+  they are published in the default marketplace (`/ext`). Copies loaded with `--ext extensions/...` from a checkout of
+  this repo no longer exist.
 
 ## 0.2.0
 

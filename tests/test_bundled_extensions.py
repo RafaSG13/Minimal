@@ -19,7 +19,10 @@ from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply, Usage
 
-BUNDLED = Path(__file__).resolve().parent.parent / "extensions"
+# Absolute: the tests chdir into temporary directories.
+MARKETPLACE = Path(
+    os.environ.get("MARKETPLACE_CHECKOUT") or Path(__file__).resolve().parents[2] / "minimal-marketplace"
+).resolve()
 
 
 class RecordingProvider:
@@ -58,8 +61,9 @@ class InterruptingProvider(RecordingProvider):
         return reply
 
 
+@unittest.skipUnless(MARKETPLACE.is_dir(), "no marketplace checkout; set MARKETPLACE_CHECKOUT")
 class BundledExtensionTest(unittest.TestCase):
-    """Loads one extension of this repo's ``extensions/`` folder with no global or project extensions around."""
+    """Loads one extension of the marketplace checkout with no global or project extensions around."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -80,7 +84,7 @@ class BundledExtensionTest(unittest.TestCase):
             cwd=str(self.tmp),
             auto_approve=True,
             trust_project=True,
-            extra_extensions=[str(BUNDLED / extension)],
+            extra_extensions=[str(MARKETPLACE / extension)],
         )
         _, errors = app.reload_extensions()
         self.assertEqual(errors, [])
@@ -100,7 +104,7 @@ class WebSearchTest(BundledExtensionTest):
         super().setUp()
         self.registry = Registry()
         _, errors = load_extensions(
-            self.registry, str(self.tmp), config.Settings(), extra=[BUNDLED / "tools" / "web_search.py"]
+            self.registry, str(self.tmp), config.Settings(), extra=[MARKETPLACE / "tools" / "web_search.py"]
         )
         self.assertEqual(errors, [])
         self.ctx = SimpleNamespace(cwd=str(self.tmp))
@@ -207,8 +211,8 @@ class CompactTest(BundledExtensionTest):
         patcher = mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.app = self.make_app("compact.py", session_mod.open_session("old"), [])
-        self.ext = sys.modules[loader.module_name(BUNDLED / "compact.py")]
+        self.app = self.make_app("extensions/compact.py", session_mod.open_session("old"), [])
+        self.ext = sys.modules[loader.module_name(MARKETPLACE / "extensions" / "compact.py")]
 
     def test_compacts_into_a_new_session_at_the_threshold(self):
         ext, app = self.ext, self.app

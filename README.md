@@ -177,15 +177,9 @@ def register(minimal):
     minimal.append_system_prompt("Always reply in the user's language.")
 ```
 
-`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo. Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.complete` and `ctx.run_agent` for model calls, `ctx.new_session`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__requires__`), every member, event payloads, settings, widgets, themes, logos and publishing. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
+`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo. Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.complete` and `ctx.run_agent` for model calls, `ctx.new_session`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__api__`), every member, event payloads, settings, widgets, themes, logos and publishing. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
 
-The repository has three more, loaded the same way (`minimal -e extensions/compact.py`) or copied to `~/.minimal/extensions/` (tools in its `tools/` subfolder):
-
-| Extension                        | What it adds                                                                                                                                              |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `extensions/compact.py`          | Summarises the conversation into a new session when the context reaches 100k tokens (setting `compact_at`), and on demand with `/compact`. The old session stays on disk: `/resume <id>` brings it back |
-| `extensions/tools/subagent.py`   | `subagent` tool: runs a task in a fresh agent loop with the same tools and an empty history; only its final message returns to the conversation           |
-| `extensions/tools/web_search.py` | `web_search` tool: results from the [Brave Search API](https://api-dashboard.search.brave.com) (needs `BRAVE_API_KEY`)                                    |
+Compaction (`compact`), the `subagent` tool and the `web_search` tool ([Brave Search API](https://api-dashboard.search.brave.com), needs `BRAVE_API_KEY`) are installed from the default marketplace with `/ext`.
 
 ### Self-extension and hot reload
 
@@ -288,10 +282,6 @@ src/minimal/         packages from the bottom up; each imports only from the one
   api.py             the only module extensions import from: Extension, Context, event types, theme, …
 extensions/
   example.py         example extension (tool, command, guardrail with a setting, prompt note, sidebar widget)
-  compact.py         history compaction: automatic on turn_end, and /compact
-  tools/
-    subagent.py      subagent tool
-    web_search.py    web_search tool (Brave Search API)
 tests/               unittest suite (see Development)
 ```
 
@@ -332,7 +322,7 @@ The suite needs no network or API key. It covers:
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_tui.py`         | The headless terminal UI: streaming, interruption, session replay, dialogs, tool-call states, command output, widgets, header |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
-| `test_bundled_extensions.py` | The extensions in `extensions/`: web search, subagent, compaction                         |
+| `test_bundled_extensions.py` | Marketplace items through `App`: web search, subagent, compaction. Loads them from `../minimal-marketplace` or `$MARKETPLACE_CHECKOUT`; skipped without a checkout |
 
 ---
 
