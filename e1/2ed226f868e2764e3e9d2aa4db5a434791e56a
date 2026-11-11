@@ -1,0 +1,22 @@
+CHANGELOG.md
+  h_e81853c41416fb 5-12
+src/minimal/core/agent.py
+  h_e81853c41416fb 13-16,41-43,134-151
+src/minimal/core/app.py
+  h_e81853c41416fb 448-452,474,478,482-490
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 246-247
+tests/test_smoke.py
+  h_e81853c41416fb 257-340
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "e12ed226f868e2764e3e9d2aa4db5a434791e56a",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
