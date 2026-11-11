@@ -4,7 +4,7 @@ The built-in theme is ``minimal`` (:data:`DEFAULT`): black and white, nothing
 else. Extensions add more with ``minimal.register_theme`` (see
 :meth:`~minimal.extensions.registry.Registry.register_theme`); the marketplace keeps them
 in its ``themes/`` folder. Pick one with ``/theme`` or ctrl+p → Theme; the
-choice is saved in ``~/.minimal/theme.json``.
+choice is saved as ``theme`` in ``~/.minimal/settings.json``.
 
 :func:`build` turns a theme's colours into a Textual theme: the standard
 variables (``$primary``, ``$success``, …) plus custom ones (``$muted``,

@@ -1,6 +1,6 @@
 [project]
-name = "minimal"
-version = "0.1.0"
+name = "minimal-agent"
+dynamic = ["version"]
 description = "Minimal, extensible coding-agent harness"
 readme = "README.md"
 license = "MIT"
@@ -9,6 +9,15 @@ authors = [
     { name = "RafaSG13", email = "rafasrrg13@gmail.com" }
 ]
 requires-python = ">=3.11"
+keywords = ["agent", "llm", "cli", "tui", "claude", "gemini"]
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
 dependencies = [
     "anthropic>=2.3.0",
     "google-genai>=2.34.0",
@@ -16,6 +25,12 @@ dependencies = [
     "questionary>=2",
     "textual>=8.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/RafaSG13/Minimal"
+Repository = "https://github.com/RafaSG13/Minimal"
+Issues = "https://github.com/RafaSG13/Minimal/issues"
+Marketplace = "https://github.com/RafaSG13/minimal-marketplace"
 
 [project.scripts]
 minimal = "minimal.cli:main"
@@ -29,6 +44,12 @@ line-length = 120
 [tool.ruff.lint]
 # The rule set that was ruff's default at 0.15; newer releases enable many more by default.
 select = ["E4", "E7", "E9", "F"]
+
+[tool.hatch.version]
+path = "src/minimal/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/minimal"]
 
 [build-system]
 requires = ["hatchling"]

@@ -91,6 +91,7 @@ READ = Tool(
     },
     run=read,
     confirm=outside_workspace,
+    subject_key="path",
 )
 
 
@@ -119,6 +120,7 @@ WRITE = Tool(
     },
     run=write,
     confirm=True,
+    subject_key="path",
 )
 
 
@@ -159,4 +161,5 @@ EDIT = Tool(
     },
     run=edit,
     confirm=True,
+    subject_key="path",
 )

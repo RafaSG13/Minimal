@@ -13,6 +13,7 @@ from unittest import mock
 from minimal.core import session as session_mod
 from minimal.core.app import App
 from minimal.core.session import Session
+from minimal import config
 from minimal.extensions import loader
 from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import Registry
@@ -65,9 +66,12 @@ class BundledExtensionTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global"),
+            mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def make_app(self, extension, session, replies):
         """An ``App`` with only ``extension`` loaded, whose provider replays ``replies``."""
@@ -96,7 +100,9 @@ class WebSearchTest(BundledExtensionTest):
     def setUp(self):
         super().setUp()
         self.registry = Registry()
-        _, errors = load_extensions(self.registry, str(self.tmp), extra=[BUNDLED / "tools" / "web_search.py"])
+        _, errors = load_extensions(
+            self.registry, str(self.tmp), config.Settings(), extra=[BUNDLED / "tools" / "web_search.py"]
+        )
         self.assertEqual(errors, [])
         self.ctx = SimpleNamespace(cwd=str(self.tmp))
 
@@ -202,7 +208,7 @@ class CompactTest(BundledExtensionTest):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.app = self.make_app("compact.py", session_mod.open_session("old"), [])
-        self.ext = sys.modules["minimal_ext_compact"]
+        self.ext = sys.modules[loader.module_name(BUNDLED / "compact.py")]
 
     def test_compacts_into_a_new_session_at_the_threshold(self):
         ext, app = self.ext, self.app

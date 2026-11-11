@@ -2,25 +2,26 @@
 system-prompt additions, event handlers, UI widgets, status-line segments, UI
 colour themes and the header logo are collected.
 
-Built-in tools, built-in providers and extensions register through it. The
-agent loop and the terminal UI read from it. Extensions receive it as their
-``minimal`` argument.
+Built-in tools, built-in providers and extensions register through it (extensions
+through their :class:`~minimal.extensions.facade.Extension`). The agent loop and
+the terminal UI read from it. ``ctx`` below is the
+:class:`~minimal.core.context.Context`.
 
-Events and their payloads:
+Events (:data:`EVENTS`) and their payloads:
 
-    ``tool_call``    ``{name, input}``
+    ``tool_call``    ``{name, input, ctx}``
         Fired before a tool runs. A handler may return
         ``{"block": True, "reason": str}`` to veto the call. A handler
         that raises also blocks the call: a guard that crashed did not approve it.
-    ``tool_result``  ``{name, input, output, is_error}``
-        Fired after a tool runs. A handler may return ``{"output": str}``
-        to rewrite what the model sees.
-    ``turn_end``     ``{messages, ctx}``
+    ``tool_result``  ``{name, input, output, is_error, ctx}``
+        Fired after a tool runs, with its whole output. A handler may return
+        ``{"output": str}`` to rewrite what the model sees (clipped afterwards).
+    ``turn_end``     ``{messages, ctx, nested}``
         Fired when the model finishes answering without further tool calls.
-        ``messages`` is the history of the loop that ended, which is not
-        ``ctx.messages`` when a tool ran its own loop (a subagent).
-        A handler that is slow (compaction) should poll ``ctx.cancelled`` and
-        raise :class:`TurnInterrupted` when it is set.
+        ``messages`` is the history of the loop that ended; ``nested`` is true
+        when that loop ran inside a tool (a subagent), whose ``messages`` are
+        not ``ctx.messages``. A handler that is slow (compaction) should call
+        ``ctx.check_cancelled()``, which raises :class:`TurnInterrupted` when the user interrupted.
 """
 
 from __future__ import annotations
@@ -51,8 +52,18 @@ class TurnInterrupted(Exception):
     """
 
 
+EVENTS = ("tool_call", "tool_result", "turn_end")
+"""Events an extension can subscribe to with ``on``."""
+
 WIDGET_AREAS = ("top", "bottom", "sidebar")
 """Where an extension widget can be placed in the terminal UI."""
+
+
+def check_event(event: str) -> None:
+    """Raise ``ValueError`` unless ``event`` is one of :data:`EVENTS`."""
+    if event not in EVENTS:
+        raise ValueError(f"unknown event {event!r}; use one of tool_call, tool_result, turn_end")
+
 
 STATUS_SIDES = ("left", "right")
 """Where an extension status-line segment can be placed."""
@@ -106,6 +117,9 @@ class Tool:
         run: Implementation, called as ``run(input, ctx)``.
         confirm: Ask the user before running (tools with side effects): ``True``,
             or ``confirm(input, ctx) -> bool`` deciding per call.
+        subject_key: The ``input`` field that permission rules ``name(pattern)``
+            match (``command`` for ``bash``, ``path`` for the file tools); ``None``
+            lets only bare ``name`` rules match the tool.
     """
 
     name: str
@@ -113,6 +127,7 @@ class Tool:
     input_schema: dict
     run: ToolRun
     confirm: bool | Callable[[dict, Any], bool] = False
+    subject_key: str | None = None
 
 
 @dataclass
@@ -137,7 +152,7 @@ class WidgetSpec:
 
     Attributes:
         name: Unique name; registering the same name again replaces it.
-        create: Called as ``create(ctx)`` with the :class:`~minimal.core.app.App`;
+        create: Called as ``create(ctx)`` with the :class:`~minimal.core.context.Context`;
             returns a ``textual.widget.Widget``.
         area: ``"top"``, ``"bottom"`` or ``"sidebar"``.
     """
@@ -153,7 +168,7 @@ class StatusSpec:
 
     Attributes:
         name: Unique name; registering the same name again replaces it.
-        render: Called as ``render(ctx)`` with the :class:`~minimal.core.app.App`; returns
+        render: Called as ``render(ctx)`` with the :class:`~minimal.core.context.Context`; returns
             a ``str``, a ``textual.content.Content`` or ``None`` (no segment this time).
         side: ``"left"`` (after the git branch) or ``"right"`` (before the model).
     """
@@ -248,6 +263,7 @@ class Registry:
         description: str = "",
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
+        subject_key: str | None = None,
     ) -> None:
         """Build and register a tool. ``input_schema`` defaults to an empty object.
 
@@ -257,7 +273,7 @@ class Registry:
         if not name or not callable(run):
             raise ValueError("register_tool: name and run are required")
         schema = input_schema or {"type": "object", "properties": {}}
-        self.add_tool(Tool(name, description, schema, run, confirm))
+        self.add_tool(Tool(name, description, schema, run, confirm, subject_key))
 
     def register_command(
         self, name: str, run: CommandRun, description: str = "", terminal: bool = False
@@ -279,7 +295,7 @@ class Registry:
     ) -> None:
         """Add a visual component to the terminal UI, replacing any widget with the same name.
 
-        ``create(ctx)`` receives the :class:`~minimal.core.app.App` and returns a
+        ``create(ctx)`` receives the :class:`~minimal.core.context.Context` and returns a
         ``textual.widget.Widget``, placed in ``area`` (``"top"``, ``"bottom"`` or
         ``"sidebar"``). Style it with its own ``DEFAULT_CSS``. The ``top`` and
         ``bottom`` areas size to their content, so give the widget a height and
@@ -308,7 +324,7 @@ class Registry:
     ) -> None:
         """Add a segment to the terminal UI's status line, replacing any segment with the same name.
 
-        ``render(ctx)`` receives the :class:`~minimal.core.app.App` and returns a ``str``,
+        ``render(ctx)`` receives the :class:`~minimal.core.context.Context` and returns a ``str``,
         a ``textual.content.Content`` or ``None`` to show nothing this time. It is
         called whenever the status line is redrawn, so keep it cheap. ``side`` is
         ``"left"`` (after the git branch) or ``"right"`` (before the model).
@@ -432,7 +448,12 @@ class Registry:
         )
 
     def on(self, event: str, handler: EventHandler) -> None:
-        """Subscribe ``handler`` to ``event`` (see the module docstring for events)."""
+        """Subscribe ``handler`` to ``event`` (see the module docstring for events).
+
+        Raises:
+            ValueError: if ``event`` is not one of :data:`EVENTS`.
+        """
+        check_event(event)
         self._handlers.setdefault(event, []).append(handler)
 
     def append_system_prompt(self, text: str) -> None:

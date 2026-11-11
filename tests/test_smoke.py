@@ -15,6 +15,7 @@ from minimal.core import session as session_mod
 from minimal.core.agent import run_agent
 from minimal.core.app import App
 from minimal.core.session import Session
+from minimal import config
 from minimal.extensions import loader
 from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import Registry, TurnInterrupted
@@ -40,13 +41,16 @@ class SmokeTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.cwd = self._tmp.name
-        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", Path(self.cwd) / "global")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", Path(self.cwd) / "global"),
+            mock.patch.object(config, "SETTINGS_FILE", Path(self.cwd) / "settings.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.registry = Registry()
         register_builtin_tools(self.registry)
-        self.loaded, self.errors = load_extensions(self.registry, self.cwd, extra=[EXAMPLE])
-        self.ctx = SimpleNamespace(cwd=self.cwd, messages=[], model="m", registry=self.registry, confirm=None)
+        self.loaded, self.errors = load_extensions(self.registry, self.cwd, config.Settings(), extra=[EXAMPLE])
+        self.ctx = SimpleNamespace(cwd=self.cwd, messages=[], model="m", cancelled=False)
 
     def run_tool(self, name, **inp):
         return self.registry.tools[name].run(inp, self.ctx)
@@ -70,8 +74,7 @@ class SmokeTest(unittest.TestCase):
         self.assertIn("(timeout)", self.run_tool("bash", command="sleep 5", timeout_ms=100))
 
     def test_bash_interrupted(self):
-        self.ctx.cancelled = threading.Event()
-        timer = threading.Timer(0.3, self.ctx.cancelled.set)
+        timer = threading.Timer(0.3, lambda: setattr(self.ctx, "cancelled", True))
         timer.start()
         self.addCleanup(timer.cancel)
         start = time.monotonic()
@@ -121,11 +124,11 @@ class SmokeTest(unittest.TestCase):
 
     def test_emit_reports_a_failing_handler_and_continues(self):
         registry = Registry()
-        registry.on("x", lambda p: 1 / 0)
-        registry.on("x", lambda p: "after")
+        registry.on("turn_end", lambda p: 1 / 0)
+        registry.on("turn_end", lambda p: "after")
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            self.assertEqual(registry.emit("x", {}), ["after"])
+            self.assertEqual(registry.emit("turn_end", {}), ["after"])
         self.assertIn("division by zero", err.getvalue())
 
     def test_emit_lets_turn_interrupted_through(self):
@@ -134,10 +137,10 @@ class SmokeTest(unittest.TestCase):
         def stop(payload):
             raise TurnInterrupted("stop")
 
-        registry.on("x", stop)
-        registry.on("x", later)
+        registry.on("turn_end", stop)
+        registry.on("turn_end", later)
         with self.assertRaises(TurnInterrupted):
-            registry.emit("x", {})
+            registry.emit("turn_end", {})
         later.assert_not_called()
 
     def test_agent_loop(self):
@@ -162,12 +165,13 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(messages[3]["usage"]["input_tokens"], 3)
 
     def test_agent_loop_interrupted(self):
-        self.ctx.cancelled = threading.Event()
-        self.ctx.cancelled.set()
+        cancelled = threading.Event()
+        cancelled.set()
         messages = [{"role": "user", "content": "hi"}]
         with self.assertRaises(TurnInterrupted):  # FakeProvider([]) would raise IndexError if asked
             run_agent(
-                provider=FakeProvider([]), model="m", system="s", messages=messages, registry=self.registry, ctx=self.ctx
+                provider=FakeProvider([]), model="m", system="s", messages=messages, registry=self.registry,
+                ctx=self.ctx, cancelled=cancelled,
             )
         self.assertEqual(len(messages), 1)
 
@@ -234,9 +238,12 @@ class ReloadTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global"),
+            mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.registry = Registry()
         session = Session("t", self.tmp / "t.jsonl")
         self.app = App(
@@ -264,7 +271,7 @@ class ReloadTest(unittest.TestCase):
         self.app.reload_extensions()
         (self.ext_dir / "broken.py").write_text("def register(minimal):\n  minimal.register_tool(\n")
         with self.assertRaisesRegex(RuntimeError, "broken.py: SyntaxError"):
-            self.registry.tools["reload_extensions"].run({}, self.app)
+            self.registry.tools["reload_extensions"].run({}, self.app.context)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ from typing import Any
 
 from minimal import config
 from minimal.extensions.registry import Tool
-from minimal.tools.common import clip
 
 
 def _command_env() -> dict[str, str]:
@@ -56,12 +55,12 @@ def bash(input: dict, ctx: Any) -> str:
 
     On timeout the whole process group is killed, so child processes die too,
     and the result ends with ``[exit 1 (timeout)]``. The same happens, with
-    ``[exit 1 (interrupted)]``, when ``ctx.cancelled`` (a ``threading.Event``,
-    if ``ctx`` has one) is set while the command runs.
+    ``[exit 1 (interrupted)]``, when ``ctx.cancelled`` turns true while the command runs.
 
     The command counts as running until it has exited and closed both pipes
     (a background child that keeps them open runs into the timeout). Only the
-    first :data:`MAX_CAPTURE` bytes of each stream are kept.
+    first :data:`MAX_CAPTURE` bytes of each stream are kept; the agent loop clips
+    what the model sees after the ``tool_result`` handlers saw all of it.
     """
     timeout_s = input.get("timeout_ms", 120_000) / 1000
     proc = subprocess.Popen(
@@ -81,7 +80,6 @@ def bash(input: dict, ctx: Any) -> str:
     for reader in readers:
         reader.start()
     deadline = time.monotonic() + timeout_s
-    cancelled = getattr(ctx, "cancelled", None)
     while True:
         slice_end = min(time.monotonic() + 0.2, deadline)
         for reader in readers:
@@ -94,7 +92,7 @@ def bash(input: dict, ctx: Any) -> str:
             status = f"exit {proc.returncode}"
             break
         timed_out = time.monotonic() >= deadline
-        if timed_out or (cancelled is not None and cancelled.is_set()):
+        if timed_out or ctx.cancelled:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -110,7 +108,7 @@ def bash(input: dict, ctx: Any) -> str:
     if err:
         out += f"\n[stderr]\n{err}"
     out += f"\n[{status}]"
-    return clip(out.strip())
+    return out.strip()
 
 
 BASH = Tool(
@@ -129,4 +127,5 @@ BASH = Tool(
     },
     run=bash,
     confirm=True,
+    subject_key="command",
 )

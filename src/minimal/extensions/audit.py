@@ -6,10 +6,11 @@ It lists capabilities, not intent; code built at runtime can hide from it.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from dataclasses import dataclass
 
-from minimal.extensions.loader import ProjectExtensions
+from minimal.extensions.loader import ProjectSnapshot
 
 CAPABILITIES: dict[str, str] = {
     "unparsable": "cannot be parsed, so it was not scanned (it will fail to load)",
@@ -208,28 +209,43 @@ class _Scanner(ast.NodeVisitor):
             self.add(node, "secrets", text if len(text) <= 40 else text[:39] + "…")
 
 
-def format_report(project: ProjectExtensions) -> str:
-    """Plain-text scan of every file of ``project``, grouped by capability, for the user to review before trusting it."""
+def format_report(project: ProjectSnapshot) -> str:
+    """Plain-text scan of every file of ``project``, grouped by capability, then its trust-gated settings, for the user to review before trusting it."""
     lines = [
-        f"Project extensions in {project.directory}: not trusted yet.",
-        "They are Python code that runs with your permissions. Static scan: what each file can do, "
+        f"Project extensions and settings in {project.directory.parent}: not trusted yet.",
+        "Extensions are Python code that runs with your permissions. Static scan: what each file can do, "
         "not what it means to do; code built at runtime can hide from it.",
         "",
     ]
     for source in project.sources:
-        lines.append(f"  {source.path.relative_to(project.directory).as_posix()}")
-        by_capability: dict[str, list[Finding]] = {}
-        for finding in scan(source.data):
-            by_capability.setdefault(finding.capability, []).append(finding)
-        if not by_capability:
-            lines.append("    nothing found")
-        for capability in CAPABILITIES:
-            found = by_capability.get(capability)
-            if not found:
-                continue
-            entries = [f"line {f.line} {f.detail}" for f in found[:3]]
-            if len(found) > 3:
-                entries.append(f"+{len(found) - 3} more")
-            mark = "⚠" if capability in RISKY else "·"
-            lines.append(f"    {mark} {CAPABILITIES[capability]}: {' · '.join(entries)}")
+        for path, data in source.files:
+            lines.extend(_file_report(path.relative_to(project.directory).as_posix(), data))
+    if project.risky:
+        lines += ["", "Settings that need trust:"]
+        for scope, keys in project.risky.items():
+            for rule in keys.get("permissions.allow", []):
+                lines.append(f"  ⚠ permissions.allow {rule} ({scope})")
+            for ext_id in keys.get("extensions.disabled", []):
+                lines.append(f"  ⚠ extensions.disabled {ext_id} ({scope})")
+            for ext_id, values in keys.get("extensions.settings", {}).items():
+                lines.append(f"  · extensions.settings {ext_id} {json.dumps(values, separators=(',', ':'))} ({scope})")
     return "\n".join(lines)
+
+
+def _file_report(name: str, source: bytes) -> list[str]:
+    lines = [f"  {name}"]
+    by_capability: dict[str, list[Finding]] = {}
+    for finding in scan(source):
+        by_capability.setdefault(finding.capability, []).append(finding)
+    if not by_capability:
+        lines.append("    nothing found")
+    for capability in CAPABILITIES:
+        found = by_capability.get(capability)
+        if not found:
+            continue
+        entries = [f"line {f.line} {f.detail}" for f in found[:3]]
+        if len(found) > 3:
+            entries.append(f"+{len(found) - 3} more")
+        mark = "⚠" if capability in RISKY else "·"
+        lines.append(f"    {mark} {CAPABILITIES[capability]}: {' · '.join(entries)}")
+    return lines

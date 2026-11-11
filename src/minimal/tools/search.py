@@ -134,10 +134,8 @@ def grep(input: dict, ctx: Any) -> str:
     Files are read line by line. A file that is a symlink to somewhere outside
     the places read freely (see :func:`~minimal.tools.common.outside_workspace`) and outside the
     searched ``path`` itself is skipped: ``path`` was approved, not its links.
-    Setting ``ctx.cancelled`` (if ``ctx`` has it)
-    stops the search before the next file with :class:`TurnInterrupted`.
+    ``ctx.cancelled`` turning true stops the search before the next file with :class:`TurnInterrupted`.
     """
-    cancelled = getattr(ctx, "cancelled", None)
     regex = re.compile(input["pattern"], re.IGNORECASE if input.get("ignore_case") else 0)
     root = resolve_path(ctx, input.get("path", "."))
     files = _list_files(root)
@@ -146,7 +144,7 @@ def grep(input: dict, ctx: Any) -> str:
 
     out: list[str] = []
     for file in files:
-        if cancelled is not None and cancelled.is_set():
+        if ctx.cancelled:
             raise TurnInterrupted("interrupted by the user")
         # The search root was approved, not what a link inside it points at: open only the resolved target.
         target = file.resolve()
@@ -187,6 +185,7 @@ GREP = Tool(
     },
     run=grep,
     confirm=outside_workspace,
+    subject_key="path",
 )
 
 
@@ -223,4 +222,5 @@ GLOB = Tool(
     },
     run=glob,
     confirm=outside_workspace,
+    subject_key="path",
 )
