@@ -9,6 +9,9 @@
   note `[turn interrupted: <reason>]` closes it, so the model still knows what it already did (files it wrote, for
   example) when you continue. A turn that fails before any reply is still discarded, so the same prompt can be sent
   again. The agent loop, also behind `ctx.run_agent`, keeps every `tool_use` answered when it ends with an exception.
+- Installing or updating an extension into the global folder, from `/ext` or with the model's `ext_install` tool, now
+  prints the static scan of `/trust` (what each file can do) and asks before writing anything. Global extensions run in
+  every project without `/trust`, so this was the only place the code was never shown. Project installs are unchanged.
 - Session files start with a `{"type": "session", "cwd": ...}` header line. `/sessions` and `/resume` take `--all` to
   include every project's sessions (`/resume <id>` works for any id, and `/sessions` now shows a preview of each one);
   `ctx.sessions(all_projects=False)` and `list_sessions(cwd)`/`last_session(cwd)` filter by project. Sessions saved
