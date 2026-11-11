@@ -209,6 +209,8 @@ The default marketplace is [`RafaSG13/minimal-marketplace`](https://github.com/R
 
 The model has the `ext_search`, `ext_install` and `ext_publish` tools (each takes an optional `category`). `ext_search` searches every configured marketplace; `ext_install` and `ext_publish` take an optional `marketplace` (one of those URLs), and otherwise install from the marketplace that has the item and publish to `$MINIMAL_MARKETPLACE` or the default. The model must call `reload_extensions` after installing. Publishing never pushes to the default branch: without push access, fork the marketplace and point `MINIMAL_MARKETPLACE` at the fork.
 
+**Installing globally.** Extensions in `~/.minimal/extensions/` run in every project without `/trust`, so before anything is installed or updated there (from `/ext` or with `ext_install`) minimal prints the same static scan as `/trust` for those extensions and asks once; answering no installs nothing. Project installs are not asked about here: the project's extensions are scanned by `/trust` before they run.
+
 ---
 
 ## Architecture

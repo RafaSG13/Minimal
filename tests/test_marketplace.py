@@ -52,11 +52,22 @@ from .helpers import REPLY
 
 __version__ = "1.0"
 __api__ = "1"
-__api__ = "1"
 
 
 def register(minimal):
     minimal.register_tool(name="pkg", run=lambda input, ctx: REPLY, description="Reply")
+'''
+
+RISKY = '''"""Run a command."""
+
+__version__ = "1.0"
+__api__ = "1"
+
+import subprocess
+
+
+def register(minimal):
+    minimal.register_tool(name="risky", run=lambda input, ctx: subprocess.run(["ls"]), description="Run ls")
 '''
 
 
@@ -79,6 +90,9 @@ class ScriptedFrontend:
 
     def ask_text(self, title):
         return self._answer(title)
+
+    def ask(self, question):
+        return self._answer(question)
 
     def reloaded(self):
         pass
@@ -171,14 +185,14 @@ class MarketplaceTest(unittest.TestCase):
         hello = self.global_dir / "hello.py"
         url = str(self.bare)
         _, out = self.run_ext(
-            {"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Install": "global"}
+            {"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Install": "global", "Allow": True}
         )
         self.assertEqual(hello.read_text(), HELLO)
         self.assertIn("Installed hello at", out)
 
         self.push_hello(HELLO.replace('"1.0"', '"1.1"'))
         ui, out = self.run_ext(
-            {"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Update": ["hello"]}
+            {"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Update": ["hello"], "Allow": True}
         )
         [(value, label, checked)] = next(opts for title, opts in ui.asked if title.startswith("Extensions"))
         self.assertEqual((value, checked), ("hello", True))
@@ -196,7 +210,7 @@ class MarketplaceTest(unittest.TestCase):
     def test_picker_labels_and_skips_an_extension_for_another_api(self):
         self.push_file("extensions/future.py", HELLO.replace('__api__ = "1"', '__api__ = "9"'))
         ui, out = self.run_ext(
-            {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["hello", "future"], "Install": "global"}
+            {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["hello", "future"], "Install": "global", "Allow": True}
         )
         options = next(opts for title, opts in ui.asked if title.startswith("Extensions"))
         labels = {value: label for value, label, _ in options}
@@ -206,11 +220,61 @@ class MarketplaceTest(unittest.TestCase):
         self.assertTrue((self.global_dir / "hello.py").exists())
         self.assertFalse((self.global_dir / "future.py").exists())
 
+    def test_global_install_shows_the_scan_and_needs_a_yes(self):
+        self.push_file("extensions/risky.py", RISKY)
+        risky = self.global_dir / "risky.py"
+        picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["risky"], "Install": "global"}
+
+        ui, out = self.run_ext({**picked, "Allow": False})
+        self.assertFalse(risky.exists())
+        self.assertIn("risky.py", out)
+        self.assertIn("runs commands", out)
+        self.assertIn("Cancelled.", out)
+        self.assertEqual(len([title for title, _ in ui.asked if title.startswith("Allow")]), 1)
+
+        self.run_ext({**picked, "Allow": True})
+        self.assertEqual(risky.read_text(), RISKY)
+
+    def test_global_update_shows_the_scan_and_needs_a_yes(self):
+        picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["hello"]}
+        self.run_ext({**picked, "Install": "global", "Allow": True})
+        self.push_hello(RISKY.replace("Run a command.", "Say hello."))
+
+        _, out = self.run_ext({**picked, "Update": ["hello"], "Allow": False})
+        self.assertEqual((self.global_dir / "hello.py").read_text(), HELLO)
+        self.assertIn("runs commands", out)
+
+    def test_project_install_asks_nothing(self):
+        self.push_file("extensions/risky.py", RISKY)
+        picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["risky"], "Install": "project"}
+        _, out = self.run_ext(picked)  # no "Allow" answer: asking would raise StopIteration
+        self.assertIn("Installed risky at", out)
+
+    def test_model_tool_installs_globally_only_after_the_user_says_yes(self):
+        self.push_file("extensions/risky.py", RISKY)
+        ui = ScriptedFrontend({"Allow": False})
+        app = App(
+            registry=Registry(), session=Session("t", self.tmp / "t.jsonl"), cwd=str(self.tmp), auto_approve=True, frontend=ui
+        )
+        app.reload_extensions()  # registers the marketplace tools
+        install = app.registry.tools["ext_install"]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            with self.assertRaisesRegex(ValueError, "not installed"):
+                install.run({"name": "risky"}, app.context)
+            self.assertFalse((self.global_dir / "risky.py").exists())
+            self.assertIn("runs commands", out.getvalue())
+
+            ui.answers["Allow"] = True
+            self.assertIn("Installed risky", install.run({"name": "risky"}, app.context))
+            self.assertTrue((self.global_dir / "risky.py").exists())
+
+            self.assertIn("Installed risky", install.run({"name": "risky", "scope": "project"}, app.context))
+
     def test_categories_install_into_subfolders(self):
         self.push_file("themes/ocean.py", OCEAN)
         self.push_file("tools/hello.py", HELLO_TOOL)
         ui, _ = self.run_ext(
-            {"Marketplace": str(self.bare), "Category": "themes", "Themes": ["ocean"], "Install": "global"}
+            {"Marketplace": str(self.bare), "Category": "themes", "Themes": ["ocean"], "Install": "global", "Allow": True}
         )
         categories = next(opts for title, opts in ui.asked if title.startswith("Category"))
         self.assertEqual([value for value, _ in categories], ["extensions", "themes", "tools"])

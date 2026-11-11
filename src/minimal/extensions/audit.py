@@ -8,9 +8,10 @@ from __future__ import annotations
 import ast
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-from minimal.extensions.loader import ProjectSnapshot
+from minimal.extensions.loader import ExtensionSource, ProjectSnapshot
 
 CAPABILITIES: dict[str, str] = {
     "unparsable": "cannot be parsed, so it was not scanned (it will fail to load)",
@@ -209,14 +210,24 @@ class _Scanner(ast.NodeVisitor):
             self.add(node, "secrets", text if len(text) <= 40 else text[:39] + "…")
 
 
+_SCAN_NOTE = (
+    "Extensions are Python code that runs with your permissions. Static scan: what each file can do, "
+    "not what it means to do; code built at runtime can hide from it."
+)
+
+
+def format_install_report(sources: Iterable[ExtensionSource]) -> str:
+    """Plain-text scan of every file of extensions about to be installed (read from the marketplace), for the user to review first."""
+    lines = ["Extensions to install into your global folder, where they apply to every project.", _SCAN_NOTE, ""]
+    for source in sources:
+        for path, data in source.files:
+            lines.extend(_file_report(path.relative_to(source.path.parent).as_posix(), data))
+    return "\n".join(lines)
+
+
 def format_report(project: ProjectSnapshot) -> str:
     """Plain-text scan of every file of ``project``, grouped by capability, then its trust-gated settings, for the user to review before trusting it."""
-    lines = [
-        f"Project extensions and settings in {project.directory.parent}: not trusted yet.",
-        "Extensions are Python code that runs with your permissions. Static scan: what each file can do, "
-        "not what it means to do; code built at runtime can hide from it.",
-        "",
-    ]
+    lines = [f"Project extensions and settings in {project.directory.parent}: not trusted yet.", _SCAN_NOTE, ""]
     for source in project.sources:
         for path, data in source.files:
             lines.extend(_file_report(path.relative_to(project.directory).as_posix(), data))
