@@ -21,6 +21,10 @@
   does not run the possibly incomplete calls; it answers each with an error asking for smaller steps and continues.
 - `minimal -c` resumed the latest session of any project. Sessions now start with a header line recording their
   project directory, and `-c`, `/sessions` and `/resume` default to the current directory's sessions.
+- A `bash` deny rule such as `bash(rm -rf*)` only matched when the whole command started with the pattern, so
+  `cd /tmp && rm -rf x` got past it. It now also matches every command inside a compound one (between `;`, `&&`,
+  `||`, `&`, `|`, newlines, `$( )`, backticks, `( )` and `{ }`). It still does not see inside `sh -c`, `eval`,
+  `xargs`, `find -exec` or wrappers such as `sudo`; use a leading `*` for those. Allow rules are unchanged.
 
 ### Removed
 
