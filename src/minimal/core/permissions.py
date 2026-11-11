@@ -5,7 +5,7 @@ pattern is matched against the tool's subject (:attr:`~minimal.extensions.regist
 
 - ``bash(git status*)``: the command, as a shell-style wildcard (``fnmatch``);
 - ``read(.env)``, ``write(src/**)``: the path as a glob (``**`` crosses folders,
-  ``~`` expands). A relative pattern matches the path relative to the working
+  ``~`` in the pattern expands). A relative pattern matches the path relative to the working
   directory when inside it, else absolute; an absolute (or ``~``) pattern always
   matches the absolute path;
 - ``fetch(https://example.com/*)``: any other subject, as a shell-style wildcard.
@@ -67,7 +67,7 @@ def matches(rule: str, tool: Tool, input: dict, cwd: str) -> bool:
         return fnmatch.fnmatchcase(value, pattern)
     if key == "path":
         root = Path(cwd).resolve()
-        resolved = (root / os.path.expanduser(value)).resolve()
+        resolved = Path(cwd, value).resolve()  # as the file tools do (resolve_path): no ~ expansion in the input
         pattern = os.path.expanduser(pattern)
         if os.path.isabs(pattern) or not resolved.is_relative_to(root):
             subject = resolved.as_posix()

@@ -188,6 +188,27 @@ class ExtensionApiTest(unittest.TestCase):
             with self.assertRaises(ModuleNotFoundError):
                 tool.run({"name": name}, self.app.context)
 
+    def test_copies_of_a_package_at_two_paths_keep_their_own_modules(self):
+        body = """
+            import importlib
+
+            def register(minimal):
+                minimal.register_tool("{tool}", lambda input, ctx: importlib.import_module(__name__ + ".helpers").X)
+            """
+        global_pkg, extra_pkg = self.global_dir / "tools" / "pkg", self.tmp / "extra" / "tools" / "pkg"
+        for pkg, tool, value in ((global_pkg, "g", "global"), (extra_pkg, "e", "extra")):
+            self.extension("__init__.py", body.replace("{tool}", tool), folder=pkg)
+            self.extension("helpers.py", f"X = {value!r}\n", folder=pkg)
+        self.app.extra_extensions = [str(extra_pkg)]
+        self.assertEqual(self.app.reload_extensions(), ([global_pkg, extra_pkg.resolve()], []))
+        tools = self.app.registry.tools
+        self.assertEqual((tools["g"].run({}, None), tools["e"].run({}, None)), ("global", "extra"))
+
+    def test_package_named_like_a_category_is_the_category_folder(self):
+        self.extension("__init__.py", "", folder=self.global_dir / "tools")
+        x = self.extension("x.py", 'def register(minimal):\n    minimal.register_tool("x", print)\n', self.global_dir / "tools")
+        self.assertEqual(self.app.reload_extensions(), ([x], []))
+
     def test_file_and_folder_with_the_same_name(self):
         self.extension("dup.py", "def register(minimal):\n    pass\n")
         self.extension("__init__.py", "def register(minimal):\n    pass\n", folder=self.global_dir / "dup")

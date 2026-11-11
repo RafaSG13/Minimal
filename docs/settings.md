@@ -59,7 +59,7 @@ The pattern matches the tool's subject:
 | Tool                                        | Subject   | Pattern                                                                                                       |
 | ------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
 | `bash`                                      | `command` | shell-style wildcard over the whole command (`*`, `?`, `[…]`)                                                 |
-| `read`, `write`, `edit`, `grep`, `glob`     | `path`    | glob (`**` crosses folders; `~` expands). A relative pattern matches the path relative to the working directory, or the absolute path when outside it; an absolute or `~` pattern always matches the absolute path. `grep`/`glob` without a path mean `.` |
+| `read`, `write`, `edit`, `grep`, `glob`     | `path`    | glob (`**` crosses folders; `~` in the pattern expands, `~` in a tool's path does not, as for the tools). A relative pattern matches the path relative to the working directory, or the absolute path when outside it; an absolute or `~` pattern always matches the absolute path. `grep`/`glob` without a path mean `.` |
 | extension tools with `subject_key`          | that input field | shell-style wildcard                                                                                   |
 
 A `bash` allow rule never matches a command containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<` or a newline, so `bash(git status*)` does not approve `git status && rm -rf x`. Deny rules match those commands as usual.

@@ -15,7 +15,7 @@ from minimal.core.app import App
 from minimal.core.session import last_session, new_id, open_session
 from minimal.extensions import marketplace
 from minimal.extensions.registry import Registry
-from minimal.providers import claude_auth
+from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import setup
 
@@ -132,8 +132,11 @@ def ext_cli(args: list[str]) -> None:
         sys.exit(2)
 
     def make_registry() -> Registry:
+        # The surface App.reload_extensions gives extensions: they may wrap any of it at register time.
         registry = Registry()
-        register_builtin_tools(registry)  # extensions may wrap a built-in tool at register time
+        register_builtin_tools(registry)
+        register_builtin_providers(registry)
+        marketplace.register_marketplace_tools(registry)
         return registry
 
     lines, ok = marketplace.check([Path(p) for p in args[1:]], make_registry)

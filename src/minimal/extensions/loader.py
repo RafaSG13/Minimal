@@ -162,20 +162,25 @@ def category_dir(directory: Path, category: str) -> Path:
     return directory if category == "extensions" else directory / category
 
 
-def category_entries(directory: Path) -> tuple[list[Path], list[Path]]:
-    """``(entries, shadowed)`` of one category folder.
+def category_entries(directory: Path, category: str) -> tuple[list[Path], list[Path]]:
+    """``(entries, shadowed)`` of ``category``'s folder ``directory``.
 
     ``entries``: sorted ``*.py`` files and package folders (with ``__init__.py``) whose
     names do not start with ``_`` or ``.``; ``shadowed``: package folders left out
-    because a ``.py`` file of the same name exists.
+    because a ``.py`` file of the same name exists. In the ``extensions`` category a
+    folder named like another category (``tools/``) is that category's folder, never a package.
     """
     if not directory.is_dir():
         return [], []
+    reserved = CATEGORIES[1:] if category == "extensions" else ()
     files = {p.stem: p for p in directory.glob("*.py") if not p.name.startswith(("_", ".")) and p.is_file()}
     folders = {
         p.name: p
         for p in directory.iterdir()
-        if p.is_dir() and not p.name.startswith(("_", ".")) and (p / "__init__.py").is_file()
+        if p.is_dir()
+        and not p.name.startswith(("_", "."))
+        and p.name not in reserved
+        and (p / "__init__.py").is_file()
     }
     shadowed = [folders.pop(name) for name in sorted(set(files) & set(folders))]
     return sorted([*files.values(), *folders.values()], key=lambda p: p.name), shadowed
@@ -183,7 +188,7 @@ def category_entries(directory: Path) -> tuple[list[Path], list[Path]]:
 
 def extension_entries(directory: Path) -> list[Path]:
     """The extensions in folder ``directory``, in load order: its own, then each category subfolder's."""
-    return [p for category in CATEGORIES for p in category_entries(category_dir(directory, category))[0]]
+    return [p for category in CATEGORIES for p in category_entries(category_dir(directory, category), category)[0]]
 
 
 def entry_conflicts(directory: Path) -> list[str]:
@@ -191,16 +196,20 @@ def entry_conflicts(directory: Path) -> list[str]:
     return [
         f"{folder}: both {folder.name}.py and {folder.name}/ exist; remove one"
         for category in CATEGORIES
-        for folder in category_entries(category_dir(directory, category))[1]
+        for folder in category_entries(category_dir(directory, category), category)[1]
     ]
 
 
 def module_name(path: Path) -> str:
-    """Module name of the extension at ``path``: ``minimal_ext_<name>`` or ``minimal_ext_<category>_<name>``."""
-    # Category subfolders may reuse a name (tools/x.py and widgets/x.py): keep their modules apart.
+    """Module name of the extension at ``path``: ``minimal_ext_[<category>_]<name>_<hash of the resolved path>``.
+
+    Each path gets its own namespace, so a global and a project (or ``--ext``) copy
+    of ``tools/x`` never replace each other's snapshotted modules.
+    """
     category = path.parent.name if path.parent.name in CATEGORIES[1:] else ""
     name = path.stem if path.suffix == ".py" else path.name
-    return f"minimal_ext_{category}_{name}" if category else f"minimal_ext_{name}"
+    where = hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:12]
+    return f"minimal_ext_{category}_{name}_{where}" if category else f"minimal_ext_{name}_{where}"
 
 
 class _SnapshotImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):

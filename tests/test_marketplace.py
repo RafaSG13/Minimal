@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from minimal import config
+from minimal import cli, config
 from minimal.core.app import App
 from minimal.core.session import Session
 from minimal.extensions import loader, marketplace
@@ -270,14 +270,51 @@ class MarketplaceTest(unittest.TestCase):
         package = self.tmp / "other" / "extensions" / "tools"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text(HELLO.replace("Say hello.", "Named tools."))
-        with self.assertRaisesRegex(ValueError, "not an extension package"):
+        with self.assertRaisesRegex(ValueError, "cannot be named tools; that is the tools/ category folder"):
             marketplace.install_from(package, "global", str(self.tmp))
         self.assertTrue((category / "hello.py").is_file())
+
+        data = self.global_dir / "data"
+        data.mkdir()
+        (data / "notes.txt").write_text("mine")
+        package = self.tmp / "other" / "extensions" / "data"
+        package.mkdir()
+        (package / "__init__.py").write_text(HELLO.replace("Say hello.", "Data."))
+        with self.assertRaisesRegex(ValueError, "not an extension package"):
+            marketplace.install_from(package, "global", str(self.tmp))
+        self.assertEqual((data / "notes.txt").read_text(), "mine")
 
         self.assertEqual(marketplace.uninstall("tools"), self.global_dir / "tools.py")
         self.assertTrue((category / "hello.py").is_file())
         with self.assertRaisesRegex(ValueError, "not installed"):
             marketplace.uninstall("tools")
+
+    def test_files_without_py_are_not_extensions(self):
+        resource = self.global_dir / "hello"
+        resource.parent.mkdir(parents=True)
+        resource.write_text("data")
+        marketplace.install("hello")
+        self.assertEqual(marketplace.uninstall("hello"), self.global_dir / "hello.py")
+        with self.assertRaisesRegex(ValueError, "not installed"):
+            marketplace.uninstall("hello")
+        self.assertEqual(resource.read_text(), "data")
+
+    def test_publish_refuses_package_symlinks_leaving_it(self):
+        secret = self.tmp / "keys.json"
+        secret.write_text('{"KEY": "secret"}')
+        package = self.tmp / "leaky"
+        package.mkdir()
+        (package / "__init__.py").write_text(HELLO)
+        (package / "inside.txt").write_text("ok")
+        (package / "alias.txt").symlink_to(package / "inside.txt")  # stays inside: allowed
+        self.assertEqual(marketplace.describe(package).name, "leaky")
+        (package / "keys.json").symlink_to(secret)
+        with self.assertRaisesRegex(ValueError, "links to .*keys.json; a package may only link to files inside it"):
+            marketplace.publish(package)
+        branches = subprocess.run(
+            ["git", "-C", str(self.bare), "branch", "--list", "publish/*"], capture_output=True, text=True, check=True
+        ).stdout
+        self.assertEqual(branches, "")
 
     def test_listing_without_version_is_rejected_and_skipped(self):
         unversioned = '"""No version."""\n\n\ndef register(minimal):\n    pass\n'
@@ -345,6 +382,19 @@ class CheckTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(line.startswith("FAIL "), line)
         self.assertIn("does_not_exist", line)
+
+    def test_cli_check_has_the_tools_the_app_has(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "wraps.py")
+            path.write_text(
+                '"""Wraps ext_search."""\n__version__ = "1.0"\n\n\ndef register(minimal):\n'
+                '    search = minimal.tools["ext_search"]\n'
+                '    minimal.register_tool("my_search", lambda input, ctx: search.run(input, ctx))\n'
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as exit:
+                cli.ext_cli(["check", str(path)])
+        self.assertEqual((exit.exception.code, out.getvalue()), (0, "ok   extensions/wraps 1.0\n"))
 
 
 if __name__ == "__main__":

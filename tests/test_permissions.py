@@ -84,6 +84,13 @@ class PermissionsTest(unittest.TestCase):
         self.assertIn("denied by permission rule", result["content"])
         self.assertNotIn("SECRET", result["content"])
 
+    def test_tilde_in_the_path_is_resolved_as_the_tools_do(self):
+        (self.cwd / "~").symlink_to(self.cwd)  # read("~/.env") opens <cwd>/~/.env, not the home folder's
+        self.app.auto_approve = True
+        result = self.call("read", settings(deny=["read(.env)"]), path="~/.env")
+        self.assertIn("denied by permission rule 'read(.env)'", result["content"])
+        self.assertNotIn("SECRET", result["content"])
+
     def test_extension_tool_subject(self):
         fetch = Tool("fetch", "", {}, lambda input, ctx: "ok", confirm=True, subject_key="url")
         self.assertTrue(matches("fetch(https://example.com/*)", fetch, {"url": "https://example.com/a/b"}, "/"))

@@ -180,7 +180,8 @@ def describe(path: Path, name: str | None = None) -> Listing:
 
     Raises:
         ValueError: on a syntax error, an invalid name, a missing ``register``
-            function, module docstring or ``__version__``, or an invalid ``__requires__``.
+            function, module docstring or ``__version__``, an invalid ``__requires__``,
+            a package named like a category folder, or a package symlink to a folder or outside it.
     """
     entry = _entry_file(path)
     try:
@@ -200,7 +201,11 @@ def describe(path: Path, name: str | None = None) -> Listing:
         compatible = satisfies(meta.requires)
     except ValueError as e:
         raise ValueError(f"{path}: {e}") from None
-    return Listing(name, meta.description, meta.version, path, _category_of(path), meta.requires, compatible)
+    category = _category_of(path)
+    _check_package_name(path, name, category)
+    if path.is_dir():
+        _copied_files(path)  # validates its symlinks
+    return Listing(name, meta.description, meta.version, path, category, meta.requires, compatible)
 
 
 def format_listing(listing: Listing) -> str:
@@ -259,7 +264,7 @@ def search(query: str = "", url: str | None = None, category: str | None = None)
     needle = query.lower()
     listings = []
     for folder in [category] if category else loader.CATEGORIES:
-        for path in loader.category_entries(root / folder)[0]:
+        for path in loader.category_entries(root / folder, folder)[0]:
             try:
                 listing = describe(path)
             except ValueError:
@@ -270,16 +275,27 @@ def search(query: str = "", url: str | None = None, category: str | None = None)
 
 
 def _copied_files(root: Path) -> list[Path]:
-    """The files ``shutil.copytree(root, …, ignore=_COPY_IGNORE)`` copies, sorted by path inside ``root``."""
-    files = []
-    folders = [root]
+    """The files ``shutil.copytree(root, …, ignore=_COPY_IGNORE)`` copies, sorted by path inside ``root``.
+
+    Raises:
+        ValueError: if a symlink points to a folder, or to a file outside ``root``:
+            copying would materialize what it points to (``~/.minimal/keys.json``, say).
+    """
+    inside = root.resolve()
+    files, folders = [], [root]
     while folders:
         folder = folders.pop()
         names = os.listdir(folder)
         skipped = _COPY_IGNORE(str(folder), names)
         for name in names:
-            if name not in skipped:
-                (folders if (folder / name).is_dir() else files).append(folder / name)
+            if name in skipped:
+                continue
+            path = folder / name
+            if path.is_symlink():
+                target = path.resolve()
+                if not target.is_file() or not target.is_relative_to(inside):
+                    raise ValueError(f"{path}: links to {target}; a package may only link to files inside it")
+            (folders if path.is_dir() else files).append(path)
     return sorted(files, key=lambda p: p.relative_to(root).as_posix())
 
 
@@ -287,6 +303,9 @@ def _content_digest(path: Path) -> str:
     """SHA-256 of an extension as installed or published: a file's bytes, or every copied file of a package by its path inside it.
 
     Equal for identical copies in different places, and for a file published under another name.
+
+    Raises:
+        ValueError: if a package has a symlink :func:`_copied_files` refuses.
     """
     if path.is_file():
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -297,8 +316,14 @@ def _content_digest(path: Path) -> str:
 
 
 def _is_extension(path: Path) -> bool:
-    """Whether ``path`` is an extension file or package folder (a category folder such as ``tools/`` is neither)."""
-    return path.is_file() or (path / "__init__.py").is_file()
+    """Whether ``path`` is an extension: a ``.py`` file or a package folder (a category folder such as ``tools/`` is neither)."""
+    return (path.suffix == ".py" and path.is_file()) or (path / "__init__.py").is_file()
+
+
+def _check_package_name(path: Path, name: str, category: str) -> None:
+    """Refuse a package that would sit where a category folder lives (``extensions/tools/``)."""
+    if path.is_dir() and category == "extensions" and name in loader.CATEGORIES[1:]:
+        raise ValueError(f"{path}: a package in extensions cannot be named {name}; that is the {name}/ category folder")
 
 
 def _installed_path(scope: str, cwd: str, category: str, name: str) -> Path | None:
@@ -318,7 +343,11 @@ def catalog(url: str, cwd: str) -> list[Entry]:
             if path is None:
                 continue
             installed.append(scope)
-            if _content_digest(path) != wanted:
+            try:
+                current = _content_digest(path)
+            except ValueError:  # a symlink added to the installed copy: it differs from the listing
+                current = None
+            if current != wanted:
                 outdated.append(scope)
             if len(installed) == 1:
                 try:
@@ -445,7 +474,7 @@ def installed(cwd: str) -> list[tuple[str, str, Path]]:
         (scope, category, path)
         for scope in ("global", "project")
         for category in loader.CATEGORIES
-        for path in loader.category_entries(_target_dir(scope, cwd, category))[0]
+        for path in loader.category_entries(_target_dir(scope, cwd, category), category)[0]
     ]
 
 
@@ -472,6 +501,7 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
     listing = describe(path, name)
     category = category or listing.category
     loader.category_dir(Path(), category)  # validates it
+    _check_package_name(path, listing.name, category)
     url = url or marketplace_url()
     with tempfile.TemporaryDirectory() as tmp:
         _git("clone", "--quiet", "--", url, tmp)  # "--": a URL starting with "-" is not an option
@@ -538,7 +568,7 @@ def check(paths: list[Path], make_registry: Callable[[], Registry] = Registry) -
             (path / c).is_dir() for c in loader.CATEGORIES
         ):
             for category in loader.CATEGORIES:
-                entries, shadowed = loader.category_entries(path / category)
+                entries, shadowed = loader.category_entries(path / category, category)
                 lines += [f"FAIL {category}/{p.name}: both {p.name}.py and {p.name}/ exist; remove one" for p in shadowed]
                 lines += [_check_one(p, make_registry) for p in entries]
         else:

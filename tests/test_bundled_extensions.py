@@ -208,7 +208,7 @@ class CompactTest(BundledExtensionTest):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.app = self.make_app("compact.py", session_mod.open_session("old"), [])
-        self.ext = sys.modules["minimal_ext_compact"]
+        self.ext = sys.modules[loader.module_name(BUNDLED / "compact.py")]
 
     def test_compacts_into_a_new_session_at_the_threshold(self):
         ext, app = self.ext, self.app
