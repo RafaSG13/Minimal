@@ -12,7 +12,7 @@ the file to ``~/.minimal/extensions/tools/`` to always have it.
 """
 
 __version__ = "2.0"
-__requires__ = ">=0.2"
+__api__ = "1"
 
 NAME = "subagent"
 

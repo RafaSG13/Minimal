@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 
 __version__ = "1.0"
+__api__ = "1"
 
 ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_COUNT = 5

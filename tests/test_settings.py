@@ -139,7 +139,7 @@ class SettingsTest(unittest.TestCase):
     def test_digest_without_risky_settings_is_the_files_digest(self):
         ext = self.cwd / ".minimal" / "extensions" / "hello.py"
         ext.parent.mkdir()
-        ext.write_text("def register(minimal):\n    pass\n")
+        ext.write_text('__api__ = "1"\ndef register(minimal):\n    pass\n')
         self.write("project", {"model": "a"})
         self.assertEqual(self.snapshot_digest(), loader.files_digest(loader.read_extensions([ext])))
 

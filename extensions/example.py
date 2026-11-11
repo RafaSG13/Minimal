@@ -13,7 +13,7 @@ from datetime import datetime
 from textual.widgets import Static
 
 __version__ = "1.0"
-__requires__ = ">=0.2"
+__api__ = "1"
 
 
 class SessionPanel(Static):

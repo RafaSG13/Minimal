@@ -1,10 +1,10 @@
-"""Slash commands: the built-ins and the dispatcher.
+"""Slash commands: the built-ins (:data:`BUILTIN_COMMANDS`), handed to the :class:`~minimal.core.app.App` that runs them.
 
 Built-in commands are called as ``run(args, app)``, where ``args`` is the text
 after the command name and ``app`` is the :class:`~minimal.core.app.App`;
 extension commands get ``ctx``, the app's :class:`~minimal.core.context.Context`.
-Commands registered by extensions take precedence over built-ins with the same name.
-Commands print their output; the terminal UI shows it in the transcript.
+Commands registered by extensions take precedence over built-ins with the same name
+(:meth:`~minimal.core.app.App.run_command`). Commands print their output; the terminal UI shows it in the transcript.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from minimal import config
-from minimal.core.app import App
+from minimal.core.app import App, ExitRepl
 from minimal.core.session import TORN_NOTICE, list_sessions, new_id, open_session, preview, project_dir, session_project
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
@@ -25,12 +25,8 @@ from minimal.providers import claude_auth
 from minimal.ui import setup
 
 
-class ExitRepl(Exception):
-    """Raised by ``/exit`` to quit the interactive UI."""
-
-
 def _help(args: str, app: App) -> None:
-    for name, cmd in {**BUILTIN_COMMANDS, **app.registry.commands}.items():
+    for name, cmd in app.commands().items():
         print(f"  /{name:<10} {cmd.description}")
 
 
@@ -88,25 +84,12 @@ def _resume(args: str, app: App) -> None:
         print(f"warning: {TORN_NOTICE}")
 
 
-def _available_models(app: App) -> list[str]:
-    """Models the current provider offers: queried from its API, else just the default."""
-    lister = getattr(app.provider, "list_models", None)
-    spec = app.registry.providers.get(app.provider_name)
-    found: list[str] = []
-    if lister is not None:
-        try:
-            found = list(lister())
-        except Exception as e:
-            print(f"(could not fetch the model list: {e})", file=sys.stderr)
-    if not found and spec is not None:
-        found = [spec.default_model]
-    if app.model not in found:
-        found.insert(0, app.model)
-    return found
-
-
 def _model(args: str, app: App) -> None:
-    models = _available_models(app) if (not args or args.isdigit()) else []
+    models: list[str] = []
+    if not args or args.isdigit():
+        models, problem = app.available_models()
+        if problem:
+            print(f"(could not fetch the model list: {problem})", file=sys.stderr)
     if args.isdigit():
         index = int(args)
         if not 1 <= index <= len(models):
@@ -326,7 +309,7 @@ def _entry_label(entry: marketplace.Entry) -> str:
     elif entry.installed:
         label += f" · installed ({', '.join(entry.installed)})"
     if not entry.listing.compatible:
-        label += f" · requires minimal {entry.listing.requires}"
+        label += f" · not for this minimal (API {entry.listing.api})"
     return label
 
 
@@ -368,7 +351,7 @@ def _ext_picker(app: App) -> None:
     to_install = [e for e in entries if not e.installed and e.listing.name in ticked]
     for e in to_install:
         if not e.listing.compatible:
-            print(f"Skipped {e.listing.name}: requires minimal {e.listing.requires}")
+            print(f"Skipped {e.listing.name}: {e.listing.problem}")
     to_install = [e for e in to_install if e.listing.compatible]
     to_remove = [e for e in entries if e.installed and e.listing.name not in ticked]
     outdated = [e for e in entries if e.outdated and e.listing.compatible and e.listing.name in ticked]
@@ -435,33 +418,3 @@ BUILTIN_COMMANDS: dict[str, Command] = {
     "logout": Command(_logout, "forget the Claude login"),
     "exit": Command(_exit, "quit"),
 }
-
-
-def find_command(name: str, app: App) -> Command | None:
-    """The command called ``name``: an extension's if registered, else the built-in."""
-    return app.registry.commands.get(name) or BUILTIN_COMMANDS.get(name)
-
-
-def run_command(line: str, app: App) -> None:
-    """Parse and run a ``/name args`` line.
-
-    Built-in commands get the :class:`~minimal.core.app.App`; extension commands get
-    its :class:`~minimal.core.context.Context`. The interrupt flag is cleared first:
-    it may be left over from an interrupted turn. Unknown commands and errors
-    raised by a command are reported, not raised.
-
-    Raises:
-        ExitRepl: when the command asks to quit.
-    """
-    name, _, args = line[1:].partition(" ")
-    cmd = find_command(name, app)
-    if cmd is None:
-        print(f"Unknown command: /{name}")
-        return
-    app.cancelled.clear()
-    try:
-        cmd.run(args.strip(), app if cmd is BUILTIN_COMMANDS.get(name) else app.context)
-    except ExitRepl:
-        raise
-    except Exception as e:
-        print(f"Error in /{name}: {e}", file=sys.stderr)

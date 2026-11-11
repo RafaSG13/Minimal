@@ -10,8 +10,8 @@ There is no index; each extension carries its own metadata
 
 * description: first line of the module docstring (required);
 * ``__version__ = "x"``: its version (required);
-* ``__requires__ = ">=0.2"``: the minimal versions it works with (optional); an
-  extension this minimal does not satisfy is listed but not installed.
+* ``__api__ = "1"``: the minimal API it is written for (required); an
+  extension this minimal cannot run is listed but not installed.
 
 Marketplaces are ``$MINIMAL_MARKETPLACE`` (if set), :data:`DEFAULT_URL` and
 the ``marketplaces`` of ``~/.minimal/settings.json`` (:func:`marketplaces`); a
@@ -40,7 +40,7 @@ from typing import Any
 import minimal
 from minimal import config
 from minimal.extensions import audit, loader
-from minimal.extensions.metadata import read_metadata, satisfies
+from minimal.extensions.metadata import api_problem, read_metadata
 from minimal.extensions.registry import Registry
 
 DEFAULT_URL = "https://github.com/RafaSG13/minimal-marketplace.git"
@@ -63,10 +63,14 @@ class Listing:
     """The ``.py`` file or package folder."""
     category: str
     """Its marketplace folder: one of :data:`~minimal.extensions.loader.CATEGORIES`."""
-    requires: str = ""
-    """Its ``__requires__``; ``""`` if any minimal will do."""
-    compatible: bool = True
-    """Whether this minimal satisfies ``requires``."""
+    api: str = ""
+    """Its ``__api__``."""
+    problem: str | None = None
+    """Why this minimal cannot run it (:func:`~minimal.extensions.metadata.api_problem`); ``None`` if it can."""
+
+    @property
+    def compatible(self) -> bool:
+        return self.problem is None
 
 
 @dataclass
@@ -180,7 +184,7 @@ def describe(path: Path, name: str | None = None) -> Listing:
 
     Raises:
         ValueError: on a syntax error, an invalid name, a missing ``register``
-            function, module docstring or ``__version__``, an invalid ``__requires__``,
+            function, module docstring, ``__version__`` or ``__api__``, an invalid ``__api__``,
             a package named like a category folder, or a package symlink to a folder or outside it.
     """
     entry = _entry_file(path)
@@ -197,15 +201,16 @@ def describe(path: Path, name: str | None = None) -> Listing:
         raise ValueError(f"{path}: add a module docstring; its first line is the marketplace description")
     if not meta.version:
         raise ValueError(f'{path}: set __version__ = "1.0"; the marketplace needs a version')
-    try:
-        compatible = satisfies(meta.requires)
-    except ValueError as e:
-        raise ValueError(f"{path}: {e}") from None
+    if not meta.api:
+        raise ValueError(f'{path}: set __api__ = "{minimal.API_VERSION.split(".")[0]}"; the minimal API it is written for')
+    problem = api_problem(meta.api)
+    if problem is not None and problem.startswith("invalid"):
+        raise ValueError(f"{path}: {problem}")
     category = _category_of(path)
     _check_package_name(path, name, category)
     if path.is_dir():
         _copied_files(path)  # validates its symlinks
-    return Listing(name, meta.description, meta.version, path, category, meta.requires, compatible)
+    return Listing(name, meta.description, meta.version, path, category, meta.api, problem)
 
 
 def format_listing(listing: Listing) -> str:
@@ -215,7 +220,7 @@ def format_listing(listing: Listing) -> str:
 
 
 def _incompatible(listing: Listing) -> str:
-    return f"{listing.name}: requires minimal {listing.requires}, this is {minimal.__version__}"
+    return f"{listing.name}: {listing.problem}"
 
 
 def sync(url: str | None = None) -> Path:
@@ -419,7 +424,7 @@ def install(
 
     Raises:
         ValueError: if the name or category is invalid, the name is not in the marketplace or in
-            several categories, or the extension requires another minimal version.
+            several categories, or the extension is written for an API this minimal does not provide.
     """
     return install_from(_resolve(name, url, category), scope, cwd)
 
@@ -433,7 +438,7 @@ def install_from(src: Path, scope: str, cwd: str) -> tuple[Path, bool]:
         ``(dest, updated)``: the installed file or folder, and whether it replaced an existing copy.
 
     Raises:
-        ValueError: if the extension requires another minimal version, or its place
+        ValueError: if the extension is written for an API this minimal does not provide, or its place
             is taken by a folder that is not an extension (such as the ``tools/`` category).
     """
     listing = describe(src)
@@ -571,7 +576,7 @@ def check(paths: list[Path], make_registry: Callable[[], Registry] = Registry) -
     Each path is an extension file or package folder, or a marketplace root (a
     folder holding any category folder), whose every extension is checked. Each
     extension must describe itself (:func:`describe`), accept this minimal
-    (``__requires__``) and load into a fresh registry from ``make_registry``.
+    (``__api__``) and load into a fresh registry from ``make_registry``.
 
     Returns:
         ``(lines, ok)``: ``ok   category/name version``, ``WARN category/name: needs <module>``
@@ -602,7 +607,7 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
     except ValueError as e:
         return f"FAIL {label}: {str(e).removeprefix(f'{path}: ')}"
     if not listing.compatible:
-        return f"FAIL {label}: requires minimal {listing.requires}, this is {minimal.__version__}"
+        return f"FAIL {label}: {listing.problem}"
     errors: list[str] = []
     try:
         source = loader.read_extensions([path])[0]
@@ -641,7 +646,7 @@ def _ext_search(input: dict, ctx: Any) -> str:
             continue
         prefix = f"{url} " if len(urls) > 1 else ""
         for x in listings:
-            note = "" if x.compatible else f" [requires minimal {x.requires}]"
+            note = "" if x.compatible else f" [{x.problem}]"
             lines.append(f"{prefix}{x.category}/{format_listing(x)}{note}")
     return "\n".join(lines) or "No extensions found."
 

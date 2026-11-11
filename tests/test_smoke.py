@@ -21,7 +21,7 @@ from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import Registry, TurnInterrupted
 from minimal.providers.base import Reply, Usage
 from minimal.tools.builtin import register_builtin_tools
-from minimal.ui.commands import run_command
+from minimal.ui.commands import BUILTIN_COMMANDS
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "extensions" / "example.py"
 
@@ -247,14 +247,20 @@ class SmokeTest(unittest.TestCase):
                 {"role": "assistant", "content": [{"type": "text", "text": "r"}]},
             ]
             saved.save()
-            app = App(registry=self.registry, session=session_mod.open_session("b"), cwd=self.cwd, auto_approve=True)
+            app = App(
+                registry=self.registry,
+                session=session_mod.open_session("b"),
+                cwd=self.cwd,
+                auto_approve=True,
+                commands=BUILTIN_COMMANDS,
+            )
             with contextlib.redirect_stdout(io.StringIO()):
-                run_command("/resume a", app)
+                app.run_command("/resume a")
             self.assertEqual(app.session.id, "a")
             self.assertEqual(len(app.messages), 2)
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                run_command("/resume zzz", app)
+                app.run_command("/resume zzz")
             self.assertEqual(app.session.id, "a")
             self.assertIn("no session 'zzz'", stderr.getvalue())
 
@@ -284,14 +290,20 @@ class SmokeTest(unittest.TestCase):
     def test_sessions_and_resume_commands_default_to_this_project(self):
         with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
             where = self.make_sessions(a="one", b="two", c="one")
-            app = App(registry=self.registry, session=session_mod.open_session("new", where["one"]), cwd=where["one"], auto_approve=True)
+            app = App(
+                registry=self.registry,
+                session=session_mod.open_session("new", where["one"]),
+                cwd=where["one"],
+                auto_approve=True,
+                commands=BUILTIN_COMMANDS,
+            )
             offered = []
             app.frontend = SimpleNamespace(choose=lambda title, options: offered.append([v for v, _ in options]))
 
             def output(line):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
-                    run_command(line, app)
+                    app.run_command(line)
                 return out.getvalue()
 
             listing = output("/sessions")
@@ -412,7 +424,7 @@ class FailedTurnTest(unittest.TestCase):
         self.assertEqual([m["role"] for m in self.app.messages], ["user", "assistant"])
 
 
-HELLO_EXT = 'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
+HELLO_EXT = '__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
 
 class ReloadTest(unittest.TestCase):

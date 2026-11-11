@@ -64,6 +64,9 @@ class TuiFrontend:
     def set_theme(self, name: str) -> None:
         self._on_ui(setattr, self.tui, "theme", name)
 
+    def widget(self, name: str) -> object | None:
+        return next((widget for widget_name, widget in self.tui.ext_widgets if widget_name == name), None)
+
     def _modal(self, screen: ModalScreen) -> Any:
         """Show ``screen`` from a worker thread and wait for its dismiss value (``None`` on quit)."""
         done = threading.Event()

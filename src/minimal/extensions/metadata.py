@@ -2,7 +2,7 @@
 
 - description: first line of the module docstring;
 - ``__version__ = "1.2"``: the extension's own version (the marketplace requires one);
-- ``__requires__ = ">=0.2,<0.4"``: the minimal versions it works with (:func:`check_requires`).
+- ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`).
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ class Metadata:
     """First line of the module docstring; ``""`` if none."""
     version: str
     """Top-level ``__version__`` string; ``""`` if none."""
-    requires: str
-    """Top-level ``__requires__`` string; ``""`` if none."""
+    api: str
+    """Top-level ``__api__`` string; ``""`` if none."""
     has_register: bool
     """Whether a top-level ``def register`` exists."""
 
@@ -40,62 +40,46 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in ("__version__", "__requires__"):
+                if isinstance(target, ast.Name) and target.id in ("__version__", "__api__"):
                     strings[target.id] = node.value.value
     docstring = ast.get_docstring(tree) or ""
     return Metadata(
         description=docstring.strip().splitlines()[0] if docstring.strip() else "",
         version=strings.get("__version__", ""),
-        requires=strings.get("__requires__", ""),
+        api=strings.get("__api__", ""),
         has_register=any(isinstance(n, ast.FunctionDef) and n.name == "register" for n in tree.body),
     )
 
 
-_CLAUSE = re.compile(r"(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+)*)")
-
-_COMPARE = {
-    ">=": lambda a, b: a >= b,
-    "<=": lambda a, b: a <= b,
-    "==": lambda a, b: a == b,
-    "!=": lambda a, b: a != b,
-    ">": lambda a, b: a > b,
-    "<": lambda a, b: a < b,
-}
+_API = re.compile(r"(\d+)(?:\.(\d+))?")
 
 
-def _parts(version: str) -> tuple[int, ...]:
-    return tuple(int(p) for p in re.findall(r"\d+", version))
+def api_problem(declared: str, have: str = minimal.API_VERSION) -> str | None:
+    """Why an extension declaring ``__api__ = declared`` cannot run on API ``have``; ``None`` if it can.
+
+    ``"1"`` runs on any 1.x; ``"1.2"`` on 1.2 or a later 1.x. A different major never does: it
+    changed or removed something the extension may use.
+    """
+    if not declared.strip():
+        return f'declares no __api__; add __api__ = "{have.split(".")[0]}" (the minimal API it is written for)'
+    match = _API.fullmatch(declared.strip())
+    if match is None:
+        return f'invalid __api__ {declared!r}: use "MAJOR" or "MAJOR.MINOR", like "1"'
+    major, minor = int(match.group(1)), int(match.group(2) or 0)
+    have_major, have_minor = (int(p) for p in have.split("."))
+    if major != have_major:
+        return f"written for minimal API {declared}, this minimal has API {have}: install a version of it made for API {have_major}"
+    if minor > have_minor:
+        return f"needs minimal API {declared}, this minimal has API {have}: upgrade minimal"
+    return None
 
 
-def satisfies(spec: str, version: str = minimal.__version__) -> bool:
-    """Whether minimal ``version`` satisfies ``spec``: ``,``-separated clauses like ``>=0.2``; empty always does.
-
-    Versions compare number by number, the shorter padded with zeros (``0.2 == 0.2.0``).
+def check_api(declared: str, have: str = minimal.API_VERSION) -> None:
+    """Like :func:`api_problem`, raising instead of returning the reason.
 
     Raises:
-        ValueError: if ``spec`` is malformed.
+        ValueError: if an extension declaring ``declared`` cannot run on API ``have``.
     """
-    if not spec.strip():
-        return True
-    clauses = []
-    for clause in spec.split(","):
-        match = _CLAUSE.fullmatch(clause.strip())
-        if match is None:
-            raise ValueError(f'invalid __requires__ {spec!r}: use clauses like ">=0.2" or ">=0.2,<0.4"')
-        clauses.append((match.group(1), _parts(match.group(2))))
-    have = _parts(version)
-    for op, want in clauses:
-        width = max(len(have), len(want))
-        if not _COMPARE[op](have + (0,) * (width - len(have)), want + (0,) * (width - len(want))):
-            return False
-    return True
-
-
-def check_requires(spec: str, version: str = minimal.__version__) -> None:
-    """Like :func:`satisfies`, raising instead of returning ``False``.
-
-    Raises:
-        ValueError: if ``spec`` is malformed or ``version`` does not satisfy it.
-    """
-    if not satisfies(spec, version):
-        raise ValueError(f"requires minimal {spec}, this is {version}")
+    problem = api_problem(declared, have)
+    if problem is not None:
+        raise ValueError(problem)

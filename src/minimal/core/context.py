@@ -175,3 +175,28 @@ class Context:
     def reload(self) -> str:
         """Reload every extension from disk; return the summary (loaded, failed, not trusted)."""
         return reload_summary(*self._app.reload_extensions(), self._app.untrusted_notice())
+
+    def commands(self) -> dict[str, str]:
+        """Every slash command name (without ``/``) and its description: built-in and extension commands,
+        an extension's replacing a built-in of the same name."""
+        return {name: cmd.description for name, cmd in self._app.commands().items()}
+
+    def run_command(self, line: str, *, builtin: bool = False) -> None:
+        """Run slash command ``line`` (``"/model x"``) as if the user typed it; its output is printed.
+
+        ``builtin`` runs the built-in command even when an extension replaced it, so a replacement can
+        hand over to the original. Errors are reported, not raised.
+        """
+        self._app.run_command(line, builtin=builtin)
+
+    def models(self) -> list[str]:
+        """The current provider's models, queried from its API (falling back to its default); the current one is included."""
+        return self._app.available_models()[0]
+
+    def set_model(self, name: str) -> None:
+        """Use model ``name`` of the current provider from the next request on."""
+        self._app.model = name
+
+    def widget(self, name: str) -> object | None:
+        """The widget the frontend shows for extension widget ``name`` (see ``register_widget``); ``None`` if none."""
+        return self._app.frontend.widget(name)

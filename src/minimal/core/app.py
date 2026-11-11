@@ -16,7 +16,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Iterable, Mapping, Protocol
 
 import minimal.core.context
 import minimal.extensions.facade
@@ -33,7 +33,7 @@ from minimal.extensions.loader import (
     read_project_snapshot,
 )
 from minimal.extensions.marketplace import register_marketplace_tools
-from minimal.extensions.registry import Registry, Tool
+from minimal.extensions.registry import Command, Registry, Tool
 from minimal.providers import register_builtin_providers
 from minimal.providers.base import Provider
 from minimal.tools.builtin import register_builtin_tools
@@ -64,7 +64,8 @@ SELF_EXTEND_PROMPT = (
     "__init__.py (one extension that may hold helper modules), defining register(minimal); minimal is an Extension "
     "(API and docstrings: {facade_path}) and every ctx is a Context ({context_path}). Import only from minimal.api; "
     "never import other minimal modules, they move between releases. Start the file with a docstring (its first line "
-    'describes it), set __version__ = "1.0" and, as it uses this API, __requires__ = ">=0.2". '
+    'describes it), set __version__ = "1.0" and __api__ = "{api_major}", the minimal API it is written for (without '
+    "it, minimal does not load the file). "
     "Save new extensions to {global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this "
     "project; themes, tools and UI widgets go in the themes/, tools/ or widgets/ subfolder, as the marketplace groups "
     "them. "
@@ -89,6 +90,9 @@ SELF_EXTEND_PROMPT = (
     "maps every other character to #rrggbb or a theme variable such as $accent. "
     "In ctx: ctx.ui.ask/choose/choose_many/ask_text question the user; ctx.complete(messages) makes one model "
     "request and ctx.run_agent(prompt) runs a nested agent loop; ctx.new_session(messages) switches to a new session; "
+    "ctx.commands() lists the slash commands and ctx.run_command(line, builtin=False) runs one (builtin=True reaches "
+    "a built-in the extension replaced); ctx.models() and ctx.set_model(name) list and switch models; "
+    "ctx.widget(name) is the widget shown for register_widget(name, ...); "
     "ctx.cancelled and ctx.check_cancelled() notice an interrupt. "
     "After writing or editing an extension, call reload_extensions and fix any reported errors. "
     "Share and reuse extensions with ext_search, ext_install and ext_publish."
@@ -114,6 +118,7 @@ def build_system_prompt(registry: Registry, cwd: str, settings: config.Settings)
             context_path=Path(minimal.core.context.__file__),
             global_dir=minimal.extensions.loader.GLOBAL_EXTENSIONS_DIR,
             project_dir=project_extensions_dir(cwd),
+            api_major=minimal.API_VERSION.split(".")[0],
         ),
     ]
     files, scope = settings.prompt_files
@@ -181,6 +186,13 @@ class Frontend(Protocol):
 
     def set_theme(self, name: str) -> None:
         """Switch to colour theme ``name``, one of :meth:`themes`."""
+
+    def widget(self, name: str) -> object | None:
+        """The widget the frontend created for extension widget ``name``; ``None`` if it shows none."""
+
+
+class ExitRepl(Exception):
+    """Raised by a command (``/exit``) to quit the interactive UI."""
 
 
 class ConsoleFrontend:
@@ -278,6 +290,9 @@ class ConsoleFrontend:
     def set_theme(self, name: str) -> None:
         raise ValueError("colour themes only apply to the terminal UI")
 
+    def widget(self, name: str) -> object | None:
+        return None
+
 
 class App:
     """Everything a running ``minimal`` process needs.
@@ -295,6 +310,7 @@ class App:
         trust_project: Apply the project's extensions and trust-gated settings without ``/trust`` (``--trust-project``).
         extra_extensions: ``--ext`` paths, loaded again on every reload.
         frontend: Where turns are shown and confirmations asked.
+        builtin_commands: The slash commands the UI layer provides (``commands``); they receive the App.
         extensions: Extensions loaded by the last reload.
         extension_errors: Failures of the last reload, setting errors included.
         settings: The settings read by the last reload, with project trust applied.
@@ -314,6 +330,7 @@ class App:
         trust_project: bool = False,
         extra_extensions: Iterable[str] = (),
         frontend: Frontend | None = None,
+        commands: Mapping[str, Command] = {},
     ) -> None:
         self.registry = registry
         self.session = session
@@ -331,6 +348,7 @@ class App:
         self.cancelled = threading.Event()
         self.settings = config.Settings()
         self.setting_errors: list[str] = []
+        self.builtin_commands: dict[str, Command] = dict(commands)
         self.context = Context(self)
         self.permissions = Permissions(self.settings)
 
@@ -407,6 +425,59 @@ class App:
         self.provider = spec.create()
         self.provider_name = name
         self.model = model or spec.default_model
+
+    def available_models(self) -> tuple[list[str], str | None]:
+        """The models the current provider offers, queried from its API, and why the query failed (``None`` if it did not).
+
+        Falls back to the provider's default model; the current model is always in the list.
+        """
+        lister = getattr(self.provider, "list_models", None)
+        spec = self.registry.providers.get(self.provider_name)
+        found: list[str] = []
+        problem = None
+        if lister is not None:
+            try:
+                found = list(lister())
+            except Exception as e:
+                problem = f"{type(e).__name__}: {e}"
+        if not found and spec is not None:
+            found = [spec.default_model]
+        if self.model not in found:
+            found.insert(0, self.model)
+        return found, problem
+
+    def commands(self) -> dict[str, Command]:
+        """Every slash command by name: the built-ins, then extension commands (which replace a built-in of the same name)."""
+        return {**self.builtin_commands, **self.registry.commands}
+
+    def find_command(self, name: str, *, builtin: bool = False) -> Command | None:
+        """The command called ``name``: an extension's if registered (unless ``builtin``), else the built-in."""
+        if builtin:
+            return self.builtin_commands.get(name)
+        return self.registry.commands.get(name) or self.builtin_commands.get(name)
+
+    def run_command(self, line: str, *, builtin: bool = False) -> None:
+        """Parse and run a ``/name args`` line; ``builtin`` runs the built-in even if an extension replaced it.
+
+        Built-in commands get the App; extension commands get its :class:`~minimal.core.context.Context`.
+        The interrupt flag is cleared first: it may be left over from an interrupted turn. Unknown
+        commands and errors raised by a command are reported, not raised.
+
+        Raises:
+            ExitRepl: when the command asks to quit.
+        """
+        name, _, args = line.removeprefix("/").partition(" ")
+        cmd = self.find_command(name, builtin=builtin)
+        if cmd is None:
+            print(f"Unknown command: /{name}")
+            return
+        self.cancelled.clear()
+        try:
+            cmd.run(args.strip(), self if cmd is self.builtin_commands.get(name) else self.context)
+        except ExitRepl:
+            raise
+        except Exception as e:
+            print(f"Error in /{name}: {e}", file=sys.stderr)
 
     @property
     def messages(self) -> list[dict]:

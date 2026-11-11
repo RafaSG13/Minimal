@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Breaking
+
+- The extension API is versioned on its own: `minimal.API_VERSION` (`"1.0"`, also in `minimal.api`) and a required
+  `__api__ = "1"` in every extension, which replaces `__requires__`. An extension without `__api__`, or written for
+  another major version, is not loaded and the reload says why; the marketplace lists it but does not install it, and
+  `minimal ext check` fails it. Importing a name `minimal.api` removed (such as `BUILTIN_COMMANDS`) names the version
+  that removed it and what to use instead. See "API versions" in docs/extensions.md.
+- `minimal.ui.commands.run_command`/`find_command` became `App.run_command`/`App.find_command`, and `ExitRepl` moved
+  to `minimal.core.app`; an `App` runs the built-in commands it is given (`App(commands=BUILTIN_COMMANDS)`).
+
+### Added
+
+- `ctx.commands()`, `ctx.run_command(line, builtin=False)`, `ctx.models()`, `ctx.set_model(name)` and
+  `ctx.widget(name)`, so extensions such as a slash-command menu or a model picker no longer reach into internals.
+
 ### Changed
 
 - A turn that fails or is interrupted after the model replied is no longer thrown away. It stays in the history: the

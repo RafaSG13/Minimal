@@ -17,7 +17,7 @@ file to ``~/.minimal/extensions/`` to always have it.
 import sys
 
 __version__ = "2.0"
-__requires__ = ">=0.2"
+__api__ = "1"
 
 COMPACT_AT = 100_000
 """Default context tokens (input + output of the last reply) that trigger a compaction."""

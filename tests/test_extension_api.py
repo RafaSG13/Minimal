@@ -12,8 +12,10 @@ from minimal.core import session as session_mod
 from minimal.core.app import App
 from minimal.core.session import Session
 from minimal.extensions import loader
+from minimal.extensions.metadata import api_problem
 from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply
+from minimal.ui.commands import BUILTIN_COMMANDS
 
 
 class ScriptedProvider:
@@ -48,13 +50,19 @@ class ExtensionApiTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.app = App(
-            registry=Registry(), session=Session("first", self.tmp / "first.jsonl"), cwd=str(self.tmp), auto_approve=True
+            registry=Registry(),
+            session=Session("first", self.tmp / "first.jsonl"),
+            cwd=str(self.tmp),
+            auto_approve=True,
+            commands=BUILTIN_COMMANDS,
         )
 
-    def extension(self, name, body, folder=None):
+    def extension(self, name, body, folder=None, api='"1"'):
+        """Write ``body`` as ``folder/name`` after an ``__api__ = <api>`` line (``api=None``: no such line)."""
         path = (folder or self.global_dir) / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(textwrap.dedent(body))
+        header = "" if api is None else f"__api__ = {api}\n"
+        path.write_text(header + textwrap.dedent(body))
         return path
 
     def test_tool_decorator_uses_the_docstring(self):
@@ -216,11 +224,125 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertEqual(loaded, [self.global_dir / "dup.py"])
         self.assertEqual(errors, [f"{self.global_dir / 'dup'}: both dup.py and dup/ exist; remove one"])
 
-    def test_requires_a_newer_minimal(self):
-        self.extension("future.py", '__requires__ = ">=9"\ndef register(minimal):\n    raise AssertionError("ran")\n')
-        _, errors = self.app.reload_extensions()
+    def load_errors(self, api, name="future.py"):
+        """Write an extension declaring ``api`` (a Python literal; ``None``: no ``__api__``) whose ``register`` must not run."""
+        self.extension(name, 'def register(minimal):\n    raise AssertionError("ran")\n', api=api)
+        loaded, errors = self.app.reload_extensions()
+        self.assertEqual(loaded, [])
         self.assertEqual(len(errors), 1)
-        self.assertIn("requires minimal >=9, this is 0.2.0", errors[0])
+        return errors[0]
+
+    def test_extension_for_another_api_major_is_not_loaded(self):
+        self.assertIn("written for minimal API 9, this minimal has API 1.0", self.load_errors('"9"'))
+
+    def test_extension_without_api_is_not_loaded(self):
+        error = self.load_errors(None)
+        self.assertIn("declares no __api__", error)
+        self.assertIn('add __api__ = "1"', error)
+
+    def test_extension_needing_a_newer_minor_api_is_not_loaded(self):
+        self.assertIn("needs minimal API 1.9, this minimal has API 1.0", self.load_errors('"1.9"'))
+
+    def test_extension_with_a_malformed_api_is_not_loaded(self):
+        self.assertIn("invalid __api__ 'x'", self.load_errors('"x"'))
+
+    def test_extension_with_an_api_loads(self):
+        for api in ('"1"', '"1.0"'):
+            with self.subTest(api=api):
+                self.extension("ok.py", 'def register(minimal):\n    minimal.register_tool("ok", print)\n', api=api)
+                self.assertEqual(self.app.reload_extensions(), ([self.global_dir / "ok.py"], []))
+
+    def test_api_problem_boundaries(self):
+        self.assertIsNone(api_problem("1"))
+        self.assertIsNone(api_problem("1.0"))
+        self.assertIn("needs minimal API 1.1", api_problem("1.1", "1.0"))
+        self.assertIsNone(api_problem("1.1", "1.2"))
+        self.assertIsNone(api_problem("1.2", "1.2"))
+        self.assertIn("written for minimal API 2, this minimal has API 1.5", api_problem("2", "1.5"))
+        self.assertIn("made for API 1", api_problem("0", "1.5"))
+        self.assertIn("declares no __api__", api_problem(""))
+        for bad in ("x", "1.2.3", ">=1", "1."):
+            self.assertIn("invalid __api__", api_problem(bad))
+
+    def test_removed_api_names_explain_what_to_use(self):
+        self.extension("old.py", "from minimal.api import BUILTIN_COMMANDS\n\ndef register(minimal):\n    pass\n")
+        loaded, errors = self.app.reload_extensions()
+        self.assertEqual(loaded, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("minimal.api.BUILTIN_COMMANDS was removed in minimal API 1.0", errors[0])
+        self.assertIn("ctx.commands()", errors[0])
+
+    def test_unknown_api_name_is_a_plain_import_error(self):
+        with self.assertRaises(ImportError):
+            from minimal.api import nothing_like_this  # noqa: F401
+
+    def test_ctx_commands_lists_built_in_and_extension_commands(self):
+        self.extension(
+            "lister.py",
+            """
+            def register(minimal):
+                @minimal.command()
+                def listing(args, ctx):
+                    '''Show them.'''
+                    for name, description in ctx.commands().items():
+                        print(f"{name}={description}")
+            """,
+        )
+        self.assertEqual(self.app.reload_extensions()[1], [])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.app.run_command("/listing")
+        lines = out.getvalue().splitlines()
+        self.assertIn("help=show the commands", lines)
+        self.assertIn("listing=Show them.", lines)
+        self.assertEqual(self.app.context.commands()["help"], "show the commands")
+
+    def test_replaced_built_in_hands_over_without_recursing(self):
+        self.extension(
+            "model.py",
+            """
+            def register(minimal):
+                @minimal.command()
+                def model(args, ctx):
+                    '''Log, then let the built-in switch.'''
+                    print("custom model")
+                    ctx.run_command("/model " + args, builtin=True)
+            """,
+        )
+        self.assertEqual(self.app.reload_extensions()[1], [])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.app.run_command("/model x")
+        self.assertEqual(out.getvalue().splitlines(), ["custom model", "Model: x"])
+        self.assertEqual(self.app.model, "x")
+        self.assertEqual(self.app.context.commands()["model"], "Log, then let the built-in switch.")
+
+    def test_ctx_run_command_reports_an_unknown_command(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.app.context.run_command("/nope")
+        self.assertEqual(out.getvalue().strip(), "Unknown command: /nope")
+
+    def test_ctx_run_command_builtin_skips_extension_commands(self):
+        self.extension(
+            "only.py",
+            'def register(minimal):\n    minimal.register_command("only", lambda args, ctx: print("ext"))\n',
+        )
+        self.app.reload_extensions()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.app.context.run_command("/only", builtin=True)
+        self.assertEqual(out.getvalue().strip(), "Unknown command: /only")
+
+    def test_ctx_models_and_set_model(self):
+        self.app.provider = mock.Mock(list_models=mock.Mock(return_value=["m1", "m2"]))
+        self.app.model = "m2"
+        self.assertEqual(self.app.context.models(), ["m1", "m2"])
+        self.app.context.set_model("m1")
+        self.assertEqual(self.app.model, "m1")
+
+    def test_ctx_widget_is_none_without_a_widget_frontend(self):
+        self.assertIsNone(self.app.context.widget("anything"))
 
     def test_disabled_extension_loads_only_from_ext(self):
         path = self.extension("quiet.py", 'def register(minimal):\n    minimal.register_tool("quiet", print)\n')

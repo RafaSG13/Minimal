@@ -37,8 +37,7 @@ from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 
 from minimal import config
-from minimal.core.app import App
-from minimal.ui.commands import BUILTIN_COMMANDS, ExitRepl, find_command, run_command
+from minimal.core.app import App, ExitRepl
 from minimal.ui.tui import theme
 from minimal.ui.tui.frontend import TuiFrontend
 from minimal.ui.tui.widgets import Header, ToolBlock
@@ -103,7 +102,7 @@ class CommandSuggester(Suggester):
         if not value.startswith("/") or " " in value:
             return None
         typed = value[1:]
-        for name in sorted({*BUILTIN_COMMANDS, *self.core.registry.commands}):
+        for name in sorted(self.core.commands()):
             if name.startswith(typed) and name != typed:
                 return "/" + name
         return None
@@ -497,11 +496,11 @@ class MinimalTui(TextualApp):
         self.set_busy(True)
         self.refresh_live({"kind": "start", "turn": self.in_turn})
         if line.startswith("/"):
-            cmd = find_command(line[1:].partition(" ")[0], self.core)
+            cmd = self.core.find_command(line[1:].partition(" ")[0])
             if cmd is not None and cmd.terminal:
                 try:
                     with self.suspend(), _outside_event_loop():
-                        run_command(line, self.core)
+                        self.core.run_command(line)
                 except ExitRepl:
                     self.exit()
                     return
@@ -521,7 +520,7 @@ class MinimalTui(TextualApp):
     @work(thread=True, exclusive=True, group="agent")
     def run_command_worker(self, line: str) -> None:
         try:
-            run_command(line, self.core)
+            self.core.run_command(line)
         except ExitRepl:
             self.call_from_thread(self.exit)
             return
