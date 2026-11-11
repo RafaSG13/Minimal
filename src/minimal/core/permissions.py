@@ -11,8 +11,11 @@ pattern is matched against the tool's subject (:attr:`~minimal.extensions.regist
 - ``fetch(https://example.com/*)``: any other subject, as a shell-style wildcard.
 
 ``permissions.deny`` rules win over everything, ``-y`` included, and apply to
-tools that never ask. ``permissions.allow`` rules run a call without asking; a
-``bash`` allow rule never matches a command that chains, pipes, substitutes or
+tools that never ask. A ``bash`` deny rule matches the whole command or any command inside it
+(``cd /tmp && rm -rf x`` is caught by ``bash(rm -rf*)``); it does not see through ``sh -c "..."``,
+``eval``, ``xargs``, ``find -exec`` or wrappers such as ``sudo``: start the pattern with ``*`` for those.
+``permissions.allow`` rules run a call without asking; a ``bash`` allow rule matches only the whole
+command, and never one that chains, pipes, substitutes or
 redirects (``;``, ``&``, ``|``, backtick, ``$(``, ``>``, ``<`` or a newline).
 """
 
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from pathlib import Path
 
 from minimal import config
@@ -29,6 +33,24 @@ from minimal.tools.search import glob_regex
 
 _SHELL_OPERATORS = (";", "&", "|", "`", "$(", ">", "<", "\n")
 """What a ``bash`` command may not contain for an allow rule to match it: another command could hide behind it."""
+
+_COMMAND_BREAKS = re.compile(r";|&|\||\n|`|\$\(|\(|\)|\{|\}")
+"""Where a ``bash`` command may hand over to another one: ``;``, ``&&``, ``&``, ``||``, ``|``, a newline, a
+substitution, a subshell or a group. Quotes are ignored on purpose: an extra piece can only add a ``deny`` match."""
+
+_LEADING_KEYWORDS = re.compile(r"(?:(?:if|then|elif|else|do|while|until|time|!)\s+)+")
+"""Shell words that may come before a command (``then rm -rf x``)."""
+
+
+def _commands_in(command: str) -> list[str]:
+    """The pieces of ``command`` between operators, each without leading shell keywords.
+
+    ``cd /tmp && rm -rf x`` gives ``cd /tmp`` and ``rm -rf x``; ``echo $(rm x)`` gives ``echo``, ``rm x`` and an
+    empty rest, which is dropped. It does not look inside ``sh -c "..."``, ``eval``, ``xargs`` or ``find -exec``.
+    """
+    pieces = (_LEADING_KEYWORDS.sub("", part.strip()) for part in _COMMAND_BREAKS.split(command))
+    return [piece for piece in pieces if piece]
+
 
 _DEFAULT_SUBJECTS = {"grep": ".", "glob": "."}
 """Subjects of tools whose ``path`` input is optional."""
@@ -50,8 +72,12 @@ def parse_rule(text: str) -> tuple[str, str | None]:
     return match.group(1), match.group(2)
 
 
-def matches(rule: str, tool: Tool, input: dict, cwd: str) -> bool:
-    """Whether ``rule`` covers a call of ``tool`` with ``input`` in ``cwd``."""
+def matches(rule: str, tool: Tool, input: dict, cwd: str, *, any_command: bool = False) -> bool:
+    """Whether ``rule`` covers a call of ``tool`` with ``input`` in ``cwd``.
+
+    With ``any_command``, a ``bash`` pattern also matches each command inside a compound one
+    (see :func:`_commands_in`); ``deny`` rules use it, ``allow`` rules never do.
+    """
     name, pattern = parse_rule(rule)
     if name != tool.name:
         return False
@@ -64,7 +90,8 @@ def matches(rule: str, tool: Tool, input: dict, cwd: str) -> bool:
     if not isinstance(value, str):
         return False
     if tool.name == "bash":
-        return fnmatch.fnmatchcase(value, pattern)
+        parts = (value, *_commands_in(value)) if any_command else (value,)
+        return any(fnmatch.fnmatchcase(part, pattern) for part in parts)
     if key == "path":
         root = Path(cwd).resolve()
         resolved = Path(cwd, value).resolve()  # as the file tools do (resolve_path): no ~ expansion in the input
@@ -91,7 +118,7 @@ class Permissions:
             PermissionDenied: if a deny rule matches.
         """
         for rule, scope in self.deny:
-            if matches(rule, tool, input, cwd):
+            if matches(rule, tool, input, cwd, any_command=True):
                 raise PermissionDenied(f"denied by permission rule '{rule}' ({scope} settings)")
         if tool.name == "bash" and any(op in str(input.get("command", "")) for op in _SHELL_OPERATORS):
             return False

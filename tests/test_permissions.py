@@ -64,6 +64,31 @@ class PermissionsTest(unittest.TestCase):
         self.assertIn("denied by permission rule 'read(.env)' (project settings)", result["content"])
         self.assertNotIn("SECRET", result["content"])
 
+    def test_deny_sees_every_command_inside_a_compound_one(self):
+        rules = settings(deny=["bash(rm -rf*)"])
+        for command in (
+            "rm -rf x",
+            "cd /tmp && rm -rf x",
+            "echo a; rm -rf x",
+            "true || rm -rf x",
+            "ls | rm -rf x",
+            "sleep 1 & rm -rf x",
+            "echo a\nrm -rf x",
+            "echo $(rm -rf x)",
+            "echo `rm -rf x`",
+            "(rm -rf x)",
+            "{ rm -rf x; }",
+            "if true; then rm -rf x; fi",
+        ):
+            with self.subTest(command=command):
+                result = self.call("bash", rules, command=command)
+                self.assertIn("denied by permission rule 'bash(rm -rf*)'", result["content"])
+
+    def test_deny_ignores_a_command_that_only_mentions_the_pattern(self):
+        result = self.call("bash", settings(deny=["bash(rm -rf*)"]), command="echo rm -rf is dangerous")
+        self.confirm.assert_called_once()  # not denied: it asks as usual
+        self.assertNotIn("denied by permission rule", result["content"])
+
     def test_path_glob_allows_inside_the_folder_only(self):
         rules = settings(allow=["write(src/**)"])
         result = self.call("write", rules, path="src/a/b.py", content="x")

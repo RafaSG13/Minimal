@@ -62,7 +62,9 @@ The pattern matches the tool's subject:
 | `read`, `write`, `edit`, `grep`, `glob`     | `path`    | glob (`**` crosses folders; `~` in the pattern expands, `~` in a tool's path does not, as for the tools). A relative pattern matches the path relative to the working directory, or the absolute path when outside it; an absolute or `~` pattern always matches the absolute path. `grep`/`glob` without a path mean `.` |
 | extension tools with `subject_key`          | that input field | shell-style wildcard                                                                                   |
 
-A `bash` allow rule never matches a command containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<` or a newline, so `bash(git status*)` does not approve `git status && rm -rf x`. Deny rules match those commands as usual.
+A `bash` allow rule never matches a command containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<` or a newline, so `bash(git status*)` does not approve `git status && rm -rf x`.
+
+A `bash` deny rule matches the whole command **or any command inside it**: the pieces between `;`, `&&`, `||`, `&`, `|`, newlines, `$( )`, backticks, `( )` and `{ }` (without leading `if`, `then`, `do`, `time`, …). `bash(rm -rf*)` therefore blocks `cd /tmp && rm -rf x`, `echo $(rm -rf x)` and `if true; then rm -rf x; fi`. Quotes are not interpreted, so a piece inside quotes can match too. A deny rule is a guardrail, not a sandbox: it does not look inside `sh -c "…"`, `eval`, `xargs`, `find -exec`, scripts, or wrappers such as `sudo` or `env`. Start the pattern with `*` (`bash(*rm -rf*)`) to catch those too.
 
 | Rule                           | Effect                                                     |
 | ------------------------------ | ---------------------------------------------------------- |
