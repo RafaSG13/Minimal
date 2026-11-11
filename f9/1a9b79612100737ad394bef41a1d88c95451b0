@@ -1,0 +1,48 @@
+CHANGELOG.md
+  h_e81853c41416fb 28-29
+README.md
+  h_e81853c41416fb 141
+docs/extensions.md
+  h_e81853c41416fb 238
+docs/settings.md
+  h_e81853c41416fb 30,41,44,47,62
+src/minimal/config.py
+  h_e81853c41416fb 12-13,57,173,239
+src/minimal/core/app.py
+  h_e81853c41416fb 349
+src/minimal/core/context.py
+  h_e81853c41416fb 117
+src/minimal/core/permissions.py
+  h_e81853c41416fb 7-10,71-76
+src/minimal/extensions/audit.py
+  h_e81853c41416fb 228-229
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 212-214,218-221,227,231,237-241,246-247,249-250,257-259
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 272-285,287-292,294-295,299-303,307,345-347,388-389,397-398,400-401,410-415,434,481,483,485,561
+src/minimal/ui/setup.py
+  h_e81853c41416fb 62
+tests/test_config.py
+  h_e81853c41416fb 93-105
+tests/test_extension_api.py
+  h_e81853c41416fb 143-149,169-190
+tests/test_marketplace.py
+  h_e81853c41416fb 256-281,294,304,340-348
+tests/test_permissions.py
+  h_e81853c41416fb 77-86
+tests/test_security.py
+  h_e81853c41416fb 46
+tests/test_settings.py
+  h_e81853c41416fb 125-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f91a9b79612100737ad394bef41a1d88c95451b0",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
