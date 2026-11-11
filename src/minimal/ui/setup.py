@@ -1,5 +1,5 @@
 """Onboarding: pick the default provider, sign in or enter its API key, pick
-the model, and save the choice with :mod:`minimal.config`.
+the model, and save the choice in ``~/.minimal/settings.json`` (:func:`minimal.config.update_global`).
 
 Runs on the first start (no saved provider yet), when the saved provider can
 no longer start (for example after ``minimal --logout``), and on demand with
@@ -31,10 +31,7 @@ def run_setup(registry: Registry) -> tuple[str, str]:
     Raises:
         KeyboardInterrupt: if the user cancels with Ctrl-C.
     """
-    try:
-        current = config.load_config() or {}
-    except ValueError:
-        current = {}
+    current = config.load_global()
     login = _stored_login()
     names = list(registry.providers)
     if current.get("provider") in names:
@@ -65,8 +62,11 @@ def run_setup(registry: Registry) -> tuple[str, str]:
         default=current["model"] if current.get("provider") == name else spec.default_model,
         validate=lambda text: bool(text.strip()) or "Enter a model name",
     ).unsafe_ask().strip()
-    config.save_config(name, model)
-    print(f"Saved {name} · {model} as the default ({config.CONFIG_FILE}). Change it with `minimal --setup` or /setup.")
+    config.update_global({"provider": name, "model": model})
+    print(f"Saved {name} · {model} as the default (~/.minimal/settings.json). Change it with `minimal --setup` or /setup.")
+    for layer in config.read_layers(os.getcwd())[0]:
+        if layer.scope != "global" and "provider" in layer.data:
+            print(f"Note: {layer.path} sets provider {layer.data['provider']} for this project.")
     return name, model
 
 

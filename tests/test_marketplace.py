@@ -27,6 +27,8 @@ def register(minimal):
 
 OCEAN = '''"""Deep blue dark theme."""
 
+__version__ = "1.0"
+
 
 def register(minimal):
     minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
@@ -34,9 +36,22 @@ def register(minimal):
 
 HELLO_TOOL = '''"""Another hello, as a tool."""
 
+__version__ = "1.0"
+
 
 def register(minimal):
     minimal.register_tool(name="hello_tool", run=lambda input, ctx: "hi", description="Say hi")
+'''
+
+PKG_INIT = '''"""A package extension."""
+
+from .helpers import REPLY
+
+__version__ = "1.0"
+
+
+def register(minimal):
+    minimal.register_tool(name="pkg", run=lambda input, ctx: REPLY, description="Reply")
 '''
 
 
@@ -84,7 +99,7 @@ class MarketplaceTest(unittest.TestCase):
             mock.patch.dict(os.environ, env),
             mock.patch.object(marketplace, "CACHE_ROOT", self.tmp / "cache"),
             mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.global_dir),
-            mock.patch.object(config, "MARKETPLACES_FILE", self.tmp / "marketplaces.json"),
+            mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -132,7 +147,7 @@ class MarketplaceTest(unittest.TestCase):
 
         self.assertEqual(marketplace.install("hello"), (self.global_dir / "hello.py", False))
         registry = Registry()
-        loaded, errors = load_extensions(registry, str(self.tmp))
+        loaded, errors = load_extensions(registry, str(self.tmp), config.Settings())
         self.assertEqual((loaded, errors), ([self.global_dir / "hello.py"], []))
         self.assertIn("hello", registry.tools)
         self.assertEqual(marketplace.install("hello"), (self.global_dir / "hello.py", True))
@@ -143,7 +158,7 @@ class MarketplaceTest(unittest.TestCase):
     def test_appledouble_sidecar_is_ignored(self):
         marketplace.install("hello")
         (self.global_dir / "._hello.py").write_bytes(b"\x00\x05\x16\x07\xb0")
-        loaded, errors = load_extensions(Registry(), str(self.tmp))
+        loaded, errors = load_extensions(Registry(), str(self.tmp), config.Settings())
         self.assertEqual((loaded, errors), ([self.global_dir / "hello.py"], []))
 
     def test_picker_installs_updates_removes(self):
@@ -190,7 +205,7 @@ class MarketplaceTest(unittest.TestCase):
         )
         marketplace.install("hello", category="extensions")
         registry = Registry()
-        loaded, errors = load_extensions(registry, str(self.tmp))
+        loaded, errors = load_extensions(registry, str(self.tmp), config.Settings())
         self.assertEqual(errors, [])
         self.assertIn("ocean", registry.themes)
         self.assertLessEqual({"hello", "hello_tool"}, set(registry.tools))  # both hello.py files loaded
@@ -217,7 +232,7 @@ class MarketplaceTest(unittest.TestCase):
 
     def test_publish_pushes_branch(self):
         path = self.tmp / "greet.py"
-        path.write_text('"""Greet people."""\n\n\ndef register(minimal):\n    pass\n')
+        path.write_text('"""Greet people."""\n\n__version__ = "1.0"\n\n\ndef register(minimal):\n    pass\n')
         real_git = shutil.which("git")
         with mock.patch.object(marketplace.shutil, "which", lambda cmd: real_git if cmd == "git" else None):
             message = marketplace.publish(path)
@@ -234,9 +249,66 @@ class MarketplaceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"register\(minimal\)"):
             marketplace.publish(no_register)
         good = self.tmp / "good.py"
-        good.write_text('"""Good."""\n\n\ndef register(minimal):\n    pass\n')
+        good.write_text('"""Good."""\n\n__version__ = "1.0"\n\n\ndef register(minimal):\n    pass\n')
         with self.assertRaisesRegex(ValueError, "invalid extension name"):
             marketplace.publish(good, "Bad-Name")
+
+    def test_listing_without_version_is_rejected_and_skipped(self):
+        unversioned = '"""No version."""\n\n\ndef register(minimal):\n    pass\n'
+        self.push_file("extensions/plain.py", unversioned)
+        self.assertEqual([x.name for x in marketplace.search()], ["hello"])
+        path = self.tmp / "plain.py"
+        path.write_text(unversioned)
+        with self.assertRaisesRegex(ValueError, "needs a version"):
+            marketplace.publish(path)
+
+    def test_package_folder_installs_updates_and_uninstalls(self):
+        self.push_file("tools/pkg/__init__.py", PKG_INIT)
+        self.push_file("tools/pkg/helpers.py", 'REPLY = "v1"\n')
+        dest, updated = marketplace.install("pkg")
+        self.assertEqual((dest, updated), (self.global_dir / "tools" / "pkg", False))
+        self.assertEqual((dest / "helpers.py").read_text(), 'REPLY = "v1"\n')
+        registry = Registry()
+        self.assertEqual(load_extensions(registry, str(self.tmp), config.Settings()), ([dest], []))
+        self.assertEqual(registry.tools["pkg"].run({}, None), "v1")
+
+        [entry] = [e for e in marketplace.catalog(str(self.bare), str(self.tmp)) if e.listing.name == "pkg"]
+        self.assertEqual((entry.installed, entry.outdated), (["global"], []))
+        self.push_file("tools/pkg/helpers.py", 'REPLY = "v2"\n')
+        [entry] = [e for e in marketplace.catalog(str(self.bare), str(self.tmp)) if e.listing.name == "pkg"]
+        self.assertEqual(entry.outdated, ["global"])
+
+        self.assertEqual(marketplace.uninstall("pkg", "global", str(self.tmp), "tools"), dest)
+        self.assertFalse(dest.exists())
+
+    def test_incompatible_listing_is_not_installed(self):
+        self.push_file("extensions/future.py", HELLO.replace("__version__", '__requires__ = ">=9"\n__version__'))
+        [listing] = [x for x in marketplace.search() if x.name == "future"]
+        self.assertFalse(listing.compatible)
+        with self.assertRaisesRegex(ValueError, "future: requires minimal >=9, this is"):
+            marketplace.install("future")
+
+
+class CheckTest(unittest.TestCase):
+    def test_marketplace_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "extensions").mkdir()
+            (root / "extensions" / "hello.py").write_text(HELLO)
+            (root / "extensions" / "nodoc.py").write_text('__version__ = "1.0"\n\ndef register(minimal):\n    pass\n')
+            (root / "extensions" / "future.py").write_text(HELLO.replace("__version__", '__requires__ = ">=9"\n__version__'))
+            (root / "extensions" / "needs.py").write_text('"""Needs a module."""\n__version__ = "1.0"\nimport not_installed_anywhere\ndef register(minimal):\n    pass\n')
+            lines, ok = marketplace.check([root])
+        self.assertFalse(ok)
+        self.assertEqual(
+            lines,
+            [
+                "FAIL extensions/future: requires minimal >=9, this is 0.2.0",
+                "ok   extensions/hello 1.0",
+                "WARN extensions/needs: needs not_installed_anywhere",
+                "FAIL extensions/nodoc: add a module docstring; its first line is the marketplace description",
+            ],
+        )
 
 
 if __name__ == "__main__":

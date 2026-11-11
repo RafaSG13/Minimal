@@ -1,13 +1,15 @@
 """Slash commands: the built-ins and the dispatcher.
 
-Every command is called as ``run(args, app)``, where ``args`` is the text after
-the command name and ``app`` is the :class:`~minimal.core.app.App`. Commands
-registered by extensions take precedence over built-ins with the same name.
+Built-in commands are called as ``run(args, app)``, where ``args`` is the text
+after the command name and ``app`` is the :class:`~minimal.core.app.App`;
+extension commands get ``ctx``, the app's :class:`~minimal.core.context.Context`.
+Commands registered by extensions take precedence over built-ins with the same name.
 Commands print their output; the terminal UI shows it in the transcript.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import sys
@@ -168,30 +170,65 @@ def _reload(args: str, app: App) -> None:
 
 
 def _trust(args: str, app: App) -> None:
-    """Show a static scan of the project's extensions and ask once whether to trust and load them.
+    """Show a static scan of the project's extensions and its trust-gated settings, and ask once whether to trust them.
 
-    Trust is saved for the digest of the bytes reported, so files changed after the
+    Trust is saved for the digest of what was reported, so files changed after the
     report stay untrusted: the reload that follows reads them again and skips them.
     """
     if args:
         raise ValueError("usage: /trust")
-    project = loader.read_project_extensions(app.cwd)
+    project = loader.read_project_snapshot(app.cwd, config.risky_subset(config.read_layers(app.cwd)[0]))
     if project is None:
-        print(f"No project extensions in {loader.project_extensions_dir(app.cwd)}.")
+        print(f"No project extensions or trust-gated settings in {Path(app.cwd, '.minimal')}.")
         return
     if app.is_trusted(project):
-        print(f"The project extensions in {project.directory} are already trusted.")
+        print(f"The project extensions and settings in {project.directory.parent} are already trusted.")
         if app.untrusted is not None:  # trusted elsewhere since the last reload
             print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
         return
     print(audit.format_report(project))
     if not app.frontend.ask(
-        f"Trust and load these {len(project.sources)} project extension(s)? Review the scan above: they run with your permissions."
+        "Trust and apply these project extensions/settings? Review the scan above: extensions run with your permissions."
     ):
-        print("Not trusted: the project extensions stay unloaded.")
+        print("Not trusted: the project extensions and settings stay unapplied.")
         return
     config.save_trusted(project.key, project.digest)
     print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+
+
+_SCALARS = ("provider", "model", "theme", "prompt.base", "prompt.files")
+"""Settings where the highest layer wins; the others are concatenated, merged or global-only lists."""
+
+
+def _settings(args: str, app: App) -> None:
+    """Show the settings files, the effective settings with the scope each comes from, and the reload's errors."""
+    if args:
+        raise ValueError("usage: /settings")
+    settings = app.settings
+    print("Files:")
+    for scope, path in config.settings_files(app.cwd).items():
+        print(f"  {scope:<8} {path}{'' if path.exists() else ' (not found)'}")
+    lines = []
+    for key in _SCALARS:
+        value, scope = settings.scalar(key)
+        if scope is not None:
+            lines.append(f"{key}  {value if isinstance(value, str) else json.dumps(value)}  ({scope})")
+    for layer in settings.layers:
+        for key in ("marketplaces", "prompt.append", "permissions.allow", "permissions.deny", "extensions.disabled"):
+            for item in layer.data.get(key, []):
+                lines.append(f"{key}  {item}  ({layer.scope}){_untrusted_mark(settings, layer, key)}")
+        for ext_id, values in layer.data.get("extensions.settings", {}).items():
+            mark = _untrusted_mark(settings, layer, "extensions.settings")
+            lines.append(f"extensions.settings  {ext_id} {json.dumps(values, separators=(',', ':'))}  ({layer.scope}){mark}")
+    print("Effective:")
+    print("\n".join(f"  {line}" for line in lines) or "  (defaults only)")
+    if app.setting_errors:
+        print("Errors:")
+        print("\n".join(f"  {e}" for e in app.setting_errors))
+
+
+def _untrusted_mark(settings: config.Settings, layer: config.Layer, key: str) -> str:
+    return " (not trusted: /trust)" if key in config.RISKY and layer.scope != "global" and not settings.trusted else ""
 
 
 EXT_USAGE = "/ext [list|publish <path> [name]]"
@@ -208,7 +245,8 @@ def _ext(args: str, app: App) -> None:
     elif words == ["list"]:
         rows = marketplace.installed(app.cwd)
         for where, category, path in rows:
-            print(f"{where:<8} {category:<10} {path.stem:<20} {path}")
+            disabled = "disabled" if loader.ext_id(path) in app.settings.disabled else ""
+            print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled}".rstrip())
         if not rows:
             print("(none)")
     elif words[0] == "publish" and 2 <= len(words) <= 3:
@@ -233,7 +271,7 @@ def _marketplace_label(url: str) -> str:
 def _pick_marketplace(app: App) -> str | None:
     """Ask for a marketplace, letting the user add or remove saved ones; ``None`` if cancelled."""
     while True:
-        saved = config.load_marketplaces()
+        saved = config.load_global().get("marketplaces", [])
         options = [(url, _marketplace_label(url)) for url in marketplace.marketplaces()]
         options.append((_ADD, "+ Add a marketplace…"))
         if saved:
@@ -265,6 +303,8 @@ def _entry_label(entry: marketplace.Entry) -> str:
             label += f" ({old} → {new})"
     elif entry.installed:
         label += f" · installed ({', '.join(entry.installed)})"
+    if not entry.listing.compatible:
+        label += f" · requires minimal {entry.listing.requires}"
     return label
 
 
@@ -304,8 +344,12 @@ def _ext_picker(app: App) -> None:
         print("Cancelled.")
         return
     to_install = [e for e in entries if not e.installed and e.listing.name in ticked]
+    for e in to_install:
+        if not e.listing.compatible:
+            print(f"Skipped {e.listing.name}: requires minimal {e.listing.requires}")
+    to_install = [e for e in to_install if e.listing.compatible]
     to_remove = [e for e in entries if e.installed and e.listing.name not in ticked]
-    outdated = [e for e in entries if e.outdated and e.listing.name in ticked]
+    outdated = [e for e in entries if e.outdated and e.listing.compatible and e.listing.name in ticked]
     scope = "global"
     if to_install:
         scope = app.frontend.choose(
@@ -354,6 +398,7 @@ BUILTIN_COMMANDS: dict[str, Command] = {
     "tools": Command(_tools, "list the tools"),
     "theme": Command(_theme, "pick the colour theme, or switch: /theme <name>"),
     "reload": Command(_reload, "reload extensions from disk"),
+    "settings": Command(_settings, "show the settings files and the effective settings with where each comes from"),
     "trust": Command(_trust, "review this project's extensions and choose whether to trust and load them"),
     "ext": Command(_ext, f"pick extensions to install, update or remove; {EXT_USAGE}"),
     "extensions": Command(_ext, f"pick extensions to install, update or remove; {EXT_USAGE}"),
@@ -373,7 +418,10 @@ def find_command(name: str, app: App) -> Command | None:
 def run_command(line: str, app: App) -> None:
     """Parse and run a ``/name args`` line.
 
-    Unknown commands and errors raised by a command are reported, not raised.
+    Built-in commands get the :class:`~minimal.core.app.App`; extension commands get
+    its :class:`~minimal.core.context.Context`. The interrupt flag is cleared first:
+    it may be left over from an interrupted turn. Unknown commands and errors
+    raised by a command are reported, not raised.
 
     Raises:
         ExitRepl: when the command asks to quit.
@@ -383,8 +431,9 @@ def run_command(line: str, app: App) -> None:
     if cmd is None:
         print(f"Unknown command: /{name}")
         return
+    app.cancelled.clear()
     try:
-        cmd.run(args.strip(), app)
+        cmd.run(args.strip(), app if cmd is BUILTIN_COMMANDS.get(name) else app.context)
     except ExitRepl:
         raise
     except Exception as e:

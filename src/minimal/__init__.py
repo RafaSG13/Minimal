@@ -12,3 +12,5 @@ Packages, from the bottom up; a package imports only from the ones above it in t
 
 Extensions import only from :mod:`minimal.api`.
 """
+
+__version__ = "0.2.0"

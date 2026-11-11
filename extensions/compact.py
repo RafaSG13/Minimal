@@ -4,9 +4,11 @@ Compacting asks the model for a summary of the conversation and continues in
 a new session holding that summary and the last exchange. The old session
 stays on disk untouched: ``/resume <id>`` brings the full history back.
 
-It runs by itself at the end of a turn whose context reached
-:data:`COMPACT_AT` tokens (providers that report no usage never trigger it),
-and on demand with ``/compact``.
+It runs by itself at the end of a turn whose context reached ``compact_at``
+tokens (providers that report no usage never trigger it), and on demand with
+``/compact``. Set the threshold in settings.json::
+
+    {"extensions": {"settings": {"compact": {"compact_at": 150000}}}}
 
 Load it on demand with ``minimal --ext extensions/compact.py``, or copy the
 file to ``~/.minimal/extensions/`` to always have it.
@@ -14,12 +16,11 @@ file to ``~/.minimal/extensions/`` to always have it.
 
 import sys
 
-from minimal.api import build_system_prompt, new_id, open_session, raise_if_cancelled, tool_specs
-
-__version__ = "1.0"
+__version__ = "2.0"
+__requires__ = ">=0.2"
 
 COMPACT_AT = 100_000
-"""Context tokens (input + output of the last reply) that trigger a compaction."""
+"""Default context tokens (input + output of the last reply) that trigger a compaction."""
 
 SUMMARY_REQUEST = (
     "Stop here and do not call any tools. Write a summary of this whole conversation that will replace it as your "
@@ -38,7 +39,7 @@ def _text(blocks):
 
 
 def compact(ctx):
-    """Summarise ``ctx.messages`` and switch ``ctx`` to a new session with the summary and the last exchange.
+    """Summarise ``ctx.messages`` and switch to a new session with the summary and the last exchange.
 
     The summary request sends the same system prompt, tools and history plus
     one message, so it reads the provider's prompt cache. Nothing changes
@@ -49,21 +50,15 @@ def compact(ctx):
 
     Raises:
         ValueError: if there is no finished exchange to compact, or the model returned no summary.
-        TurnInterrupted: if ``ctx.cancelled`` is set before the session is switched; nothing is saved or changed then.
+        TurnInterrupted: if the user interrupts before the session is switched; nothing is saved or changed then.
     """
     messages = ctx.messages
     asked = [i for i, m in enumerate(messages) if m["role"] == "user" and isinstance(m["content"], str)]
     if not asked or messages[-1]["role"] != "assistant":
         raise ValueError("nothing to compact")
 
-    raise_if_cancelled(ctx)
-    reply = ctx.provider.stream(
-        model=ctx.model,
-        system=build_system_prompt(ctx.registry, ctx.cwd),
-        messages=[*messages, {"role": "user", "content": SUMMARY_REQUEST}],
-        tools=tool_specs(ctx.registry),
-        on_text=lambda _chunk: raise_if_cancelled(ctx),
-    )
+    ctx.check_cancelled()
+    reply = ctx.complete([*messages, {"role": "user", "content": SUMMARY_REQUEST}], tools=True)
     summary = _text(reply.content)
     if not summary or any(block["type"] == "tool_use" for block in reply.content):
         raise ValueError("the model did not return a summary")
@@ -79,41 +74,30 @@ def compact(ctx):
             {"role": "assistant", "content": answer},
         ]
 
-    raise_if_cancelled(ctx)  # before anything is saved: the interrupted turn is dropped from history
-    old = ctx.session
-    old.save()
-    ctx.session = open_session(new_id())
-    ctx.messages.extend(kept)
-    ctx.session.save()
+    ctx.check_cancelled()  # before anything is saved: the interrupted turn is dropped from history
+    old = ctx.new_session(kept)
     return (
-        f"[compact] {len(messages)} messages summarised into session {ctx.session.id}; "
-        f"the full history stays in session {old.id}"
+        f"[compact] {len(messages)} messages summarised into session {ctx.session_id}; "
+        f"the full history stays in session {old}"
     )
-
-
-def _on_turn_end(event):
-    """Compact when the turn that just ended left the session's context at :data:`COMPACT_AT` tokens or more."""
-    ctx = event.get("ctx")
-    if ctx is None or event["messages"] is not getattr(ctx, "messages", None):
-        return  # not the session's own history: a subagent's loop, for example
-    usage = event["messages"][-1].get("usage")
-    if not usage or usage["input_tokens"] + usage["output_tokens"] < COMPACT_AT:
-        return
-    try:
-        print(compact(ctx))
-    except ValueError as e:
-        print(f"[compact] skipped: {e}", file=sys.stderr)
-
-
-def _compact_command(args, ctx):
-    ctx.cancelled.clear()  # a slash command has no Esc; the flag may be left over from an interrupted turn
-    print(compact(ctx))
 
 
 def register(minimal):
-    minimal.on("turn_end", _on_turn_end)
-    minimal.register_command(
-        "compact",
-        _compact_command,
-        description="summarise the conversation into a new session",
-    )
+    settings = minimal.declare_settings({"compact_at": COMPACT_AT})
+
+    @minimal.on("turn_end")
+    def compact_when_full(event):
+        """Compact when the turn that just ended left the session's context at ``compact_at`` tokens or more."""
+        if event["nested"]:
+            return  # not the session's own history: a subagent's loop
+        usage = event["messages"][-1].get("usage")
+        if not usage or usage["input_tokens"] + usage["output_tokens"] < settings["compact_at"]:
+            return
+        try:
+            print(compact(event["ctx"]))
+        except ValueError as e:
+            print(f"[compact] skipped: {e}", file=sys.stderr)
+
+    @minimal.command("compact", description="summarise the conversation into a new session")
+    def compact_command(args, ctx):
+        print(compact(ctx))

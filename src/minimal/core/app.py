@@ -1,8 +1,8 @@
 """Runtime state of a ``minimal`` process, and how one user turn is executed.
 
-:class:`App` is also the ``ctx`` object passed to tools, slash commands and
-widgets, so extensions can read ``ctx.cwd``, ``ctx.messages``,
-``ctx.provider_name``, ``ctx.model`` and ``ctx.registry``.
+:class:`App` is internal: extensions see it through :attr:`App.context`, the
+:class:`~minimal.core.context.Context` passed as ``ctx`` to their tools, slash
+commands, events and widgets. Built-in slash commands get the App itself.
 
 What the user sees goes through a :class:`Frontend`: the terminal UI's, or
 :class:`ConsoleFrontend` (plain stdout, the default of an :class:`App` built without one).
@@ -18,19 +18,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
 
+import minimal.core.context
+import minimal.extensions.facade
 import minimal.extensions.loader
-import minimal.extensions.registry
 from minimal import config
 from minimal.core.agent import run_agent
+from minimal.core.context import Context
+from minimal.core.permissions import Permissions
 from minimal.core.session import Session
 from minimal.extensions.loader import (
-    ProjectExtensions,
+    ProjectSnapshot,
     load_extensions,
     project_extensions_dir,
-    read_project_extensions,
+    read_project_snapshot,
 )
 from minimal.extensions.marketplace import register_marketplace_tools
-from minimal.extensions.registry import Registry
+from minimal.extensions.registry import Registry, Tool
 from minimal.providers import register_builtin_providers
 from minimal.providers.base import Provider
 from minimal.tools.builtin import register_builtin_tools
@@ -38,16 +41,18 @@ from minimal.tools.builtin import register_builtin_tools
 DEFAULT_PROMPT_FILE = Path(__file__).with_name("prompt.md")
 
 
-def base_prompt() -> str:
-    """The base prompt: ``config.PROMPT_FILE`` if it exists, else the ``prompt.md`` shipped in the package.
+def base_prompt(settings: config.Settings) -> str:
+    """The base prompt: the ``prompt.base`` file of ``settings`` if set, else the ``prompt.md`` shipped in the package.
 
     The user's file replaces the shipped one entirely; a blank file means no base prompt.
     It is read on every turn, so edits apply from the next one without ``/reload``.
 
     Raises:
-        ValueError: if the file cannot be read as UTF-8 text.
+        ValueError: if the configured file is missing or cannot be read as UTF-8 text.
     """
-    path = config.PROMPT_FILE if config.PROMPT_FILE.exists() else DEFAULT_PROMPT_FILE
+    path = settings.prompt_base or DEFAULT_PROMPT_FILE
+    if settings.prompt_base is not None and not path.exists():
+        raise ValueError(f"{path} (prompt.base) not found")
     try:
         return path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError) as e:
@@ -55,17 +60,22 @@ def base_prompt() -> str:
 
 
 SELF_EXTEND_PROMPT = (
-    "You can extend minimal, the harness you are running in. An extension is one Python file defining "
-    "register(minimal); minimal is the Registry (API and docstrings: {registry_path}). "
-    "Anything else an extension imports from minimal (run_agent, open_session, reload_summary, theme glyphs, …) "
-    "comes from minimal.api ({api_path}); never import other minimal modules, they move between releases. "
-    "Save new extensions to "
-    "{global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this project; themes, "
-    "tools and UI widgets go in the themes/, tools/ or widgets/ subfolder, as the marketplace groups them. "
-    "minimal.register_tool(name, run, description, input_schema, confirm) adds a tool run(input, ctx); "
-    "minimal.register_command(name, run, description, terminal=False) adds a slash command run(args, ctx); "
-    'minimal.register_provider(...) adds a model; minimal.on("tool_call"|"tool_result"|"turn_end", handler) hooks events; '
-    "minimal.append_system_prompt(text) adds instructions; minimal.register_widget(name, create, area) adds a visual "
+    "You can extend minimal, the harness you are running in. An extension is one Python file, or a folder with an "
+    "__init__.py (one extension that may hold helper modules), defining register(minimal); minimal is an Extension "
+    "(API and docstrings: {facade_path}) and every ctx is a Context ({context_path}). Import only from minimal.api; "
+    "never import other minimal modules, they move between releases. Start the file with a docstring (its first line "
+    'describes it), set __version__ = "1.0" and, as it uses this API, __requires__ = ">=0.2". '
+    "Save new extensions to {global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this "
+    "project; themes, tools and UI widgets go in the themes/, tools/ or widgets/ subfolder, as the marketplace groups "
+    "them. "
+    "@minimal.tool(description=..., input_schema=..., confirm=...) on run(input, ctx) adds a tool (name and "
+    "description default to the function's name and docstring); @minimal.command() on run(args, ctx) adds a slash "
+    'command; @minimal.on("tool_call"|"tool_result"|"turn_end") on handler(event) hooks events (event["ctx"] is the '
+    'Context; turn_end has event["nested"] for a subagent\'s loop); the same exist as minimal.register_tool, '
+    "register_command and on(event, handler). minimal.register_provider(...) adds a model; "
+    "minimal.append_system_prompt(text) adds instructions; settings = minimal.declare_settings({{...defaults}}) "
+    "declares settings the user sets under extensions.settings.<id> in ~/.minimal/settings.json (id is the name, or "
+    "category/name in a subfolder). minimal.register_widget(name, create, area) adds a visual "
     'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '
     "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn; "
     "an optional refresh_live(ctx, event) method is called live during a turn (event kind 'start', 'tool_call' or "
@@ -77,31 +87,44 @@ SELF_EXTEND_PROMPT = (
     "pixel art, aligned 'left', 'center' or 'right': art is a list of "
     "equal-length strings, one character per pixel (' ' or '.' transparent), two pixel rows per terminal row; colors "
     "maps every other character to #rrggbb or a theme variable such as $accent. "
+    "In ctx: ctx.ui.ask/choose/choose_many/ask_text question the user; ctx.complete(messages) makes one model "
+    "request and ctx.run_agent(prompt) runs a nested agent loop; ctx.new_session(messages) switches to a new session; "
+    "ctx.cancelled and ctx.check_cancelled() notice an interrupt. "
     "After writing or editing an extension, call reload_extensions and fix any reported errors. "
     "Share and reuse extensions with ext_search, ext_install and ext_publish."
 )
 
 
-def build_system_prompt(registry: Registry, cwd: str) -> str:
+def build_system_prompt(registry: Registry, cwd: str, settings: config.Settings) -> str:
     """Assemble the system prompt.
 
-    Parts, separated by blank lines: the base prompt (``~/.minimal/prompt.md`` or the
-    packaged default), the working directory and today's date, how to extend minimal,
-    ``AGENTS.md`` from ``cwd`` if present, and the paragraphs added by extensions.
+    Parts, separated by blank lines: the base prompt (:func:`base_prompt`), the
+    working directory and today's date, how to extend minimal, each existing
+    ``prompt.files`` file (default ``AGENTS.md``) resolved against ``cwd``, each
+    ``prompt.append`` text, and the paragraphs added by extensions.
+
+    Files listed by a project or local settings file must be inside ``cwd``:
+    a project cannot pull ``~/.ssh/id_rsa`` into the prompt.
     """
     parts = [
-        base_prompt(),
+        base_prompt(settings),
         f"Working directory: {cwd}\nDate: {datetime.now(timezone.utc).date().isoformat()}",
         SELF_EXTEND_PROMPT.format(
-            registry_path=Path(minimal.extensions.registry.__file__),
-            api_path=Path(minimal.__file__).parent / "api.py",
+            facade_path=Path(minimal.extensions.facade.__file__),
+            context_path=Path(minimal.core.context.__file__),
             global_dir=minimal.extensions.loader.GLOBAL_EXTENSIONS_DIR,
             project_dir=project_extensions_dir(cwd),
         ),
     ]
-    agents_md = Path(cwd, "AGENTS.md")
-    if agents_md.exists():
-        parts.append(f"Project instructions (AGENTS.md):\n{agents_md.read_text(encoding='utf-8')}")
+    files, scope = settings.prompt_files
+    root = Path(cwd).resolve()
+    for name in files:
+        path = (root / Path(name).expanduser()).resolve()
+        if scope in ("project", "local") and not path.is_relative_to(root):
+            continue
+        if path.is_file():
+            parts.append(f"Project instructions ({name}):\n{path.read_text(encoding='utf-8')}")
+    parts.extend(settings.prompt_append)
     parts.extend(registry.prompt_parts)
     return "\n\n".join(p for p in parts if p)
 
@@ -269,13 +292,15 @@ class App:
         session: Current session (``/new`` and ``/resume`` replace it).
         cwd: Working directory for tools and the system prompt.
         auto_approve: Run ``write``/``edit``/``bash`` without asking.
-        trust_project: Load the project's extensions without ``/trust`` (``--trust-project``).
+        trust_project: Apply the project's extensions and trust-gated settings without ``/trust`` (``--trust-project``).
         extra_extensions: ``--ext`` paths, loaded again on every reload.
         frontend: Where turns are shown and confirmations asked.
-        extensions: Extension files loaded by the last reload.
-        extension_errors: Failures of the last reload.
-        untrusted: The project's extensions skipped by the last reload because the user
-            has not trusted them (``/trust``); ``None`` if none.
+        extensions: Extensions loaded by the last reload.
+        extension_errors: Failures of the last reload, setting errors included.
+        settings: The settings read by the last reload, with project trust applied.
+        setting_errors: Problems found in the settings files by the last reload.
+        untrusted: What the last reload did not apply because the user has not
+            trusted the project (``/trust``); ``None`` if nothing.
         cancelled: Set to interrupt the turn in progress.
     """
 
@@ -302,11 +327,15 @@ class App:
         self.model = ""
         self.extensions: list[Path] = []
         self.extension_errors: list[str] = []
-        self.untrusted: ProjectExtensions | None = None
+        self.untrusted: ProjectSnapshot | None = None
         self.cancelled = threading.Event()
+        self.settings = config.Settings()
+        self.setting_errors: list[str] = []
+        self.context = Context(self)
+        self.permissions = Permissions(self.settings)
 
-    def is_trusted(self, project: ProjectExtensions) -> bool:
-        """Whether ``project`` may load: ``--trust-project``, or the user trusted exactly these files."""
+    def is_trusted(self, project: ProjectSnapshot) -> bool:
+        """Whether ``project`` may apply: ``--trust-project``, or the user trusted exactly this snapshot."""
         return self.trust_project or config.load_trusted().get(project.key) == project.digest
 
     def reload_extensions(self) -> tuple[list[Path], list[str]]:
@@ -316,33 +345,39 @@ class App:
         tools on its next model request. The current provider instance keeps
         working even if its spec is gone.
 
-        The project's extensions (``<cwd>/.minimal/extensions``) load only if the
-        user trusted exactly those files (:meth:`is_trusted`). Otherwise they are
+        The project's extensions (``<cwd>/.minimal/extensions``) and its trust-gated
+        settings (``permissions.allow``, ``extensions.settings``) apply only if the
+        user trusted exactly that snapshot (:meth:`is_trusted`). Otherwise they are
         skipped without asking and recorded in :attr:`untrusted`; that is not an
         error. The files are read once: that snapshot is what is hashed and run.
 
         Returns:
-            ``(loaded, errors)`` as from :func:`~minimal.extensions.loader.load_extensions`.
+            ``(loaded, errors)`` as from :func:`~minimal.extensions.loader.load_extensions`,
+            followed by the settings files' errors.
         """
-        project, untrusted, read_error = (), None, None
+        layers, setting_errors = config.read_layers(self.cwd)
+        risky = config.risky_subset(layers)
+        read_error = None
         try:
-            snapshot = read_project_extensions(self.cwd)
+            snapshot = read_project_snapshot(self.cwd, risky)
+            trusted = snapshot is None or self.is_trusted(snapshot)
         except OSError as e:
-            snapshot = None
+            snapshot, trusted = None, False
             read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
-        if snapshot is not None:
-            if self.is_trusted(snapshot):
-                project = snapshot.sources
-            else:
-                untrusted = snapshot
+        self.settings = config.Settings(tuple(layers), trusted)
+        self.permissions = Permissions(self.settings)
+        self.setting_errors = setting_errors
         self.registry.reset()
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         register_marketplace_tools(self.registry)
-        loaded, errors = load_extensions(self.registry, self.cwd, self.extra_extensions, project=project)
+        project = snapshot.sources if snapshot is not None and trusted else ()
+        loaded, errors = load_extensions(self.registry, self.cwd, self.settings, self.extra_extensions, project=project)
         if read_error:
             errors.append(read_error)
-        self.extensions, self.extension_errors, self.untrusted = loaded, errors, untrusted
+        errors.extend(setting_errors)
+        self.extensions, self.extension_errors = loaded, errors
+        self.untrusted = snapshot if snapshot is not None and not trusted else None
         self.frontend.reloaded()
         return loaded, errors
 
@@ -351,8 +386,8 @@ class App:
         if self.untrusted is None:
             return None
         return (
-            f"{len(self.untrusted.sources)} project extension(s) in {self.untrusted.directory} are not trusted, "
-            "so they were not loaded; run /trust to review them"
+            f"{self.untrusted.count} project extension(s) and/or settings in {self.untrusted.directory.parent} are not "
+            "trusted, so they were not applied; run /trust to review them"
         )
 
     def use_provider(self, name: str, model: str | None = None) -> None:
@@ -395,6 +430,18 @@ class App:
         detail = inp.get("command") if name == "bash" else (inp.get("path") or json.dumps(inp))
         return self.frontend.ask(f"Allow {name}: {detail}?")
 
+    def permit(self, tool: Tool, input: dict) -> bool:
+        """Whether the permission rules let ``tool`` run with ``input`` without asking.
+
+        Raises:
+            PermissionDenied: if a deny rule matches (even with ``-y``).
+        """
+        return self.permissions.check(tool, input, self.cwd)
+
+    def system_prompt(self) -> str:
+        """The system prompt of the next turn (:func:`build_system_prompt`)."""
+        return build_system_prompt(self.registry, self.cwd, self.settings)
+
     def run_turn(self, text: str) -> None:
         """Send ``text`` to the model, stream the answer to the frontend and save the session.
 
@@ -410,13 +457,16 @@ class App:
             run_agent(
                 provider=self.provider,
                 model=self.model,
-                system=build_system_prompt(self.registry, self.cwd),
+                system=self.system_prompt(),
                 messages=self.messages,
                 registry=self.registry,
-                ctx=self,
+                ctx=self.context,
                 on_text=self.frontend.text,
                 on_tool=self.frontend.tool_call,
                 on_tool_result=self.frontend.tool_result,
+                confirm=self.confirm,
+                cancelled=self.cancelled,
+                permit=self.permit,
             )
         except KeyboardInterrupt:
             del self.messages[before:]

@@ -5,7 +5,6 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,7 @@ from textual.content import Content
 from textual.highlight import highlight
 from textual.widgets import Static
 
+import minimal
 from minimal.core.app import App
 from minimal.extensions.registry import LOGO_ALIGN, LogoSpec
 from minimal.ui.tui import theme
@@ -37,10 +37,7 @@ TAGLINE = "bare by default. yours by config."
 
 
 def _version() -> str:
-    try:
-        return version("minimal")
-    except PackageNotFoundError:
-        return ""
+    return minimal.__version__
 
 
 # --- tool calls ----------------------------------------------------------------

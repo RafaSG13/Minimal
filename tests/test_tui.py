@@ -70,9 +70,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global"),
+            mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         Counter.calls = 0
         self.core = App(
             registry=Registry(), session=Session("t", self.tmp / "t.jsonl"), cwd=str(self.tmp), auto_approve=False
@@ -306,7 +309,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_checklist_dialog(self):
         options = [("a", "A", True), ("b", "B", False)]
-        self.core.registry.register_command("pick", lambda args, app: print(app.frontend.choose_many("Pick", options)))
+        self.core.registry.register_command("pick", lambda args, ctx: print(ctx.ui.choose_many("Pick", options)))
         app = MinimalTui(self.core)
         async with app.run_test() as pilot:
             await self.submit(pilot, "/pick")
@@ -318,7 +321,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("['a', 'b']" in o for o in self.outputs(app)), self.outputs(app))
 
     async def test_text_dialog_does_not_send_message(self):
-        self.core.registry.register_command("name", lambda args, app: print(repr(app.frontend.ask_text("Name"))))
+        self.core.registry.register_command("name", lambda args, ctx: print(repr(ctx.ui.ask_text("Name"))))
         app = MinimalTui(self.core)
         async with app.run_test() as pilot:
             await self.submit(pilot, "/name")

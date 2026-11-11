@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from minimal.extensions.loader import reload_summary
 from minimal.extensions.registry import Tool
 
 
 def reload_extensions(input: dict, ctx: Any) -> str:
-    """Reload every extension; raise with the summary if any failed, so the model sees the errors."""
-    loaded, errors = ctx.reload_extensions()
-    summary = reload_summary(loaded, errors, ctx.untrusted_notice())
-    if errors:
+    """Reload every extension; raise with the summary if any failed, so the model sees the errors as an error."""
+    summary = ctx.reload()
+    if "\nFailed: " in summary:  # reload_summary's line per error
         raise RuntimeError(summary)
     return summary
 

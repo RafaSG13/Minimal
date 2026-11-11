@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
@@ -42,6 +41,7 @@ class TempDirTest(unittest.TestCase):
                 loader, "GLOBAL_EXTENSIONS_DIR", self.home / "extensions"
             ),
             mock.patch.object(config, "TRUST_FILE", self.home / "trusted.json"),
+            mock.patch.object(config, "SETTINGS_FILE", self.home / "settings.json"),
             mock.patch.object(config, "KEYS_FILE", self.home / "keys.json"),
             mock.patch.object(session_mod, "SESSIONS_DIR", self.home / "sessions"),
             mock.patch.dict(os.environ),
@@ -251,12 +251,12 @@ class ToolTest(TempDirTest):
         self.registry = Registry()
         register_builtin_tools(self.registry)
         self.confirm = mock.Mock(return_value=False)
-        self.ctx = SimpleNamespace(cwd=str(self.cwd), confirm=self.confirm)
+        self.ctx = SimpleNamespace(cwd=str(self.cwd), cancelled=False)
 
     def call(self, name, **input):
         with contextlib.redirect_stderr(io.StringIO()):
             return execute_tool_call(
-                {"id": "t", "name": name, "input": input}, self.registry, self.ctx
+                {"id": "t", "name": name, "input": input}, self.registry, self.ctx, confirm=self.confirm
             )
 
     def run_tool(self, name, **input):
@@ -523,9 +523,8 @@ class ReadTest(ToolTest):
 class GrepTest(ToolTest):
     def test_grep_stops_when_the_turn_is_interrupted(self):
         (self.cwd / "a.txt").write_text("foo\n")
-        self.ctx.cancelled = threading.Event()
         self.assertEqual(self.run_tool("grep", pattern="foo"), "a.txt:1:foo")
-        self.ctx.cancelled.set()
+        self.ctx.cancelled = True
         with self.assertRaises(TurnInterrupted):
             self.run_tool("grep", pattern="foo")
 
@@ -538,10 +537,9 @@ class GrepTest(ToolTest):
 class BashCaptureTest(ToolTest):
     def test_output_kept_is_bounded(self):
         out = self.run_tool("bash", command="head -c 3000000 /dev/zero | tr '\\0' a")
-        # 1 000 000 captured bytes + "\n[exit 0]" - 20 000 shown; without the cap it would be 2 980 009
-        self.assertEqual(
-            out, "a" * 20_000 + "\n... [truncated: 980009 more characters]"
-        )
+        # 1 000 000 captured bytes + "\n[exit 0]"; without the cap it would be 3 000 009. The agent loop clips it.
+        self.assertEqual(out, "a" * 1_000_000 + "\n[exit 0]")
+        self.assertEqual(clip(out), "a" * 20_000 + "\n... [truncated: 980009 more characters]")
 
     def test_background_child_holding_the_pipe_runs_into_the_timeout(self):
         start = time.monotonic()

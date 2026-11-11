@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -354,7 +355,7 @@ class MinimalTui(TextualApp):
         self.status_errors.clear()
         for spec in list(self.core.registry.widgets.values()):
             try:
-                widget = spec.create(self.core)
+                widget = spec.create(self.core.context)
                 await self.query_one(f"#{spec.area}").mount(widget)
                 self.ext_widgets.append((spec.name, widget))
             except Exception as e:
@@ -377,12 +378,12 @@ class MinimalTui(TextualApp):
                 self.show_error(f"[extension] widget {name}: {e}")
 
     def refresh_widgets(self) -> None:
-        """Call ``refresh_state(core)`` on every extension widget that has it."""
-        self._call_widgets("refresh_state", self.core)
+        """Call ``refresh_state(ctx)`` on every extension widget that has it."""
+        self._call_widgets("refresh_state", self.core.context)
 
     def refresh_live(self, event: dict) -> None:
-        """Call ``refresh_live(core, event)`` on every extension widget that has it, then redraw the status line."""
-        self._call_widgets("refresh_live", self.core, event)
+        """Call ``refresh_live(ctx, event)`` on every extension widget that has it, then redraw the status line."""
+        self._call_widgets("refresh_live", self.core.context, event)
         self._render_status()
 
     def action_toggle_sidebar(self) -> None:
@@ -417,7 +418,7 @@ class MinimalTui(TextualApp):
             if spec.side != side:
                 continue
             try:
-                value = spec.render(self.core)
+                value = spec.render(self.core.context)
             except Exception as e:
                 if spec.name not in self.status_errors:
                     self.status_errors.add(spec.name)
@@ -451,7 +452,7 @@ class MinimalTui(TextualApp):
             right = f"{tokens / 1000:.1f}k ctx{theme.DOT}{right}"
         untrusted = []
         if core.untrusted is not None:
-            untrusted.append(Content.assemble((f"{theme.WARNING} {len(core.untrusted.sources)} untrusted", "$warning")))
+            untrusted.append(Content.assemble((f"{theme.WARNING} {core.untrusted.count} untrusted", "$warning")))
         self.query_one("#status-right", Static).update(
             Content(theme.DOT).join([*self._status_segments("right"), *untrusted, Content(right)])
         )
@@ -544,9 +545,12 @@ class MinimalTui(TextualApp):
 
 
 def run_tui(core: App) -> None:
-    """Run the terminal UI until the user quits; remember the theme picked with /theme or ctrl+p."""
-    tui = MinimalTui(core, config.load_theme())
+    """Run the terminal UI until the user quits; remember the theme picked with /theme or ctrl+p in ~/.minimal/settings.json."""
+    tui = MinimalTui(core, core.settings.theme)
     started = tui.theme
     tui.run()
     if tui.theme != started:
-        config.save_theme(tui.theme)
+        try:
+            config.update_global({"theme": tui.theme})
+        except (OSError, ValueError) as e:
+            print(f"Theme not saved: {e}", file=sys.stderr)

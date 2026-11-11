@@ -8,12 +8,15 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from minimal import config
 from minimal.core.app import App
 from minimal.core.session import last_session, new_id, open_session
+from minimal.extensions import marketplace
 from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth
+from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import setup
 
 HELP = """minimal — minimal, extensible coding-agent harness
@@ -23,17 +26,26 @@ Usage:
   minimal --setup              choose the default provider, sign in or enter its key, choose the model
   minimal --login              sign in with a Claude Pro/Max subscription (browser)
   minimal --logout             forget the Claude login
+  minimal ext check <path>...  validate extension files, package folders or a marketplace checkout
+                               (exit status 1 if any fails; runs without a terminal or a provider)
 
 Options:
   -c, --continue        resume the last session
   -s, --session <id>    open (or create) a specific session
   --provider <name>     model integration: anthropic, claude, gemini, openai, or one added by an extension
-                        (default $MINIMAL_PROVIDER, else the one chosen in setup)
-  -m, --model <name>    model (default $MINIMAL_MODEL, else the one chosen in setup, else the provider's default)
+                        (default $MINIMAL_PROVIDER, else the settings' provider)
+  -m, --model <name>    model (default $MINIMAL_MODEL, else the settings' model, else the provider's default)
   -e, --ext <path>      load an extension file or folder (repeatable)
   -y, --yes             do not ask for confirmation for write/edit/bash
-  --trust-project       load this project's .minimal/extensions without /trust
+  --trust-project       apply this project's extensions and trust-gated settings without /trust
   -h, --help            this help
+
+Settings:
+  ~/.minimal/settings.json         global: provider, model, theme, prompt, permissions, extensions, marketplaces
+                                   (setup, /theme and /ext save there)
+  .minimal/settings.json           this project's settings, shared with it
+  .minimal/settings.local.json     this project's personal settings; both beat the global file
+                                   (/settings shows the files and where each value comes from)
 
 Environment:
   ANTHROPIC_API_KEY             for --provider anthropic
@@ -49,9 +61,17 @@ Environment:
 
 def main() -> None:
     """Entry point of the ``minimal`` command."""
+    if sys.argv[1:2] == ["ext"]:
+        ext_cli(sys.argv[2:])
     opts = parse_args(sys.argv[1:])
     if opts is None:
         return
+    try:
+        moved = config.migrate_legacy()
+    except OSError as e:
+        moved = f"Could not move the old settings files into ~/.minimal/settings.json: {e}"
+    if moved:
+        print(moved, file=sys.stderr)
     if opts.login or opts.logout:
         try:
             if opts.logout:
@@ -105,24 +125,40 @@ def main() -> None:
 
     run_tui(app)
 
+def ext_cli(args: list[str]) -> None:
+    """``minimal ext check <path>...``: print one line per extension checked and exit 0, or 1 if any failed."""
+    if len(args) < 2 or args[0] != "check":
+        print("usage: minimal ext check <path>...", file=sys.stderr)
+        sys.exit(2)
+
+    def make_registry() -> Registry:
+        registry = Registry()
+        register_builtin_tools(registry)  # extensions may wrap a built-in tool at register time
+        return registry
+
+    lines, ok = marketplace.check([Path(p) for p in args[1:]], make_registry)
+    print("\n".join(lines))
+    sys.exit(0 if ok else 1)
+
+
 
 def start_provider(app: App, opts: argparse.Namespace) -> None:
-    """Start the provider: ``--provider``, else ``$MINIMAL_PROVIDER``, else the one saved by setup.
+    """Start the provider: ``--provider``, else ``$MINIMAL_PROVIDER``, else the settings' provider.
 
-    Setup runs first with ``--setup``, when nothing is saved yet, or when the
-    saved provider cannot start (for example after ``minimal --logout``).
+    Setup runs first with ``--setup``, when no settings file names a provider, or when
+    that provider cannot start (for example after ``minimal --logout``).
     Without a terminal, those cases are errors instead.
     """
     model = opts.model or os.environ.get("MINIMAL_MODEL")
-    saved = None if opts.setup else config.load_config()
     explicit = opts.provider or os.environ.get("MINIMAL_PROVIDER")
     if explicit and not opts.setup:
-        same = saved is not None and saved["provider"] == explicit
-        app.use_provider(explicit, model or (saved["model"] if same else None))
+        same = app.settings.provider == explicit
+        app.use_provider(explicit, model or (app.settings.model if same else None))
         return
+    saved = None if opts.setup else app.settings.provider
     if saved is not None:
         try:
-            app.use_provider(saved["provider"], model or saved["model"])
+            app.use_provider(saved, model or app.settings.model)
             return
         except ValueError as e:
             if not setup.can_run():
