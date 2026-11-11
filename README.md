@@ -21,6 +21,20 @@
 
 Use Claude through an API key or a Pro/Max subscription, Gemini through the free tier, or any OpenAI-compatible server (OpenAI, OpenRouter, Ollama, LM Studio) — and switch providers mid-conversation without losing history. More model integrations are one class away.
 
+<p align="center">
+  <a href="assets/screenshots/bare.svg"><img src="assets/screenshots/bare.svg" alt="minimal with nothing installed: default theme and text header" width="100%"></a>
+  <br><sub><b>Bare by default</b> — a fresh install, no extensions</sub>
+</p>
+
+<table>
+<tr>
+<td width="33%" align="center"><a href="assets/screenshots/custom-theme.svg"><img src="assets/screenshots/custom-theme.svg" alt="minimal with a custom theme and sidebar" width="100%"></a><br><sub>Colour theme + sidebar</sub></td>
+<td width="33%" align="center"><a href="assets/screenshots/custom-bulbasaur.svg"><img src="assets/screenshots/custom-bulbasaur.svg" alt="minimal with a Bulbasaur pixel-art logo and a context gauge" width="100%"></a><br><sub>Pixel-art logo + context gauge</sub></td>
+<td width="33%" align="center"><a href="assets/screenshots/custom-coffee.svg"><img src="assets/screenshots/custom-coffee.svg" alt="minimal with a coffee-cup logo, command menu and files sidebar" width="100%"></a><br><sub>Command menu + files panel</sub></td>
+</tr>
+</table>
+<p align="center"><sub><b>Yours by config</b> — every look above is an extension, written by the model or installed from the marketplace</sub></p>
+
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Textual UI with a welcome header, Markdown replies, tool-call blocks coloured by state (running, done, failed), live diffs for edits, a confirm dialog, a command palette (<code>Ctrl+P</code>), <code>Esc</code> to interrupt a turn, and a status line with model, provider, directory, git branch and context size.</td></tr>
 <tr><td><b>Provider-neutral history</b></td><td>One canonical message format shaped like the Anthropic Messages API. Each provider converts it on every request, so any session can be resumed with any provider, and <code>/provider</code> switches mid-conversation.</td></tr>
