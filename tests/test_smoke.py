@@ -175,6 +175,30 @@ class SmokeTest(unittest.TestCase):
             )
         self.assertEqual(len(messages), 1)
 
+    def test_agent_loop_answers_a_tool_call_cut_off_by_max_tokens(self):
+        ran = []
+        self.registry.on("tool_call", ran.append)
+        cut = Reply(
+            content=[{"type": "tool_use", "id": "t1", "name": "now", "input": {}}],
+            stop_reason="max_tokens",
+        )
+        provider = FakeProvider([cut, Reply(content=[{"type": "text", "text": "split"}], stop_reason="end_turn")])
+        messages = [{"role": "user", "content": "go"}]
+        run_agent(provider=provider, model="m", system="s", messages=messages, registry=self.registry, ctx=self.ctx)
+        self.assertEqual(ran, [])  # a call cut off mid-way may have partial input: it is not run
+        result = messages[2]["content"][0]
+        self.assertEqual((result["type"], result["tool_use_id"], result["is_error"]), ("tool_result", "t1", True))
+        self.assertIn("output token limit", result["content"])
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "user", "assistant"])
+
+    def test_agent_loop_ends_on_max_tokens_without_tool_calls(self):
+        cut = Reply(content=[{"type": "text", "text": "long answ"}], stop_reason="max_tokens")
+        messages = [{"role": "user", "content": "go"}]
+        run_agent(  # FakeProvider([cut]) would raise IndexError on a second request
+            provider=FakeProvider([cut]), model="m", system="s", messages=messages, registry=self.registry, ctx=self.ctx
+        )
+        self.assertEqual(len(messages), 2)
+
     def test_session_round_trip(self):
         with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
             s = session_mod.open_session("x")

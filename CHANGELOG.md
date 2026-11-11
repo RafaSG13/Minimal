@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A reply cut off by the output token limit (`stop_reason == "max_tokens"`) in the middle of a tool call no longer
+  ends the turn with a `tool_use` that has no `tool_result`, which made every later request fail. The agent loop
+  does not run the possibly incomplete calls; it answers each with an error asking for smaller steps and continues.
+
 ## 0.2.0
 
 ### Breaking

@@ -6,7 +6,9 @@ One call to :func:`run_agent` handles one user turn:
 2. Append the reply to ``messages`` as an ``assistant`` message.
 3. If the reply contains no tool calls, fire ``turn_end`` and return it.
 4. Otherwise run each call (see :func:`execute_tool_call`), append the results
-   as a ``user`` message and go back to step 1.
+   as a ``user`` message and go back to step 1. If the reply was cut off by the
+   output token limit, its calls may be incomplete: none runs, each is answered
+   with an error asking for smaller steps, and the loop goes on.
 
 The loop only sees the canonical message format described in
 :mod:`minimal.providers.base`; each provider translates to and from its own API.
@@ -25,6 +27,12 @@ from minimal.tools.common import clip
 
 USER_DENIED = "the user denied the execution"
 """Error of a tool call the user refused (the model sees ``"Error: " + USER_DENIED``)."""
+
+TRUNCATED = (
+    "this call was not run: the reply was cut off by the output token limit before it was complete. "
+    "Try again with smaller steps (for example, write a large file in several parts)."
+)
+"""Error of a tool call the model's output limit cut off (the model sees ``"Error: " + TRUNCATED``)."""
 
 Confirm = Callable[[dict], bool]
 """Asks whether a ``tool_use`` call may run."""
@@ -103,9 +111,18 @@ def run_agent(
         messages.append(_assistant_message(provider, reply))
 
         calls = [block for block in reply.content if block["type"] == "tool_use"]
-        if reply.stop_reason != "tool_use" or not calls:
+        if not calls or reply.stop_reason not in ("tool_use", "max_tokens"):
             registry.emit("turn_end", {"messages": messages, "ctx": ctx, "nested": nested})
             return reply
+
+        if reply.stop_reason == "max_tokens":
+            # Every tool_use needs its tool_result or the next request is invalid, and the last call is incomplete.
+            results = [
+                {"type": "tool_result", "tool_use_id": call["id"], "content": "Error: " + TRUNCATED, "is_error": True}
+                for call in calls
+            ]
+            messages.append({"role": "user", "content": results})
+            continue
 
         results = []
         for call in calls:
