@@ -1,0 +1,30 @@
+CHANGELOG.md
+  h_e81853c41416fb 28-34
+README.md
+  h_e81853c41416fb 233
+src/minimal/cli.py
+  h_e81853c41416fb 15,96-97
+src/minimal/core/session.py
+  h_e81853c41416fb 7-8,31-33,60-61,69,72-75,78-81,102-104,115-133
+src/minimal/providers/gemini.py
+  h_e81853c41416fb 152-153,184-189,241-243
+src/minimal/providers/openai.py
+  h_e81853c41416fb 122-124,155,159-162,164,167,169-170
+src/minimal/ui/commands.py
+  h_e81853c41416fb 20,87-88
+tests/test_providers.py
+  h_e81853c41416fb 115-131,230-245
+tests/test_smoke.py
+  h_e81853c41416fb 214-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "56350e474c43d42e259956790e50086f5ba1de3b",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
