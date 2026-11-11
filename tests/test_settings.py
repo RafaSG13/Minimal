@@ -25,18 +25,11 @@ class SettingsTest(unittest.TestCase):
         self.home.mkdir()
         self.cwd = Path(tmp.name, "project")
         (self.cwd / ".minimal").mkdir(parents=True)
-        legacy = {
-            "config": self.home / "config.json",
-            "theme": self.home / "theme.json",
-            "marketplaces": self.home / "marketplaces.json",
-            "prompt": self.home / "prompt.md",
-        }
         for patcher in (
             mock.patch.object(config, "HOME_DIR", self.home),
             mock.patch.object(config, "SETTINGS_FILE", self.home / "settings.json"),
             mock.patch.object(config, "KEYS_FILE", self.home / "keys.json"),
             mock.patch.object(config, "TRUST_FILE", self.home / "trusted.json"),
-            mock.patch.object(config, "LEGACY_FILES", legacy),
             mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.home / "extensions"),
             mock.patch.dict(os.environ),
         ):
@@ -149,36 +142,6 @@ class SettingsTest(unittest.TestCase):
         ext.write_text("def register(minimal):\n    pass\n")
         self.write("project", {"model": "a"})
         self.assertEqual(self.snapshot_digest(), loader.files_digest(loader.read_extensions([ext])))
-
-    def test_migrate_legacy_moves_old_files(self):
-        legacy = config.LEGACY_FILES
-        legacy["config"].write_text(json.dumps({"provider": "gemini", "model": "x"}))
-        legacy["theme"].write_text(json.dumps({"theme": "dracula"}))
-        legacy["marketplaces"].write_text(json.dumps({"marketplaces": ["/m"]}))
-        legacy["prompt"].write_text("Be brief.")
-        message = config.migrate_legacy()
-        self.assertIn("config.json, theme.json, marketplaces.json", message)
-        self.assertEqual(
-            json.loads(config.SETTINGS_FILE.read_text()),
-            {
-                "provider": "gemini",
-                "model": "x",
-                "theme": "dracula",
-                "marketplaces": ["/m"],
-                "prompt": {"base": "~/.minimal/prompt.md"},
-            },
-        )
-        self.assertEqual([p.name for p in legacy.values() if p.exists()], ["prompt.md"])
-        self.assertIsNone(config.migrate_legacy())  # the settings file exists now
-
-    def test_migrate_legacy_leaves_unreadable_file(self):
-        config.LEGACY_FILES["config"].write_text("{broken")
-        config.LEGACY_FILES["theme"].write_text(json.dumps({"theme": "dracula"}))
-        message = config.migrate_legacy()
-        self.assertIn("Moved theme.json", message)
-        self.assertIn("left config.json in place", message)
-        self.assertTrue(config.LEGACY_FILES["config"].exists())
-        self.assertEqual(json.loads(config.SETTINGS_FILE.read_text()), {"theme": "dracula"})
 
     def test_project_prompt_files_stay_inside_the_project(self):
         Path(self.cwd.parent, "outside.md").write_text("SECRET")

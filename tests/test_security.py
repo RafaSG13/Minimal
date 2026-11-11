@@ -43,7 +43,6 @@ class TempDirTest(unittest.TestCase):
             mock.patch.object(config, "TRUST_FILE", self.home / "trusted.json"),
             mock.patch.object(config, "SETTINGS_FILE", self.home / "settings.json"),
             mock.patch.object(config, "KEYS_FILE", self.home / "keys.json"),
-            mock.patch.object(config, "LEGACY_FILES", {k: self.home / p.name for k, p in config.LEGACY_FILES.items()}),
             mock.patch.object(session_mod, "SESSIONS_DIR", self.home / "sessions"),
             mock.patch.dict(os.environ),
             mock.patch.object(config, "_injected_keys", set()),

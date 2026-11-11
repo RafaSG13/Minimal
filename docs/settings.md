@@ -81,19 +81,6 @@ A `bash` allow rule never matches a command containing `;`, `&`, `|`, `` ` ``, `
 
 prints each file with its scope (or `(not found)`), then one line per effective value, `key  value  (scope)`; lists get one line per item and `extensions.settings` one line per extension id. Trust-gated values that do not apply yet end with `(not trusted: /trust)`. The last reload's settings errors come last.
 
-## Migrating from 0.1
-
-0.1 kept its settings in separate files. On the first start of 0.2, if `~/.minimal/settings.json` does not exist, they are moved into it once:
-
-| 0.1 file                          | Becomes                                       |
-| --------------------------------- | --------------------------------------------- |
-| `~/.minimal/config.json`          | `provider`, `model` (file deleted)             |
-| `~/.minimal/theme.json`           | `theme` (file deleted)                         |
-| `~/.minimal/marketplaces.json`    | `marketplaces` (file deleted)                  |
-| `~/.minimal/prompt.md`            | kept, and set as `prompt.base`: `"~/.minimal/prompt.md"` |
-
-minimal prints what it moved. A file it cannot read is left in place and reported.
-
 ## Examples
 
 `~/.minimal/settings.json`:
