@@ -1,4 +1,4 @@
-"""Settings saved by setup (:mod:`minimal.setup`) in ``~/.minimal``.
+"""Settings saved by setup (:mod:`minimal.ui.setup`) in ``~/.minimal``.
 
 - ``config.json``: the default provider and model.
 - ``keys.json`` (mode 0600): API keys entered during setup, stored under their
@@ -9,8 +9,8 @@
   picker (git URLs or local paths), as ``{"marketplaces": [...]}``.
 - ``theme.json``: the terminal UI's colour theme, as ``{"theme": name}``.
 - ``trusted.json``: project extension folders the user agreed to run, as
-  ``{"projects": {folder: digest}}`` (see :func:`minimal.extensions.files_digest`).
-- ``prompt.md``: optional Markdown text that replaces the packaged base prompt (see :func:`minimal.app.base_prompt`).
+  ``{"projects": {folder: digest}}`` (see :func:`minimal.extensions.loader.files_digest`).
+- ``prompt.md``: optional Markdown text that replaces the packaged base prompt (see :func:`minimal.core.app.base_prompt`).
 """
 
 from __future__ import annotations

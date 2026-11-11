@@ -15,9 +15,9 @@ import questionary
 from questionary import Choice
 
 from minimal import config
+from minimal.extensions.registry import Registry
 from minimal.providers import claude, claude_auth
 from minimal.providers.base import ProviderSpec
-from minimal.registry import Registry
 
 
 def can_run() -> bool:

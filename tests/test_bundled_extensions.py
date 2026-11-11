@@ -10,14 +10,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from minimal import extensions
-from minimal import session as session_mod
-from minimal.app import App
-from minimal.commands import run_command
-from minimal.extensions import load_extensions
+from minimal.core import session as session_mod
+from minimal.core.app import App
+from minimal.core.session import Session
+from minimal.extensions import loader
+from minimal.extensions.loader import load_extensions
+from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply, Usage
-from minimal.registry import Registry
-from minimal.session import Session
+from minimal.ui.commands import run_command
 
 BUNDLED = Path(__file__).resolve().parent.parent / "extensions"
 
@@ -65,7 +65,7 @@ class BundledExtensionTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patcher = mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
+        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
         patcher.start()
         self.addCleanup(patcher.stop)
 

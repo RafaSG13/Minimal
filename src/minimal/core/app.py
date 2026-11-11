@@ -18,22 +18,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
 
-import minimal.extensions
-import minimal.registry
+import minimal.extensions.loader
+import minimal.extensions.registry
 from minimal import config
-from minimal.agent import run_agent
-from minimal.extensions import (
+from minimal.core.agent import run_agent
+from minimal.core.session import Session
+from minimal.extensions.loader import (
     ProjectExtensions,
     load_extensions,
     project_extensions_dir,
     read_project_extensions,
 )
-from minimal.marketplace import register_marketplace_tools
+from minimal.extensions.marketplace import register_marketplace_tools
+from minimal.extensions.registry import Registry
 from minimal.providers import register_builtin_providers
 from minimal.providers.base import Provider
-from minimal.registry import Registry
-from minimal.session import Session
-from minimal.tools import register_builtin_tools
+from minimal.tools.builtin import register_builtin_tools
 
 DEFAULT_PROMPT_FILE = Path(__file__).with_name("prompt.md")
 
@@ -56,7 +56,10 @@ def base_prompt() -> str:
 
 SELF_EXTEND_PROMPT = (
     "You can extend minimal, the harness you are running in. An extension is one Python file defining "
-    "register(minimal); minimal is the Registry (API and docstrings: {registry_path}). Save new extensions to "
+    "register(minimal); minimal is the Registry (API and docstrings: {registry_path}). "
+    "Anything else an extension imports from minimal (run_agent, open_session, reload_summary, theme glyphs, …) "
+    "comes from minimal.api ({api_path}); never import other minimal modules, they move between releases. "
+    "Save new extensions to "
     "{global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this project; themes, "
     "tools and UI widgets go in the themes/, tools/ or widgets/ subfolder, as the marketplace groups them. "
     "minimal.register_tool(name, run, description, input_schema, confirm) adds a tool run(input, ctx); "
@@ -90,8 +93,9 @@ def build_system_prompt(registry: Registry, cwd: str) -> str:
         base_prompt(),
         f"Working directory: {cwd}\nDate: {datetime.now(timezone.utc).date().isoformat()}",
         SELF_EXTEND_PROMPT.format(
-            registry_path=Path(minimal.registry.__file__),
-            global_dir=minimal.extensions.GLOBAL_EXTENSIONS_DIR,
+            registry_path=Path(minimal.extensions.registry.__file__),
+            api_path=Path(minimal.__file__).parent / "api.py",
+            global_dir=minimal.extensions.loader.GLOBAL_EXTENSIONS_DIR,
             project_dir=project_extensions_dir(cwd),
         ),
     ]
@@ -101,19 +105,6 @@ def build_system_prompt(registry: Registry, cwd: str) -> str:
     parts.extend(registry.prompt_parts)
     return "\n\n".join(p for p in parts if p)
 
-
-def reload_summary(loaded: list[Path], errors: list[str], notice: str | None) -> str:
-    """Describe the result of :meth:`App.reload_extensions` for the user or the model.
-
-    ``notice`` is :meth:`App.untrusted_notice`, added as a ``Not loaded:`` line when set.
-    """
-    summary = f"Loaded {len(loaded)} extension(s)"
-    if loaded:
-        summary += ": " + ", ".join(p.name for p in loaded)
-    summary += "".join(f"\nFailed: {e}" for e in errors)
-    if notice:
-        summary += f"\nNot loaded: {notice}"
-    return summary
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -331,7 +322,7 @@ class App:
         error. The files are read once: that snapshot is what is hashed and run.
 
         Returns:
-            ``(loaded, errors)`` as from :func:`~minimal.extensions.load_extensions`.
+            ``(loaded, errors)`` as from :func:`~minimal.extensions.loader.load_extensions`.
         """
         project, untrusted, read_error = (), None, None
         try:

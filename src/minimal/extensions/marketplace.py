@@ -1,6 +1,6 @@
 """The extension marketplace: a git repository of shareable extensions.
 
-Layout of the repository: one folder per category (:data:`~minimal.extensions.CATEGORIES`):
+Layout of the repository: one folder per category (:data:`~minimal.extensions.loader.CATEGORIES`):
 ``extensions/`` (general), ``themes/`` (colour themes), ``tools/`` (tools for the
 model) and ``widgets/`` (terminal UI components), each holding ``<name>.py`` files.
 Installing mirrors the category: ``themes/ocean.py`` goes to
@@ -34,8 +34,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from minimal import config, extensions
-from minimal.registry import Registry
+from minimal import config
+from minimal.extensions import loader
+from minimal.extensions.registry import Registry
 
 DEFAULT_URL = "https://github.com/RafaSG13/minimal-marketplace.git"
 CACHE_ROOT = Path.home() / ".minimal" / "marketplace"
@@ -54,7 +55,7 @@ class Listing:
     version: str
     path: Path
     category: str
-    """Its marketplace folder: one of :data:`~minimal.extensions.CATEGORIES`."""
+    """Its marketplace folder: one of :data:`~minimal.extensions.loader.CATEGORIES`."""
 
 
 @dataclass
@@ -176,7 +177,7 @@ def describe(path: Path, name: str | None = None) -> Listing:
             and isinstance(node.value.value, str)
         ):
             version = node.value.value
-    category = path.parent.name if path.parent.name in extensions.CATEGORIES else "extensions"
+    category = path.parent.name if path.parent.name in loader.CATEGORIES else "extensions"
     return Listing(name, docstring.strip().splitlines()[0], version, path, category)
 
 
@@ -220,18 +221,18 @@ def sync(url: str | None = None) -> Path:
 def search(query: str = "", url: str | None = None, category: str | None = None) -> list[Listing]:
     """Extensions whose name or description contains ``query`` (case-insensitive); all if empty.
 
-    Listed by category in :data:`~minimal.extensions.CATEGORIES` order, then by
+    Listed by category in :data:`~minimal.extensions.loader.CATEGORIES` order, then by
     name; only ``category``'s if given. Files with invalid metadata are skipped.
 
     Raises:
-        ValueError: if ``category`` is not one of :data:`~minimal.extensions.CATEGORIES`.
+        ValueError: if ``category`` is not one of :data:`~minimal.extensions.loader.CATEGORIES`.
     """
     if category:
-        extensions.category_dir(Path(), category)  # validates it: the folder name must not be a path
+        loader.category_dir(Path(), category)  # validates it: the folder name must not be a path
     root = sync(url)
     needle = query.lower()
     listings = []
-    for folder in [category] if category else extensions.CATEGORIES:
+    for folder in [category] if category else loader.CATEGORIES:
         for path in sorted((root / folder).glob("*.py")):
             if path.name.startswith(("_", ".")):
                 continue
@@ -268,9 +269,9 @@ def catalog(url: str, cwd: str) -> list[Entry]:
 def _target_dir(scope: str, cwd: str, category: str = "extensions") -> Path:
     """Folder for ``category`` files in ``scope``: ``"global"`` or ``"project"``."""
     if scope == "global":
-        return extensions.category_dir(extensions.GLOBAL_EXTENSIONS_DIR, category)
+        return loader.category_dir(loader.GLOBAL_EXTENSIONS_DIR, category)
     if scope == "project":
-        return extensions.category_dir(extensions.project_extensions_dir(cwd), category)
+        return loader.category_dir(loader.project_extensions_dir(cwd), category)
     raise ValueError("scope must be global or project")
 
 
@@ -291,10 +292,10 @@ def install(
         ValueError: if the name or category is invalid, or the name is not in the marketplace or in several categories.
     """
     if category:
-        extensions.category_dir(Path(), category)  # validates it: the folder name must not be a path
+        loader.category_dir(Path(), category)  # validates it: the folder name must not be a path
     _check_name(name)
     root = sync(url)
-    folders = [category] if category else extensions.CATEGORIES
+    folders = [category] if category else loader.CATEGORIES
     found = [root / folder / f"{name}.py" for folder in folders if (root / folder / f"{name}.py").is_file()]
     if not found:
         raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
@@ -335,8 +336,8 @@ def installed(cwd: str) -> list[tuple[str, str, Path]]:
     return [
         (scope, category, path)
         for scope in ("global", "project")
-        for category in extensions.CATEGORIES
-        for path in extensions._py_files(_target_dir(scope, cwd, category))
+        for category in loader.CATEGORIES
+        for path in loader._py_files(_target_dir(scope, cwd, category))
     ]
 
 
@@ -361,7 +362,7 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
         raise ValueError(f"{path} not found")
     listing = describe(path, name)
     category = category or listing.category
-    extensions.category_dir(Path(), category)  # validates it
+    loader.category_dir(Path(), category)  # validates it
     url = url or marketplace_url()
     with tempfile.TemporaryDirectory() as tmp:
         _git("clone", "--quiet", "--", url, tmp)  # "--": a URL starting with "-" is not an option
@@ -413,7 +414,7 @@ def _ext_publish(input: dict, ctx: Any) -> str:
 
 _CATEGORY_SCHEMA = {
     "type": "string",
-    "enum": list(extensions.CATEGORIES),
+    "enum": list(loader.CATEGORIES),
     "description": "extensions (general), themes (colour themes), tools (tools for you) or widgets (UI components)",
 }
 

@@ -110,7 +110,7 @@ class Provider(Protocol):
 
 @dataclass
 class ProviderSpec:
-    """How to build a provider; registered in the :class:`~minimal.registry.Registry`.
+    """How to build a provider; registered in the :class:`~minimal.extensions.registry.Registry`.
 
     Attributes:
         name: Name used by ``--provider`` and ``/provider``.

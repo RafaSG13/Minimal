@@ -1,4 +1,4 @@
-"""Command-line entry point: parse options, build the :class:`~minimal.app.App`
+"""Command-line entry point: parse options, build the :class:`~minimal.core.app.App`
 and open the interactive terminal UI. A turn can only be started from inside it:
 there is no one-shot mode that runs the agent from the shell command line.
 """
@@ -9,11 +9,12 @@ import argparse
 import os
 import sys
 
-from minimal import config, setup
-from minimal.app import App
+from minimal import config
+from minimal.core.app import App
+from minimal.core.session import last_session, new_id, open_session
+from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth
-from minimal.registry import Registry
-from minimal.session import last_session, new_id, open_session
+from minimal.ui import setup
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
@@ -100,7 +101,7 @@ def main() -> None:
         print(e, file=sys.stderr)
         sys.exit(1)
 
-    from minimal.tui import run_tui
+    from minimal.ui.tui.app import run_tui
 
     run_tui(app)
 

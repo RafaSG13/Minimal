@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from minimal.logo import convert, extension_source
-from minimal.registry import Registry
+from minimal.extensions.logo import convert, extension_source
+from minimal.extensions.registry import Registry
 
 
 @unittest.skipUnless(importlib.util.find_spec("PIL"), "needs Pillow")

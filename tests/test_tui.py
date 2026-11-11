@@ -7,23 +7,15 @@ from unittest import mock
 
 from textual.widgets import Input, Markdown, SelectionList, Static
 
-from minimal import config, extensions
-from minimal.app import App
+from minimal import config
+from minimal.core.app import App
+from minimal.core.session import Session
+from minimal.extensions import loader
+from minimal.extensions.registry import LogoSpec, Registry
 from minimal.providers.base import Reply
-from minimal.registry import LogoSpec, Registry
-from minimal.session import Session
-from minimal.tui import (
-    ChecklistScreen,
-    ChoiceScreen,
-    ConfirmScreen,
-    MinimalTui,
-    TextScreen,
-    ToolBlock,
-    CommandSuggester,
-    _edit_diff,
-    _outside_event_loop,
-    logo_content,
-)
+from minimal.ui.tui.app import CommandSuggester, MinimalTui, _outside_event_loop
+from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, TextScreen
+from minimal.ui.tui.widgets import ToolBlock, _edit_diff, logo_content
 
 
 class StreamingFakeProvider:
@@ -78,7 +70,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patcher = mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
+        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
         patcher.start()
         self.addCleanup(patcher.stop)
         Counter.calls = 0
@@ -144,7 +136,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
         app = MinimalTui(self.core)
         status = lambda: str(app.query_one("#status-left", Static).render())  # noqa: E731
-        with mock.patch("minimal.tui.git_status", slow_git_status):
+        with mock.patch("minimal.ui.tui.app.git_status", slow_git_status):
             async with app.run_test() as pilot:
                 await pilot.pause(0.1)
                 self.assertIn("fake", status())  # drawn while git is still running
@@ -362,7 +354,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_default_header_is_wordmark(self):
         app = MinimalTui(self.core)
-        with mock.patch("minimal.tui._version", return_value="9.9"):
+        with mock.patch("minimal.ui.tui.widgets._version", return_value="9.9"):
             async with app.run_test():
                 header = app.query_one("Header")
                 self.assertTrue(header.has_class("-align-left"))

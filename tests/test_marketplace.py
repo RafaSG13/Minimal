@@ -8,11 +8,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from minimal import commands, config, extensions, marketplace
-from minimal.app import App
-from minimal.extensions import load_extensions
-from minimal.registry import Registry
-from minimal.session import Session
+from minimal import config
+from minimal.core.app import App
+from minimal.core.session import Session
+from minimal.extensions import loader, marketplace
+from minimal.extensions.loader import load_extensions
+from minimal.extensions.registry import Registry
+from minimal.ui import commands
 
 HELLO = '''"""Say hello."""
 
@@ -81,7 +83,7 @@ class MarketplaceTest(unittest.TestCase):
         for patcher in (
             mock.patch.dict(os.environ, env),
             mock.patch.object(marketplace, "CACHE_ROOT", self.tmp / "cache"),
-            mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", self.global_dir),
+            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.global_dir),
             mock.patch.object(config, "MARKETPLACES_FILE", self.tmp / "marketplaces.json"),
         ):
             patcher.start()

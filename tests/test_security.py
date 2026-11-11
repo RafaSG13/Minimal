@@ -13,13 +13,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from minimal import audit, cli, commands, config, extensions, marketplace
-from minimal import session as session_mod
-from minimal.agent import execute_tool_call
-from minimal.app import App, ConsoleFrontend
-from minimal.registry import Registry, TurnInterrupted
-from minimal.session import Session
-from minimal.tools import clip, register_builtin_tools
+from minimal import cli, config
+from minimal.core import session as session_mod
+from minimal.core.agent import execute_tool_call
+from minimal.core.app import App, ConsoleFrontend
+from minimal.core.session import Session
+from minimal.extensions import audit, loader, marketplace
+from minimal.extensions.registry import Registry, TurnInterrupted
+from minimal.tools.builtin import register_builtin_tools
+from minimal.tools.common import clip
+from minimal.ui import commands
 
 HELLO_EXT = 'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
@@ -36,7 +39,7 @@ class TempDirTest(unittest.TestCase):
         self.cwd.mkdir()
         for patcher in (
             mock.patch.object(
-                extensions, "GLOBAL_EXTENSIONS_DIR", self.home / "extensions"
+                loader, "GLOBAL_EXTENSIONS_DIR", self.home / "extensions"
             ),
             mock.patch.object(config, "TRUST_FILE", self.home / "trusted.json"),
             mock.patch.object(config, "KEYS_FILE", self.home / "keys.json"),
@@ -119,7 +122,7 @@ class ProjectTrustTest(TempDirTest):
         self.trust()
         self.assertEqual(self.app.registry.tools["hello"].run({}, self.app), "v1")
         self.assertIsNone(self.app.untrusted)
-        digest = extensions.files_digest(extensions.read_extensions([self.ext_dir / "hello.py"]))
+        digest = loader.files_digest(loader.read_extensions([self.ext_dir / "hello.py"]))
         self.assertEqual(json.loads(config.TRUST_FILE.read_text()), {"projects": {str(self.ext_dir): digest}})
 
         self.app.reload_extensions()
@@ -142,7 +145,7 @@ class ProjectTrustTest(TempDirTest):
 
     def test_files_changed_during_review_are_not_loaded(self):
         hello = self.ext_dir / "hello.py"
-        reviewed = extensions.files_digest(extensions.read_extensions([hello]))
+        reviewed = loader.files_digest(loader.read_extensions([hello]))
 
         def edit_then_accept(question):
             hello.write_text(HELLO_EXT.format(reply="evil"))
@@ -432,7 +435,7 @@ class GitTest(ToolTest):
         self.assertLess(time.monotonic() - start, 5)
 
     def test_repository_config_cannot_make_git_run_a_command(self):
-        from minimal.tui import git_status
+        from minimal.ui.tui.app import git_status
 
         marker = self.tmp / "ran"
         hook = self.tmp / "hook.sh"
