@@ -1,0 +1,24 @@
+CHANGELOG.md
+  h_e81853c41416fb 12-14
+README.md
+  h_e81853c41416fb 212-213
+src/minimal/extensions/audit.py
+  h_e81853c41416fb 11,14,213-227,230
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 34,42,380-406,424,666-670
+src/minimal/ui/commands.py
+  h_e81853c41416fb 400-404
+tests/test_marketplace.py
+  h_e81853c41416fb 57-67,89-91,182,189,204-253,258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "9363d81d21cba65c39d280964e0bd1b0a3e3bba6",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
