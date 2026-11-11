@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from minimal.providers import anthropic, claude, gemini, openai
 
 if TYPE_CHECKING:
-    from minimal.registry import Registry
+    from minimal.extensions.registry import Registry
 
 BUILTIN_PROVIDERS = (anthropic.SPEC, claude.SPEC, gemini.SPEC, openai.SPEC)
 

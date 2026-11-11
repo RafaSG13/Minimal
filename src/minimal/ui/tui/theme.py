@@ -2,7 +2,7 @@
 
 The built-in theme is ``minimal`` (:data:`DEFAULT`): black and white, nothing
 else. Extensions add more with ``minimal.register_theme`` (see
-:meth:`~minimal.registry.Registry.register_theme`); the marketplace keeps them
+:meth:`~minimal.extensions.registry.Registry.register_theme`); the marketplace keeps them
 in its ``themes/`` folder. Pick one with ``/theme`` or ctrl+p → Theme; the
 choice is saved in ``~/.minimal/theme.json``.
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 from textual.color import Color
 from textual.theme import Theme
 
-from minimal.registry import Registry, ThemeSpec
+from minimal.extensions.registry import Registry, ThemeSpec
 
 DEFAULT = "minimal"
 

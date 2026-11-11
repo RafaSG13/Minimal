@@ -46,7 +46,7 @@ EventHandler = Callable[[dict], Any]
 class TurnInterrupted(Exception):
     """The user interrupted the turn in progress (``ctx.cancelled`` was set).
 
-    Raised by :func:`~minimal.agent.run_agent`, and by an event handler to abort the turn;
+    Raised by :func:`~minimal.core.agent.run_agent`, and by an event handler to abort the turn;
     :meth:`Registry.emit` lets it through instead of reporting it like other handler errors.
     """
 
@@ -137,7 +137,7 @@ class WidgetSpec:
 
     Attributes:
         name: Unique name; registering the same name again replaces it.
-        create: Called as ``create(ctx)`` with the :class:`~minimal.app.App`;
+        create: Called as ``create(ctx)`` with the :class:`~minimal.core.app.App`;
             returns a ``textual.widget.Widget``.
         area: ``"top"``, ``"bottom"`` or ``"sidebar"``.
     """
@@ -153,7 +153,7 @@ class StatusSpec:
 
     Attributes:
         name: Unique name; registering the same name again replaces it.
-        render: Called as ``render(ctx)`` with the :class:`~minimal.app.App`; returns
+        render: Called as ``render(ctx)`` with the :class:`~minimal.core.app.App`; returns
             a ``str``, a ``textual.content.Content`` or ``None`` (no segment this time).
         side: ``"left"`` (after the git branch) or ``"right"`` (before the model).
     """
@@ -279,7 +279,7 @@ class Registry:
     ) -> None:
         """Add a visual component to the terminal UI, replacing any widget with the same name.
 
-        ``create(ctx)`` receives the :class:`~minimal.app.App` and returns a
+        ``create(ctx)`` receives the :class:`~minimal.core.app.App` and returns a
         ``textual.widget.Widget``, placed in ``area`` (``"top"``, ``"bottom"`` or
         ``"sidebar"``). Style it with its own ``DEFAULT_CSS``. The ``top`` and
         ``bottom`` areas size to their content, so give the widget a height and
@@ -308,7 +308,7 @@ class Registry:
     ) -> None:
         """Add a segment to the terminal UI's status line, replacing any segment with the same name.
 
-        ``render(ctx)`` receives the :class:`~minimal.app.App` and returns a ``str``,
+        ``render(ctx)`` receives the :class:`~minimal.core.app.App` and returns a ``str``,
         a ``textual.content.Content`` or ``None`` to show nothing this time. It is
         called whenever the status line is redrawn, so keep it cheap. ``side`` is
         ``"left"`` (after the git branch) or ``"right"`` (before the model).
@@ -365,14 +365,14 @@ class Registry:
         ``" "`` and ``"."`` are transparent. Two pixel rows make one terminal
         row (drawn with half blocks), so pixels are roughly square. ``colors``
         maps every other character to ``#rrggbb`` or a theme variable
-        (``$accent``, ``$foreground``, ``$muted``, … see :mod:`minimal.theme`),
+        (``$accent``, ``$foreground``, ``$muted``, … see :mod:`minimal.ui.tui.theme`),
         so the art can follow ``/theme``. Lines wider than the terminal are clipped.
         ``align`` places the logo and the header text under it: ``"left"``,
         ``"center"`` (default) or ``"right"``.
 
         A later call replaces an earlier one: with several logo extensions the
         last one loaded wins (the project folder after the global one,
-        alphabetical within a folder). ``python -m minimal.logo IMAGE`` turns an
+        alphabetical within a folder). ``python -m minimal.extensions.logo IMAGE`` turns an
         image into a logo extension.
 
         Raises:

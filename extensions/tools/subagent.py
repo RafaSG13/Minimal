@@ -11,9 +11,7 @@ Load it on demand with ``minimal --ext extensions/tools/subagent.py``, or copy
 the file to ``~/.minimal/extensions/tools/`` to always have it.
 """
 
-from minimal.agent import run_agent
-from minimal.app import build_system_prompt
-from minimal.registry import Registry
+from minimal.api import Registry, build_system_prompt, run_agent
 
 __version__ = "1.0"
 

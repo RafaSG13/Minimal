@@ -1,7 +1,7 @@
 """Discovering and loading extensions.
 
 An extension is a ``.py`` file that defines ``register(minimal)``, where ``minimal`` is the
-:class:`~minimal.registry.Registry`::
+:class:`~minimal.extensions.registry.Registry`::
 
     def register(minimal):
         minimal.register_tool(name="hello", run=lambda input, ctx: "hi", description="...")
@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from minimal.registry import Registry
+from minimal.extensions.registry import Registry
 
 GLOBAL_EXTENSIONS_DIR = Path.home() / ".minimal" / "extensions"
 """Extensions loaded in every project."""
@@ -187,3 +187,17 @@ def _load_extension(file: Path, data: bytes, registry: Registry) -> None:
     if not callable(register):
         raise ValueError("missing register(minimal) function")
     register(registry)
+
+
+def reload_summary(loaded: list[Path], errors: list[str], notice: str | None) -> str:
+    """Describe the result of :meth:`~minimal.core.app.App.reload_extensions` for the user or the model.
+
+    ``notice`` is :meth:`~minimal.core.app.App.untrusted_notice`, added as a ``Not loaded:`` line when set.
+    """
+    summary = f"Loaded {len(loaded)} extension(s)"
+    if loaded:
+        summary += ": " + ", ".join(p.name for p in loaded)
+    summary += "".join(f"\nFailed: {e}" for e in errors)
+    if notice:
+        summary += f"\nNot loaded: {notice}"
+    return summary

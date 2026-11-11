@@ -18,9 +18,9 @@ import dataclasses
 from collections.abc import Callable
 from typing import Any
 
+from minimal.extensions.registry import Registry, TurnInterrupted
 from minimal.providers.base import Provider, Reply
-from minimal.registry import Registry, TurnInterrupted
-from minimal.tools import clip
+from minimal.tools.common import clip
 
 
 def raise_if_cancelled(ctx: Any) -> None:

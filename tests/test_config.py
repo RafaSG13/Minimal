@@ -5,12 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from minimal import config, setup
-from minimal.app import App, build_system_prompt
+from minimal import config
 from minimal.cli import start_provider
+from minimal.core.app import App, build_system_prompt
+from minimal.core.session import Session
+from minimal.extensions.registry import Registry
 from minimal.providers.base import ProviderSpec
-from minimal.registry import Registry
-from minimal.session import Session
+from minimal.ui import setup
 
 
 class ConfigTest(unittest.TestCase):

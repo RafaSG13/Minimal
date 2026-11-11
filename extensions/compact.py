@@ -14,9 +14,7 @@ file to ``~/.minimal/extensions/`` to always have it.
 
 import sys
 
-from minimal.agent import raise_if_cancelled, tool_specs
-from minimal.app import build_system_prompt
-from minimal.session import new_id, open_session
+from minimal.api import build_system_prompt, new_id, open_session, raise_if_cancelled, tool_specs
 
 __version__ = "1.0"
 

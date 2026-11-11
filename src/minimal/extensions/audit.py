@@ -9,7 +9,7 @@ import ast
 import re
 from dataclasses import dataclass
 
-from minimal.extensions import ProjectExtensions
+from minimal.extensions.loader import ProjectExtensions
 
 CAPABILITIES: dict[str, str] = {
     "unparsable": "cannot be parsed, so it was not scanned (it will fail to load)",

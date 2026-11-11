@@ -11,16 +11,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from minimal import extensions
-from minimal import session as session_mod
-from minimal.agent import run_agent
-from minimal.app import App
-from minimal.commands import run_command
-from minimal.extensions import load_extensions
+from minimal.core import session as session_mod
+from minimal.core.agent import run_agent
+from minimal.core.app import App
+from minimal.core.session import Session
+from minimal.extensions import loader
+from minimal.extensions.loader import load_extensions
+from minimal.extensions.registry import Registry, TurnInterrupted
 from minimal.providers.base import Reply, Usage
-from minimal.registry import Registry, TurnInterrupted
-from minimal.session import Session
-from minimal.tools import register_builtin_tools
+from minimal.tools.builtin import register_builtin_tools
+from minimal.ui.commands import run_command
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "extensions" / "example.py"
 
@@ -40,7 +40,7 @@ class SmokeTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.cwd = self._tmp.name
-        patcher = mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", Path(self.cwd) / "global")
+        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", Path(self.cwd) / "global")
         patcher.start()
         self.addCleanup(patcher.stop)
         self.registry = Registry()
@@ -234,7 +234,7 @@ class ReloadTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patcher = mock.patch.object(extensions, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
+        patcher = mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global")
         patcher.start()
         self.addCleanup(patcher.stop)
         self.registry = Registry()

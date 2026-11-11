@@ -144,7 +144,7 @@ def register(minimal):
     minimal.register_logo(["#.#", "###"], {"#": "#4fc3f7"}, align="center")         # pixel art in the header
 ```
 
-`ctx` exposes `cwd`, `messages`, `provider_name`, `model` and `registry`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail, a prompt note and a sidebar widget.
+`ctx` exposes `cwd`, `messages`, `provider_name`, `model` and `registry`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. Anything else an extension needs from minimal (`run_agent`, `open_session`, `reload_summary`, `theme` glyphs, …) is imported from `minimal.api`, which keeps its names when internal modules move. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail, a prompt note and a sidebar widget.
 
 The repository has three more, loaded the same way (`minimal -e extensions/compact.py`) or copied to `~/.minimal/extensions/` (tools in its `tools/` subfolder):
 
@@ -157,7 +157,7 @@ The repository has three more, loaded the same way (`minimal -e extensions/compa
 <details>
 <summary><b>Widgets</b></summary>
 
-A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. If it has a `refresh_live(ctx, event)` method, the UI calls it while a turn runs: when a turn or command starts (`{"kind": "start", "turn": bool}`), after each tool call is shown (`{"kind": "tool_call", "call": …}`) and after each result (`{"kind": "tool_result", "call": …, "result": …}`; the result is not in `ctx.messages` until every call of that reply has finished). The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
+A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `ui/tui/theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. If it has a `refresh_live(ctx, event)` method, the UI calls it while a turn runs: when a turn or command starts (`{"kind": "start", "turn": bool}`), after each tool call is shown (`{"kind": "tool_call", "call": …}`) and after each result (`{"kind": "tool_result", "call": …, "result": …}`; the result is not in `ctx.messages` until every call of that reply has finished). The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
 
 `register_status(name, render, side)` adds a segment to the status line, `left` after the git branch or `right` before the context size. `render(ctx)` returns text, a `textual.content.Content` or `None` for no segment; it runs on every redraw, so keep it cheap. A segment that raises is skipped and reported once.
 
@@ -180,7 +180,7 @@ Without a logo, the welcome header is a left-aligned wordmark, `─●─  m i n
 To make a logo from any image (pixel art or a picture), convert it with Pillow, which minimal does not depend on:
 
 ```bash
-uv run --with pillow python -m minimal.logo logo.png -w 24 -o ~/.minimal/extensions/widgets/logo.py   # then /reload
+uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.minimal/extensions/widgets/logo.py   # then /reload
 ```
 
 `-w` is the width in pixels (one terminal column each; images only shrink), `-c` the most colours to keep (default 16; pixel art with no more keeps its exact colours), `--nearest` resizes without smoothing. Without `-o` the extension is printed.
@@ -232,7 +232,7 @@ flowchart LR
 
 **One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If anything fails mid-turn, or the user interrupts it, the turn is dropped from the history. The session file is appended to after every turn.
 
-**Frontends.** What the user sees goes through a `Frontend` (`app.py`): the terminal UI, or `ConsoleFrontend` (plain stdout and `input()`) for commands that need the real terminal. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
+**Frontends.** What the user sees goes through a `Frontend` (`core/app.py`): the terminal UI, or `ConsoleFrontend` (plain stdout and `input()`) for commands that need the real terminal. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
 
 **History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
 
@@ -240,7 +240,8 @@ flowchart LR
 <summary><b>Project layout</b></summary>
 
 ```
-src/minimal/
+src/minimal/         packages from the bottom up; each imports only from the ones above it
+  config.py          default provider/model, API keys, marketplaces, UI theme (~/.minimal/*.json)
   providers/
     base.py          Provider interface, Reply, Usage, canonical message format
     anthropic.py     Claude via the Anthropic Messages API (API key)
@@ -248,21 +249,35 @@ src/minimal/
     claude_auth.py   browser login (OAuth PKCE) and token storage (~/.minimal/claude-auth.json)
     gemini.py        Gemini via the Google Interactions API
     openai.py        OpenAI-compatible servers via the Chat Completions API
-  registry.py        Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
-  tools.py           built-in tools: read, write, edit, bash, grep, glob, reload_extensions
-  extensions.py      finds extension files and calls their register(minimal)
-  audit.py           static scan of extension source for /trust: what a file can do
-  marketplace.py     git-based marketplaces: list, search, install, publish (~/.minimal/marketplace cache)
-  session.py         JSONL sessions (~/.minimal/sessions)
-  agent.py           agent loop (model → tools → model …)
-  app.py             App: runtime state, provider switching, system prompt, one user turn, extension reload, Frontend
-  commands.py        slash commands (/help, /provider, /reload, /trust, /ext, …)
-  config.py          default provider/model, API keys, marketplaces, UI theme (~/.minimal/*.json)
-  setup.py           onboarding wizard: provider, login or API key, model
-  theme.py           built-in theme, extension themes for Textual, UI glyphs
-  tui.py             Textual UI: header, transcript, tool-call blocks, prompt, status line, dialogs, widget areas
-  logo.py            python -m minimal.logo: turns an image into a header-logo extension (needs Pillow)
+  extensions/
+    registry.py      Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
+    loader.py        finds extension files and calls their register(minimal)
+    audit.py         static scan of extension source for /trust: what a file can do
+    marketplace.py   git-based marketplaces: list, search, install, publish (~/.minimal/marketplace cache)
+    logo.py          python -m minimal.extensions.logo: turns an image into a header-logo extension (needs Pillow)
+  tools/
+    common.py        output clipping, which paths are read without asking
+    files.py         read, write, edit
+    shell.py         bash
+    search.py        grep, glob
+    reload.py        reload_extensions
+    builtin.py       the list of built-in tools
+  core/
+    agent.py         agent loop (model → tools → model …)
+    app.py           App: runtime state, provider switching, system prompt, one user turn, extension reload, Frontend
+    session.py       JSONL sessions (~/.minimal/sessions)
+    prompt.md        packaged base prompt
+  ui/
+    commands.py      slash commands (/help, /provider, /reload, /trust, /ext, …)
+    setup.py         onboarding wizard: provider, login or API key, model
+    tui/
+      app.py         MinimalTui: transcript, prompt, status line, widget areas; run_tui
+      widgets.py     tool-call blocks and the welcome header
+      screens.py     dialogs: confirmation and pickers
+      frontend.py    TuiFrontend: how turns in worker threads reach the UI
+      theme.py       built-in theme, extension themes for Textual, UI glyphs
   cli.py             option parsing, entry point
+  api.py             what extensions may import from minimal
 extensions/
   example.py         example extension (tool, command, guardrail, prompt note, sidebar widget)
   compact.py         history compaction: automatic on turn_end, and /compact

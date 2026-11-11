@@ -1,7 +1,7 @@
 """Slash commands: the built-ins and the dispatcher.
 
 Every command is called as ``run(args, app)``, where ``args`` is the text after
-the command name and ``app`` is the :class:`~minimal.app.App`. Commands
+the command name and ``app`` is the :class:`~minimal.core.app.App`. Commands
 registered by extensions take precedence over built-ins with the same name.
 Commands print their output; the terminal UI shows it in the transcript.
 """
@@ -13,11 +13,14 @@ import shlex
 import sys
 from pathlib import Path
 
-from minimal import audit, config, extensions, marketplace, setup
-from minimal.app import App, reload_summary
+from minimal import config
+from minimal.core.app import App
+from minimal.core.session import list_sessions, new_id, open_session, preview
+from minimal.extensions import audit, loader, marketplace
+from minimal.extensions.loader import reload_summary
+from minimal.extensions.registry import Command
 from minimal.providers import claude_auth
-from minimal.registry import Command
-from minimal.session import list_sessions, new_id, open_session, preview
+from minimal.ui import setup
 
 
 class ExitRepl(Exception):
@@ -172,9 +175,9 @@ def _trust(args: str, app: App) -> None:
     """
     if args:
         raise ValueError("usage: /trust")
-    project = extensions.read_project_extensions(app.cwd)
+    project = loader.read_project_extensions(app.cwd)
     if project is None:
-        print(f"No project extensions in {extensions.project_extensions_dir(app.cwd)}.")
+        print(f"No project extensions in {loader.project_extensions_dir(app.cwd)}.")
         return
     if app.is_trusted(project):
         print(f"The project extensions in {project.directory} are already trusted.")
@@ -308,10 +311,10 @@ def _ext_picker(app: App) -> None:
         scope = app.frontend.choose(
             f"Install {len(to_install)} item(s) into",
             [
-                ("global", f"Global: {extensions.category_dir(extensions.GLOBAL_EXTENSIONS_DIR, category)}"),
+                ("global", f"Global: {loader.category_dir(loader.GLOBAL_EXTENSIONS_DIR, category)}"),
                 (
                     "project",
-                    f"This project: {extensions.category_dir(extensions.project_extensions_dir(app.cwd), category)}",
+                    f"This project: {loader.category_dir(loader.project_extensions_dir(app.cwd), category)}",
                 ),
             ],
         )

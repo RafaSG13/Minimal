@@ -1,10 +1,10 @@
-"""Turn an image into a header-logo extension (see :meth:`minimal.registry.Registry.register_logo`).
+"""Turn an image into a header-logo extension (see :meth:`minimal.extensions.registry.Registry.register_logo`).
 
 The image is cropped to its opaque area, shrunk to the requested width and
 reduced to a few colours; pixel art small enough keeps its exact colours.
 Needs Pillow, which minimal does not depend on::
 
-    uv run --with pillow python -m minimal.logo IMAGE [-w 24] [-c 16] [--nearest] [-o FILE]
+    uv run --with pillow python -m minimal.extensions.logo IMAGE [-w 24] [-c 16] [--nearest] [-o FILE]
 
 Without ``-o`` the extension source is printed; save it in an extensions
 folder (e.g. ``~/.minimal/extensions/widgets/logo.py``) and ``/reload``.
@@ -23,7 +23,7 @@ KEYS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 def convert(
     path: str | Path, width: int = 24, max_colors: int = 16, nearest: bool = False
 ) -> tuple[list[str], dict[str, str]]:
-    """The ``art`` and ``colors`` of :meth:`~minimal.registry.Registry.register_logo` for the image at ``path``.
+    """The ``art`` and ``colors`` of :meth:`~minimal.extensions.registry.Registry.register_logo` for the image at ``path``.
 
     Pixels with alpha below 128 are transparent. The image only shrinks:
     one narrower than ``width`` keeps its size. ``nearest`` resizes without
@@ -88,7 +88,7 @@ def extension_source(art: list[str], colors: dict[str, str], description: str) -
 def main(argv: list[str] | None = None) -> None:
     """Command line: convert an image and print or write the extension."""
     parser = argparse.ArgumentParser(
-        prog="python -m minimal.logo", description="Turn an image into a minimal header-logo extension."
+        prog="python -m minimal.extensions.logo", description="Turn an image into a minimal header-logo extension."
     )
     parser.add_argument("image")
     parser.add_argument(
@@ -106,10 +106,10 @@ def main(argv: list[str] | None = None) -> None:
     try:
         art, colors = convert(args.image, args.width, args.colors, args.nearest)
     except ImportError:
-        print("minimal.logo needs Pillow: uv run --with pillow python -m minimal.logo IMAGE", file=sys.stderr)
+        print("minimal.extensions.logo needs Pillow: uv run --with pillow python -m minimal.extensions.logo IMAGE", file=sys.stderr)
         sys.exit(1)
     except (ValueError, OSError) as e:
-        print(f"minimal.logo: {e}", file=sys.stderr)
+        print(f"minimal.extensions.logo: {e}", file=sys.stderr)
         sys.exit(1)
     source = extension_source(art, colors, f"Header logo converted from {Path(args.image).name}.")
     if args.output is None:
