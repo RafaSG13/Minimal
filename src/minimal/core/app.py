@@ -346,7 +346,7 @@ class App:
         working even if its spec is gone.
 
         The project's extensions (``<cwd>/.minimal/extensions``) and its trust-gated
-        settings (``permissions.allow``, ``extensions.settings``) apply only if the
+        settings (:data:`~minimal.config.RISKY`) apply only if the
         user trusted exactly that snapshot (:meth:`is_trusted`). Otherwise they are
         skipped without asking and recorded in :attr:`untrusted`; that is not an
         error. The files are read once: that snapshot is what is hashed and run.

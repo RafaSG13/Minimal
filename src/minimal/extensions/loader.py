@@ -209,36 +209,54 @@ class _SnapshotImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     The source is compiled directly instead of through the file system, whose
     ``__pycache__`` check (whole-second mtime and size) could run stale code when
     a file is edited twice within a second and reloaded, and which would run what
-    is on disk now rather than what was reviewed.
+    is on disk now rather than what was reviewed. A module beneath a package
+    extension that is not in its snapshot (a file added since) is not found, so a
+    lazy import cannot reach bytes that were never reviewed.
     """
 
     def __init__(self) -> None:
-        self.modules: dict[str, tuple[Path, bytes, bool]] = {}
+        self.modules: dict[str, tuple[Path, bytes | None, bool]] = {}
+        """Module name -> ``(path, source, is_package)``; ``source`` is ``None`` for a folder without ``__init__.py``."""
+        self.packages: set[str] = set()
+        """Names of the package extensions mapped: everything beneath them comes from :attr:`modules` only."""
 
     def map(self, name: str, source: ExtensionSource) -> None:
         """Serve module ``name`` (and, for a package, its submodules) from ``source``'s bytes."""
         for key in [k for k in self.modules if k == name or k.startswith(name + ".")]:
             del self.modules[key]
+        self.packages.discard(name)
         if not source.is_package:
             self.modules[name] = (source.path, source.entry, False)
             return
+        self.packages.add(name)
         for path, data in source.files:
             parts = path.relative_to(source.path).with_suffix("").parts
             is_package = parts[-1] == "__init__"
             dotted = ".".join(parts[:-1] if is_package else parts)
             self.modules[f"{name}.{dotted}" if dotted else name] = (path, data, is_package)
+        for path, _ in source.files:
+            folders = path.relative_to(source.path).parts[:-1]
+            for depth in range(1, len(folders) + 1):
+                namespace = f"{name}." + ".".join(folders[:depth])
+                self.modules.setdefault(namespace, (source.path.joinpath(*folders[:depth]), None, True))
 
     def find_spec(self, fullname, path=None, target=None):
         entry = self.modules.get(fullname)
         if entry is None:
+            if any(fullname.startswith(package + ".") for package in self.packages):
+                raise ModuleNotFoundError(f"No module named {fullname!r} in the extension as read", name=fullname)
             return None
-        return importlib.util.spec_from_loader(fullname, self, origin=str(entry[0]), is_package=entry[2])
+        origin = None if entry[1] is None else str(entry[0])
+        return importlib.util.spec_from_loader(fullname, self, origin=origin, is_package=entry[2])
 
     def create_module(self, spec):
         return None
 
     def exec_module(self, module) -> None:
         path, data, is_package = self.modules[module.__name__]
+        if data is None:
+            module.__path__ = [str(path)]
+            return
         module.__file__ = str(path)
         if is_package:
             module.__path__ = [str(path.parent)]

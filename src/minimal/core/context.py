@@ -114,7 +114,7 @@ class Context:
         app = self._app
         return app.provider.stream(
             model=app.model,
-            system=system or self.system_prompt(),
+            system=self.system_prompt() if system is None else system,
             messages=messages,
             tools=agent.tool_specs(app.registry) if tools else [],
             on_text=lambda _chunk: self.check_cancelled(),

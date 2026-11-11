@@ -9,8 +9,8 @@ Settings are JSON files read as layers, lowest first (see :func:`read_layers`):
 
 ``$MINIMAL_PROVIDER``/``$MINIMAL_MODEL`` and the command line beat every layer.
 What each key means and how layers merge is :class:`Settings`. A project's
-``permissions.allow`` and ``extensions.settings`` apply only once the user
-trusted the project (``/trust``); every other project key always applies.
+``permissions.allow``, ``extensions.disabled`` and ``extensions.settings`` apply
+only once the user trusted the project (``/trust``); every other project key always applies.
 
 Secrets and state live in their own files:
 
@@ -54,7 +54,7 @@ RULE_RE = re.compile(r"^([A-Za-z0-9_\-]+)(?:\((.*)\))?$", re.DOTALL)
 GLOBAL_ONLY = ("marketplaces", "prompt.base")
 """Keys read only from :data:`SETTINGS_FILE`: a project must not choose where code or the base prompt comes from."""
 
-RISKY = ("permissions.allow", "extensions.settings")
+RISKY = ("permissions.allow", "extensions.disabled", "extensions.settings")
 """Project keys that apply only once the project is trusted."""
 
 
@@ -170,7 +170,7 @@ class Settings:
 
     Args:
         layers: From :func:`read_layers`, lowest first.
-        trusted: Whether the project's ``permissions.allow`` and ``extensions.settings`` apply.
+        trusted: Whether the project's trust-gated keys (:data:`RISKY`) apply.
     """
 
     layers: tuple[Layer, ...] = ()
@@ -236,6 +236,7 @@ class Settings:
 
     @property
     def disabled(self) -> frozenset[str]:
+        """Ids not to load (a project's only once trusted: it could switch off a global guardrail)."""
         return frozenset(ext for ext, _ in self._concat("extensions.disabled"))
 
     def extension_settings(self, ext_id: str) -> dict:

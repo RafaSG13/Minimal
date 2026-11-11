@@ -269,23 +269,42 @@ def search(query: str = "", url: str | None = None, category: str | None = None)
     return listings
 
 
+def _copied_files(root: Path) -> list[Path]:
+    """The files ``shutil.copytree(root, …, ignore=_COPY_IGNORE)`` copies, sorted by path inside ``root``."""
+    files = []
+    folders = [root]
+    while folders:
+        folder = folders.pop()
+        names = os.listdir(folder)
+        skipped = _COPY_IGNORE(str(folder), names)
+        for name in names:
+            if name not in skipped:
+                (folders if (folder / name).is_dir() else files).append(folder / name)
+    return sorted(files, key=lambda p: p.relative_to(root).as_posix())
+
+
 def _content_digest(path: Path) -> str:
-    """SHA-256 of an extension's files by their path inside it: equal for identical copies in different places."""
+    """SHA-256 of an extension as installed or published: a file's bytes, or every copied file of a package by its path inside it.
+
+    Equal for identical copies in different places, and for a file published under another name.
+    """
+    if path.is_file():
+        return hashlib.sha256(path.read_bytes()).hexdigest()
     digest = hashlib.sha256()
-    for source in loader.read_extensions([path]):
-        for file, data in source.files:
-            name = file.relative_to(path).as_posix() if source.is_package else file.name
-            digest.update(name.encode() + b"\0" + data + b"\0")
+    for file in _copied_files(path):
+        digest.update(file.relative_to(path).as_posix().encode() + b"\0" + file.read_bytes() + b"\0")
     return digest.hexdigest()
+
+
+def _is_extension(path: Path) -> bool:
+    """Whether ``path`` is an extension file or package folder (a category folder such as ``tools/`` is neither)."""
+    return path.is_file() or (path / "__init__.py").is_file()
 
 
 def _installed_path(scope: str, cwd: str, category: str, name: str) -> Path | None:
     """The installed copy of ``name`` in ``scope``'s ``category`` folder (the ``.py`` file wins); ``None`` if none."""
     folder = _target_dir(scope, cwd, category)
-    for path in (folder / f"{name}.py", folder / name):
-        if path.is_file() or (path / "__init__.py").is_file():
-            return path
-    return None
+    return next((path for path in (folder / f"{name}.py", folder / name) if _is_extension(path)), None)
 
 
 def catalog(url: str, cwd: str) -> list[Entry]:
@@ -323,10 +342,9 @@ def _find(root: Path, name: str, category: str | None) -> list[Path]:
     """``name``'s file or package folder in each category (or only ``category``) of marketplace clone ``root``."""
     found = []
     for folder in [category] if category else loader.CATEGORIES:
-        for path in (root / folder / f"{name}.py", root / folder / name):
-            if path.is_file() or (path / "__init__.py").is_file():
-                found.append(path)
-                break
+        path = next((p for p in (root / folder / f"{name}.py", root / folder / name) if _is_extension(p)), None)
+        if path is not None:
+            found.append(path)
     return found
 
 
@@ -367,7 +385,8 @@ def install_from(src: Path, scope: str, cwd: str) -> tuple[Path, bool]:
         ``(dest, updated)``: the installed file or folder, and whether it replaced an existing copy.
 
     Raises:
-        ValueError: if the extension requires another minimal version.
+        ValueError: if the extension requires another minimal version, or its place
+            is taken by a folder that is not an extension (such as the ``tools/`` category).
     """
     listing = describe(src)
     if not listing.compatible:
@@ -375,15 +394,23 @@ def install_from(src: Path, scope: str, cwd: str) -> tuple[Path, bool]:
     folder = _target_dir(scope, cwd, src.parent.name)
     dest = folder / src.name
     other = folder / listing.name if src.is_file() else folder / f"{listing.name}.py"
-    updated = dest.exists() or other.exists()
+    _check_replaceable(dest)
+    updated = _is_extension(dest) or _is_extension(other)
     folder.mkdir(parents=True, exist_ok=True)
-    _remove(other)
+    if _is_extension(other):
+        _remove(other)
     if src.is_dir():
         _remove(dest)
         shutil.copytree(src, dest, ignore=_COPY_IGNORE)
     else:
         shutil.copyfile(src, dest)
     return dest, updated
+
+
+def _check_replaceable(dest: Path) -> None:
+    """Refuse to overwrite ``dest`` if it is a folder but not an extension package: it may hold other extensions."""
+    if dest.is_dir() and not _is_extension(dest):
+        raise ValueError(f"{dest} is a folder that is not an extension package; not replacing it")
 
 
 def _remove(path: Path) -> None:
@@ -404,7 +431,7 @@ def uninstall(name: str, scope: str = "global", cwd: str = ".", category: str = 
     folder = _target_dir(scope, cwd, category)
     removed = None
     for path in (folder / f"{name}.py", folder / name):
-        if path.exists():
+        if _is_extension(path):
             _remove(path)
             removed = removed or path
     if removed is None:
@@ -451,10 +478,11 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
         folder = Path(tmp, category)
         dest = folder / (listing.name if path.is_dir() else f"{listing.name}.py")
         other = folder / (f"{listing.name}.py" if path.is_dir() else listing.name)
-        if dest.exists() and not other.exists() and _content_digest(dest) == _content_digest(path):
+        if _is_extension(dest) and not _is_extension(other) and _content_digest(dest) == _content_digest(path):
             raise ValueError(f"{listing.name} is already published with identical content")
+        _check_replaceable(dest)
         folder.mkdir(parents=True, exist_ok=True)
-        replaced = [p for p in (dest, other) if p.exists()]
+        replaced = [p for p in (dest, other) if _is_extension(p)]
         for p in replaced:
             _remove(p)
         if path.is_dir():
@@ -530,7 +558,7 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
     try:
         source = loader.read_extensions([path])[0]
         loader.load_source(source, make_registry(), config.Settings(), "cli", errors)
-    except ImportError as e:
+    except ModuleNotFoundError as e:
         if e.name and not e.name.startswith(("minimal", loader.module_name(path))):
             return f"WARN {label}: needs {e.name}"
         return f"FAIL {label}: {type(e).__name__}: {e}"

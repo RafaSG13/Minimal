@@ -74,6 +74,16 @@ class PermissionsTest(unittest.TestCase):
         self.assertTrue(result["is_error"])
         self.assertFalse((self.cwd / "docs" / "x.md").exists())
 
+    def test_absolute_and_home_patterns_match_inside_the_folder(self):
+        (self.cwd / ".ssh").mkdir()
+        (self.cwd / ".ssh" / "id_rsa").write_text("KEY\n")
+        with mock.patch.dict("os.environ", {"HOME": str(self.cwd)}):
+            result = self.call("read", settings(deny=["read(~/.ssh/**)"]), path=".ssh/id_rsa")
+        self.assertIn("denied by permission rule", result["content"])
+        result = self.call("read", settings(deny=[f"read({self.cwd}/.env)"]), path=".env")
+        self.assertIn("denied by permission rule", result["content"])
+        self.assertNotIn("SECRET", result["content"])
+
     def test_extension_tool_subject(self):
         fetch = Tool("fetch", "", {}, lambda input, ctx: "ok", confirm=True, subject_key="url")
         self.assertTrue(matches("fetch(https://example.com/*)", fetch, {"url": "https://example.com/a/b"}, "/"))

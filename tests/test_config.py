@@ -90,6 +90,19 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(self.start(), ("a", "a-picked"))
         run_setup.assert_called_once()
 
+    def test_setup_offers_the_provider_default_when_no_model_is_saved(self):
+        config.update_global({"provider": "a"})
+        answer = mock.Mock(unsafe_ask=mock.Mock(return_value="a"))
+        with (
+            mock.patch.object(setup, "_stored_login", return_value=None),
+            mock.patch.object(setup.questionary, "select", return_value=answer),
+            mock.patch.object(setup.questionary, "text", side_effect=lambda _title, default, validate: mock.Mock(
+                unsafe_ask=mock.Mock(return_value=default))),
+            mock.patch("sys.stdout"),
+        ):
+            self.assertEqual(setup.run_setup(self.app.registry), ("a", "a-default"))
+        self.assertEqual(config.load_global(), {"provider": "a", "model": "a-default"})
+
 
 class PromptFileTest(unittest.TestCase):
     def setUp(self):

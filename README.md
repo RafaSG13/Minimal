@@ -138,7 +138,7 @@ Settings are layered JSON files: `~/.minimal/settings.json` (global) < `.minimal
 }
 ```
 
-A project's `permissions.allow` and `extensions.settings` apply only after `/trust`. 0.1's `~/.minimal/config.json`, `theme.json` and `marketplaces.json` are moved into `~/.minimal/settings.json` on the first start, and `prompt.md` becomes `prompt.base`. The keys, merge rules, permission syntax and examples are in [docs/settings.md](docs/settings.md).
+A project's `permissions.allow`, `extensions.disabled` and `extensions.settings` apply only after `/trust`. 0.1's `~/.minimal/config.json`, `theme.json` and `marketplaces.json` are moved into `~/.minimal/settings.json` on the first start, and `prompt.md` becomes `prompt.base`. The keys, merge rules, permission syntax and examples are in [docs/settings.md](docs/settings.md).
 
 ---
 

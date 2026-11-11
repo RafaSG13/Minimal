@@ -225,6 +225,8 @@ def format_report(project: ProjectSnapshot) -> str:
         for scope, keys in project.risky.items():
             for rule in keys.get("permissions.allow", []):
                 lines.append(f"  ⚠ permissions.allow {rule} ({scope})")
+            for ext_id in keys.get("extensions.disabled", []):
+                lines.append(f"  ⚠ extensions.disabled {ext_id} ({scope})")
             for ext_id, values in keys.get("extensions.settings", {}).items():
                 lines.append(f"  · extensions.settings {ext_id} {json.dumps(values, separators=(',', ':'))} ({scope})")
     return "\n".join(lines)

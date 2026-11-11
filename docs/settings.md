@@ -27,7 +27,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `prompt.files`        | list of strings              | all          | highest layer wins; default `["AGENTS.md"]`                          |
 | `permissions.allow`   | list of rules                | all          | concatenated; project/local only once trusted                        |
 | `permissions.deny`    | list of rules                | all          | concatenated                                                         |
-| `extensions.disabled` | list of extension ids        | all          | union                                                                |
+| `extensions.disabled` | list of extension ids        | all          | union; project/local only once trusted                               |
 | `extensions.settings` | object: extension id → object | all         | per id, each layer's object updates the lower ones; project/local only once trusted |
 
 - **`prompt.files`** are read relative to the working directory and added to the system prompt as `Project instructions (<name>)`. Missing files are skipped. Files set by the project or local layer must stay inside the project; others are ignored.
@@ -38,12 +38,13 @@ A file that is not valid JSON is left out entirely. An unknown key, a value of t
 
 ## Trust
 
-A project's files come from its repository. Most keys apply as soon as you open the project, but the two that grant something apply only after `/trust` (or `--trust-project`):
+A project's files come from its repository. Most keys apply as soon as you open the project, but the three that grant something or switch protections off apply only after `/trust` (or `--trust-project`):
 
 - `permissions.allow`: a project could otherwise approve its own commands.
+- `extensions.disabled`: a project could otherwise turn off a global guardrail extension.
 - `extensions.settings`: values that change what extensions do.
 
-Untrusted, they are skipped: the status line counts them with the project's extensions (`⚠ N untrusted`) and `/settings` marks them `(not trusted: /trust)`. `/trust` shows them alongside the extension scan, and the decision covers exactly what was shown: editing either key makes the project untrusted again. `permissions.deny` and every other key always apply. `marketplaces` and `prompt.base` are never read from a project.
+Untrusted, they are skipped: the status line counts them with the project's extensions (`⚠ N untrusted`) and `/settings` marks them `(not trusted: /trust)`. `/trust` shows them alongside the extension scan, and the decision covers exactly what was shown: editing any of these keys makes the project untrusted again. `permissions.deny` and every other key always apply. `marketplaces` and `prompt.base` are never read from a project.
 
 ## Permissions
 
@@ -58,7 +59,7 @@ The pattern matches the tool's subject:
 | Tool                                        | Subject   | Pattern                                                                                                       |
 | ------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
 | `bash`                                      | `command` | shell-style wildcard over the whole command (`*`, `?`, `[…]`)                                                 |
-| `read`, `write`, `edit`, `grep`, `glob`     | `path`    | glob relative to the working directory (`**` crosses folders; `~` expands); paths outside it match as absolute paths. `grep`/`glob` without a path mean `.` |
+| `read`, `write`, `edit`, `grep`, `glob`     | `path`    | glob (`**` crosses folders; `~` expands). A relative pattern matches the path relative to the working directory, or the absolute path when outside it; an absolute or `~` pattern always matches the absolute path. `grep`/`glob` without a path mean `.` |
 | extension tools with `subject_key`          | that input field | shell-style wildcard                                                                                   |
 
 A `bash` allow rule never matches a command containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<` or a newline, so `bash(git status*)` does not approve `git status && rm -rf x`. Deny rules match those commands as usual.

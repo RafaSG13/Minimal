@@ -25,8 +25,8 @@
 - **Migration**: on first start, `config.json`, `theme.json` and `marketplaces.json` are moved into
   `~/.minimal/settings.json`; `prompt.md` is kept and referenced as `prompt.base`.
 - **Permissions**: `permissions.allow` rules (`bash(git status*)`, `write(src/**)`) run matching tool calls without
-  asking; `permissions.deny` rules block them, even with `-y`. A project's allow rules and extension settings apply
-  only once the project is trusted (`/trust`), which now reviews them alongside its extensions.
+  asking; `permissions.deny` rules block them, even with `-y`. A project's allow rules, disabled extensions and
+  extension settings apply only once the project is trusted (`/trust`), which now reviews them alongside its extensions.
 - **Extension metadata and packages**: `__version__` and `__requires__ = ">=0.2"`; an extension may be a folder
   with an `__init__.py` and helper modules. `extensions.disabled` turns extensions off by id.
 - `Extension` decorators (`@minimal.tool`, `@minimal.command`, `@minimal.on`), `minimal.declare_settings(...)`,

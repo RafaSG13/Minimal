@@ -122,7 +122,14 @@ class SettingsTest(unittest.TestCase):
         self.write("local", {"extensions": {"settings": {"x": {"b": 2}}, "disabled": ["y"]}})
         self.assertEqual(self.settings(trusted=False)[0].extension_settings("x"), {"a": 1, "b": 1})
         self.assertEqual(self.settings(trusted=True)[0].extension_settings("x"), {"a": 1, "b": 2})
-        self.assertEqual(self.settings()[0].disabled, frozenset({"y"}))
+
+    def test_untrusted_project_cannot_disable_extensions(self):
+        self.write("global", {"extensions": {"disabled": ["g"]}})
+        self.write("project", {"extensions": {"disabled": ["guardrail"]}})
+        untrusted = self.settings(trusted=False)[0]
+        self.assertEqual(untrusted.disabled, frozenset({"g"}))
+        self.assertTrue(untrusted.untrusted_risky)
+        self.assertEqual(self.settings(trusted=True)[0].disabled, frozenset({"g", "guardrail"}))
 
     def snapshot_digest(self):
         layers, _ = config.read_layers(str(self.cwd))

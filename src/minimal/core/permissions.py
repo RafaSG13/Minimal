@@ -4,8 +4,10 @@ A rule is ``name`` (every call of tool ``name``) or ``name(pattern)``, where the
 pattern is matched against the tool's subject (:attr:`~minimal.extensions.registry.Tool.subject_key`):
 
 - ``bash(git status*)``: the command, as a shell-style wildcard (``fnmatch``);
-- ``read(.env)``, ``write(src/**)``: the path, relative to the working directory
-  when inside it, else absolute, as a glob (``**`` crosses folders, ``~`` expands);
+- ``read(.env)``, ``write(src/**)``: the path as a glob (``**`` crosses folders,
+  ``~`` expands). A relative pattern matches the path relative to the working
+  directory when inside it, else absolute; an absolute (or ``~``) pattern always
+  matches the absolute path;
 - ``fetch(https://example.com/*)``: any other subject, as a shell-style wildcard.
 
 ``permissions.deny`` rules win over everything, ``-y`` included, and apply to
@@ -66,8 +68,12 @@ def matches(rule: str, tool: Tool, input: dict, cwd: str) -> bool:
     if key == "path":
         root = Path(cwd).resolve()
         resolved = (root / os.path.expanduser(value)).resolve()
-        subject = resolved.relative_to(root).as_posix() if resolved.is_relative_to(root) else resolved.as_posix()
-        return glob_regex(os.path.expanduser(pattern)).fullmatch(subject) is not None
+        pattern = os.path.expanduser(pattern)
+        if os.path.isabs(pattern) or not resolved.is_relative_to(root):
+            subject = resolved.as_posix()
+        else:
+            subject = resolved.relative_to(root).as_posix()
+        return glob_regex(pattern).fullmatch(subject) is not None
     return fnmatch.fnmatchcase(str(value), pattern)
 
 

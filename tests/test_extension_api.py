@@ -140,6 +140,13 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertIn("bash", self.app.provider.offered[0])
         self.assertEqual(seen, [(True, self.app.context)])
 
+    def test_complete_keeps_an_empty_system_prompt(self):
+        self.app.provider = mock.Mock(stream=mock.Mock(return_value=Reply(content=[], stop_reason="end_turn")))
+        self.app.context.complete([], system="", tools=False)
+        self.assertEqual(self.app.provider.stream.call_args.kwargs["system"], "")
+        self.app.context.complete([], tools=False)
+        self.assertEqual(self.app.provider.stream.call_args.kwargs["system"], self.app.context.system_prompt())
+
     def test_package_extension_reloads_its_helpers(self):
         pkg = self.global_dir / "pkg"
         self.extension(
@@ -158,6 +165,28 @@ class ExtensionApiTest(unittest.TestCase):
         (pkg / "helpers.py").write_text("X = 'v2'\n")  # same size: a cached import would miss it
         self.app.reload_extensions()
         self.assertEqual(self.app.registry.tools["pkg"].run({}, self.app.context), "v2")
+
+    def test_package_cannot_import_modules_added_after_the_snapshot(self):
+        pkg = self.global_dir / "pkg"
+        self.extension(
+            "__init__.py",
+            """
+            import importlib
+
+            def register(minimal):
+                minimal.register_tool("lazy", lambda input, ctx: importlib.import_module(__name__ + "." + input["name"]).X)
+            """,
+            folder=pkg,
+        )
+        self.extension("sub/mod.py", "X = 'reviewed'\n", folder=pkg)
+        self.assertEqual(self.app.reload_extensions(), ([pkg], []))
+        tool = self.app.registry.tools["lazy"]
+        self.assertEqual(tool.run({"name": "sub.mod"}, self.app.context), "reviewed")
+        self.extension("late.py", "X = 'unreviewed'\n", folder=pkg)
+        self.extension("sub/late.py", "X = 'unreviewed'\n", folder=pkg)
+        for name in ("late", "sub.late"):
+            with self.assertRaises(ModuleNotFoundError):
+                tool.run({"name": name}, self.app.context)
 
     def test_file_and_folder_with_the_same_name(self):
         self.extension("dup.py", "def register(minimal):\n    pass\n")

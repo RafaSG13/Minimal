@@ -59,7 +59,7 @@ def run_setup(registry: Registry) -> tuple[str, str]:
         _ensure_key(spec)
     model = questionary.text(
         "Model",
-        default=current["model"] if current.get("provider") == name else spec.default_model,
+        default=current.get("model", spec.default_model) if current.get("provider") == name else spec.default_model,
         validate=lambda text: bool(text.strip()) or "Enter a model name",
     ).unsafe_ask().strip()
     config.update_global({"provider": name, "model": model})
