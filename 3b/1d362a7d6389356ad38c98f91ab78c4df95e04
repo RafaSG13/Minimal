@@ -1,0 +1,18 @@
+docs/extensions.md
+  h_e81853c41416fb 3
+README.md
+  h_e81853c41416fb 141,180,244,324
+CHANGELOG.md
+  h_e81853c41416fb 19-24,33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "3b1d362a7d6389356ad38c98f91ab78c4df95e04",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
