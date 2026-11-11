@@ -552,7 +552,7 @@ def reload_extensions(input: dict, ctx: Any) -> str:
     from minimal.app import reload_summary  # app imports this module
 
     loaded, errors = ctx.reload_extensions()
-    summary = reload_summary(loaded, errors)
+    summary = reload_summary(loaded, errors, ctx.untrusted_notice())
     if errors:
         raise RuntimeError(summary)
     return summary

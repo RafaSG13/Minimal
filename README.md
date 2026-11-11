@@ -69,7 +69,7 @@ minimal --setup                  # change the default provider, login/key or mod
 minimal --login                  # sign in with a Claude Pro/Max subscription
 minimal --logout                 # forget the Claude login
 minimal -y                       # skip tool confirmations
-minimal --trust-project          # load ./.minimal/extensions without asking
+minimal --trust-project          # load ./.minimal/extensions without /trust
 ```
 
 If an `AGENTS.md` exists in the current directory, it is added to the system prompt. minimal needs a terminal, and a turn can only be started from inside its interface: there is no one-shot `minimal -p "prompt"` mode that runs the agent straight from the shell.
@@ -99,6 +99,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | `/tools`                     | List the tools                                                             |
 | `/theme [name]`              | Pick the colour theme; the choice is saved in `~/.minimal/theme.json`      |
 | `/reload`                    | Reload extensions from disk                                                |
+| `/trust`                     | Scan this project's extensions, then choose whether to trust and load them |
 | `/ext …`                     | Install, update, remove, list and publish extensions                       |
 | `/setup`, `/login`, `/logout`| Change the saved default, sign in to Claude, forget the login              |
 | `/exit`                      | Quit (also `Ctrl+Q`)                                                       |
@@ -125,7 +126,7 @@ Typing `/` and part of a command suggests the rest; `→` accepts it. Click a to
 
 An extension is a Python file defining `register(minimal)`. Extensions are loaded from `~/.minimal/extensions/`, `./.minimal/extensions/` and any path passed with `--ext`; files starting with `_` or `.` are skipped. Each folder's own files load first, then those in its `themes/`, `tools/` and `widgets/` subfolders, where the marketplace installs those categories.
 
-A project's `./.minimal/extensions/` is code from the repository, so minimal asks before running it and remembers the answer for exactly those files (`~/.minimal/trusted.json`); adding or editing a file asks again. Refused or unanswered (no terminal), they are skipped with a message. `--trust-project` loads them without asking; `-y` does not.
+A project's `./.minimal/extensions/` is code from the repository, so minimal does not run it until you trust it. Untrusted, it is skipped without asking: the transcript says so and the status line shows `⚠ N untrusted`. `/trust` prints a static scan of each file (what it can do: run commands, use the network, read environment variables or credential files, write files, decode hidden data, hook tool calls…; a list of capabilities, not of intent) and asks once. The answer is remembered for exactly the bytes that were scanned (`~/.minimal/trusted.json`); adding or editing a file makes the folder untrusted again, including files written by the model or installed by `/ext`. `--trust-project` loads them without `/trust`; `-y` does not.
 
 ```python
 def register(minimal):
@@ -225,7 +226,7 @@ flowchart LR
   agent --> exec[execute_tool_call] --> guard["tool_call handlers: veto, fail closed"] --> confirm[user confirmation] --> registry[Registry]
   registry --> tools[built-in tools]
   registry --> ext[extensions]
-  app --> reload[App.reload_extensions] --> trust["project extensions trusted?<br/>(~/.minimal/trusted.json)"] --> registry
+  app --> reload[App.reload_extensions] --> trust["project extensions trusted?<br/>(~/.minimal/trusted.json, /trust)"] --> registry
   turn --> session[Session.save]
 ```
 
@@ -250,11 +251,12 @@ src/minimal/
   registry.py        Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
   tools.py           built-in tools: read, write, edit, bash, grep, glob, reload_extensions
   extensions.py      finds extension files and calls their register(minimal)
+  audit.py           static scan of extension source for /trust: what a file can do
   marketplace.py     git-based marketplaces: list, search, install, publish (~/.minimal/marketplace cache)
   session.py         JSONL sessions (~/.minimal/sessions)
   agent.py           agent loop (model → tools → model …)
   app.py             App: runtime state, provider switching, system prompt, one user turn, extension reload, Frontend
-  commands.py        slash commands (/help, /provider, /reload, /ext, …)
+  commands.py        slash commands (/help, /provider, /reload, /trust, /ext, …)
   config.py          default provider/model, API keys, marketplaces, UI theme (~/.minimal/*.json)
   setup.py           onboarding wizard: provider, login or API key, model
   theme.py           built-in theme, extension themes for Textual, UI glyphs

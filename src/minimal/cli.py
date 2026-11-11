@@ -31,7 +31,7 @@ Options:
   -m, --model <name>    model (default $MINIMAL_MODEL, else the one chosen in setup, else the provider's default)
   -e, --ext <path>      load an extension file or folder (repeatable)
   -y, --yes             do not ask for confirmation for write/edit/bash
-  --trust-project       load this project's .minimal/extensions without asking
+  --trust-project       load this project's .minimal/extensions without /trust
   -h, --help            this help
 
 Environment:
