@@ -243,8 +243,8 @@ class CompactTest(BundledExtensionTest):
         )
         out = self.run_turn(app, "q")
         self.assertEqual(app.session.id, "old")
-        self.assertEqual(app.messages, [])
-        self.assertEqual(session_mod.list_sessions(), [])
+        self.assertEqual([m["role"] for m in app.messages], ["user", "assistant"])  # the answer was complete: kept
+        self.assertEqual(session_mod.list_sessions(), ["old"])  # holds the kept answer; no compacted session was created
         self.assertIn("interrupted by the user", out)
         self.assertNotIn("[extension] error", out)
 

@@ -445,9 +445,11 @@ class App:
     def run_turn(self, text: str) -> None:
         """Send ``text`` to the model, stream the answer to the frontend and save the session.
 
-        If the turn fails or is interrupted, its messages are discarded so the
-        history never ends with a ``tool_use`` that has no result, and the
-        frontend gets the error.
+        If the turn fails or is interrupted, the frontend gets the error. If the
+        model had already replied, the turn stays in the history, closed with an
+        assistant note saying why it ended (every ``tool_use`` has its result), so
+        the model still knows what it did. If it had not, the turn is discarded and
+        the same prompt can be sent again.
         """
         self.cancelled.clear()
         before = len(self.messages)
@@ -469,11 +471,20 @@ class App:
                 permit=self.permit,
             )
         except KeyboardInterrupt:
-            del self.messages[before:]
+            self._close_failed_turn(before, "interrupted by the user")
             raise
         except Exception as e:
-            del self.messages[before:]
             error = str(e)
+            self._close_failed_turn(before, error)
         finally:
             self.session.save()
         self.frontend.turn_end(error)
+
+    def _close_failed_turn(self, before: int, reason: str) -> None:
+        """Leave the history valid after a turn that began at ``messages[before]`` failed (see :meth:`run_turn`)."""
+        if not any(m["role"] == "assistant" for m in self.messages[before:]):
+            del self.messages[before:]
+        elif self.messages[-1]["role"] != "assistant":
+            first_line = next(iter(reason.strip().splitlines()), "unknown error")
+            note = f"[turn interrupted: {first_line[:300]}]"
+            self.messages.append({"role": "assistant", "content": [{"type": "text", "text": note}]})

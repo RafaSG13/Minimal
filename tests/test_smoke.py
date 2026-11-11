@@ -254,6 +254,90 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(registry.status["x"].side, "right")
 
 
+class FailingProvider:
+    """Replays ``replies`` in order; an ``Exception`` in the list is raised instead of returned."""
+
+    name = "fake"
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+
+    def stream(self, **kwargs):
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def now_call(call_id):
+    return {"type": "tool_use", "id": call_id, "name": "now", "input": {}}
+
+
+class FailedTurnTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        for patcher in (
+            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global"),
+            mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.registry = Registry()
+        register_builtin_tools(self.registry)
+        load_extensions(self.registry, str(self.tmp), config.Settings(), extra=[EXAMPLE])
+        self.app = App(
+            registry=self.registry, session=Session("t", self.tmp / "t.jsonl"), cwd=str(self.tmp), auto_approve=True
+        )
+
+    def run_turn(self, replies):
+        self.app.provider, self.app.model = FailingProvider(replies), "m"
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.app.run_turn("go")
+
+    def assertEveryToolUseIsAnswered(self):
+        messages = self.app.messages
+        for i, message in enumerate(messages):
+            if message["role"] != "assistant" or isinstance(message["content"], str):
+                continue
+            ids = [b["id"] for b in message["content"] if b["type"] == "tool_use"]
+            answered = [b["tool_use_id"] for b in messages[i + 1]["content"]] if ids else []
+            self.assertEqual(ids, answered)
+
+    def test_error_after_tool_work_keeps_the_work_and_says_why(self):
+        self.run_turn([Reply(content=[now_call("t1")], stop_reason="tool_use"), RuntimeError("429 rate limited\nbody")])
+        messages = self.app.messages
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "user", "assistant"])
+        self.assertIs(messages[2]["content"][0]["is_error"], False)
+        self.assertEqual(messages[3]["content"][0]["text"], "[turn interrupted: 429 rate limited]")
+        self.assertEveryToolUseIsAnswered()
+        self.assertEqual(self.app.session.messages, messages)
+
+    def test_interrupt_between_calls_keeps_finished_results_and_answers_the_rest(self):
+        self.registry.on("tool_result", lambda event: self.app.cancelled.set())  # Esc after the first call ran
+        self.run_turn([Reply(content=[now_call("t1"), now_call("t2")], stop_reason="tool_use")])
+        messages = self.app.messages
+        first, second = messages[2]["content"]
+        self.assertEqual((first["tool_use_id"], first["is_error"]), ("t1", False))
+        self.assertEqual((second["tool_use_id"], second["is_error"]), ("t2", True))
+        self.assertIn("did not run", second["content"])
+        self.assertEqual(messages[3]["content"][0]["text"], "[turn interrupted: interrupted by the user]")
+        self.assertEveryToolUseIsAnswered()
+
+    def test_error_before_any_reply_discards_the_turn_so_the_prompt_can_be_resent(self):
+        self.run_turn([RuntimeError("401")])
+        self.assertEqual(self.app.messages, [])
+
+    def test_interrupt_after_a_complete_answer_keeps_it_without_a_note(self):
+        def interrupt(event):  # what an extension does at turn_end, e.g. an interrupted compaction
+            raise TurnInterrupted("interrupted by the user")
+
+        self.registry.on("turn_end", interrupt)
+        self.run_turn([Reply(content=[{"type": "text", "text": "done"}], stop_reason="end_turn")])
+        self.assertEqual([m["role"] for m in self.app.messages], ["user", "assistant"])
+
+
 HELLO_EXT = 'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- A turn that fails or is interrupted after the model replied is no longer thrown away. It stays in the history: the
+  results of the tool calls that finished are kept, each call not finished is answered with an error, and an assistant
+  note `[turn interrupted: <reason>]` closes it, so the model still knows what it already did (files it wrote, for
+  example) when you continue. A turn that fails before any reply is still discarded, so the same prompt can be sent
+  again. The agent loop, also behind `ctx.run_agent`, keeps every `tool_use` answered when it ends with an exception.
+
 ### Fixed
 
 - A reply cut off by the output token limit (`stop_reason == "max_tokens"`) in the middle of a tool call no longer

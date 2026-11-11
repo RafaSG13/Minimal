@@ -10,6 +10,10 @@ One call to :func:`run_agent` handles one user turn:
    output token limit, its calls may be incomplete: none runs, each is answered
    with an error asking for smaller steps, and the loop goes on.
 
+If the loop ends with an exception (interruption, provider error) while the calls run, the results so far are
+kept and every call not finished is answered with an error, so ``messages`` never ends with a ``tool_use`` that
+has no result.
+
 The loop only sees the canonical message format described in
 :mod:`minimal.providers.base`; each provider translates to and from its own API.
 """
@@ -33,6 +37,9 @@ TRUNCATED = (
     "Try again with smaller steps (for example, write a large file in several parts)."
 )
 """Error of a tool call the model's output limit cut off (the model sees ``"Error: " + TRUNCATED``)."""
+
+UNFINISHED = "the turn ended before this call finished: it did not run, or ran only in part."
+"""Error of a tool call left pending when the turn failed or was interrupted (the model sees ``"Error: " + UNFINISHED``)."""
 
 Confirm = Callable[[dict], bool]
 """Asks whether a ``tool_use`` call may run."""
@@ -124,15 +131,24 @@ def run_agent(
             messages.append({"role": "user", "content": results})
             continue
 
-        results = []
-        for call in calls:
-            raise_if_cancelled(cancelled)
-            if on_tool:
-                on_tool(call)
-            result = execute_tool_call(call, registry, ctx, confirm=confirm, permit=permit, exclude=exclude_tools)
-            if on_tool_result:
-                on_tool_result(call, result)
-            results.append(result)
+        results: list[dict] = []
+        try:
+            for call in calls:
+                raise_if_cancelled(cancelled)
+                if on_tool:
+                    on_tool(call)
+                result = execute_tool_call(call, registry, ctx, confirm=confirm, permit=permit, exclude=exclude_tools)
+                if on_tool_result:
+                    on_tool_result(call, result)
+                results.append(result)
+        except BaseException:
+            # Keep the results of the calls that finished and answer the rest, so the history stays valid.
+            pending = [
+                {"type": "tool_result", "tool_use_id": call["id"], "content": "Error: " + UNFINISHED, "is_error": True}
+                for call in calls[len(results) :]
+            ]
+            messages.append({"role": "user", "content": [*results, *pending]})
+            raise
         messages.append({"role": "user", "content": results})
 
     raise RuntimeError(f"exceeded the maximum of {max_turns} turns")
