@@ -1,0 +1,32 @@
+docs/extensions.md
+  h_e81853c41416fb 42-43
+docs/settings.md
+  h_e81853c41416fb 62
+src/minimal/cli.py
+  h_e81853c41416fb 18,135,137-139
+src/minimal/core/permissions.py
+  h_e81853c41416fb 8,70
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 165-166,170-171,175,180-183,191,199,204-208,211-212
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 183-184,204-208,267,278-285,291-298,306-308,319-326,346-350,477,504,571
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 211
+tests/test_extension_api.py
+  h_e81853c41416fb 191-211
+tests/test_marketplace.py
+  h_e81853c41416fb 11,273,277-286,292-318,386-398
+tests/test_permissions.py
+  h_e81853c41416fb 87-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "9d9be25262b5c368d114f2b6955aeceb75bfc34d",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
