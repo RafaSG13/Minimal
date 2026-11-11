@@ -1,0 +1,20 @@
+CHANGELOG.md
+  h_e81853c41416fb 16
+README.md
+  h_e81853c41416fb 42,45
+pyproject.toml
+  h_e81853c41416fb 2
+uv.lock
+  h_e81853c41416fb 678
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "830b5b17c196abf55e88823335e2c240d382f85c",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
