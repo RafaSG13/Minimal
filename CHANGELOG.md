@@ -9,12 +9,18 @@
   note `[turn interrupted: <reason>]` closes it, so the model still knows what it already did (files it wrote, for
   example) when you continue. A turn that fails before any reply is still discarded, so the same prompt can be sent
   again. The agent loop, also behind `ctx.run_agent`, keeps every `tool_use` answered when it ends with an exception.
+- Session files start with a `{"type": "session", "cwd": ...}` header line. `/sessions` and `/resume` take `--all` to
+  include every project's sessions (`/resume <id>` works for any id, and `/sessions` now shows a preview of each one);
+  `ctx.sessions(all_projects=False)` and `list_sessions(cwd)`/`last_session(cwd)` filter by project. Sessions saved
+  before this change have no header, so they only appear with `--all`.
 
 ### Fixed
 
 - A reply cut off by the output token limit (`stop_reason == "max_tokens"`) in the middle of a tool call no longer
   ends the turn with a `tool_use` that has no `tool_result`, which made every later request fail. The agent loop
   does not run the possibly incomplete calls; it answers each with an error asking for smaller steps and continues.
+- `minimal -c` resumed the latest session of any project. Sessions now start with a header line recording their
+  project directory, and `-c`, `/sessions` and `/resume` default to the current directory's sessions.
 
 ## 0.2.0
 

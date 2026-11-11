@@ -64,7 +64,7 @@ On the first start, setup asks (arrow keys) for the default provider, its creden
 
 ```bash
 minimal                          # interactive terminal UI
-minimal -c                       # resume the last session
+minimal -c                       # resume the last session of this directory
 minimal -s <id>                  # open (or create) a specific session
 minimal -e extensions/example.py # load an extension file or folder (repeatable)
 minimal --setup                  # change the default provider, login/key or model
@@ -95,8 +95,8 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | Command                      | What it does                                                               |
 | ---------------------------- | -------------------------------------------------------------------------- |
 | `/help`                      | Show the commands, including those added by extensions                     |
-| `/new`, `/sessions`          | Start a new session, list saved sessions                                   |
-| `/resume [id]`               | Resume a saved session: pick one of the latest, or give its id             |
+| `/new`, `/sessions [--all]`  | Start a new session, list this project's saved sessions (every project's with `--all`) |
+| `/resume [--all] [id]`       | Resume a saved session of this project: pick one of the latest (`--all`: of any project), or give an id |
 | `/model [number\|name]`      | List models, or change model                                               |
 | `/provider [name [model]]`   | List providers, or switch for this session and keep the conversation       |
 | `/tools`                     | List the tools                                                             |
@@ -110,7 +110,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 
 `/setup` and `/login` run with the UI suspended, in the plain terminal. `/setup` changes the saved default; `/provider` only affects the current session.
 
-`Esc` interrupts the turn in progress: a running `bash` command is killed and the turn is dropped from the history, as when it fails. It takes effect at the next streamed chunk, tool call or model request. Interrupting during an automatic compaction aborts it and drops the turn like any other interrupt. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
+`Esc` interrupts the turn in progress: a running `bash` command is killed. It takes effect at the next streamed chunk, tool call or model request. If the model had already replied, the turn stays in the history, closed with a `[turn interrupted: …]` note and an error result for each tool call that had not finished, so the model still knows what it did; otherwise the turn is dropped and the same prompt can be sent again. Interrupting during an automatic compaction aborts it and keeps the answer. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
 
 Typing `/` and part of a command suggests the rest; `→` accepts it. Click a tool call to expand its output (up to 500 lines) and again to collapse it; edits show a diff with the file's line numbers, and `read`/`write` show syntax-highlighted code. `Ctrl+B` hides or shows the sidebar.
 

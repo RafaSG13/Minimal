@@ -222,8 +222,8 @@ class CompactTest(BundledExtensionTest):
             [m["content"] if isinstance(m["content"], str) else m["content"][0]["text"] for m in app.messages],
             [ext.SUMMARY_PREFIX + "SUMMARY", ext.ACK, "q", "answer"],
         )
-        self.assertEqual(len((self.tmp / "sessions" / "old.jsonl").read_text().splitlines()), 2)
-        self.assertEqual(len(app.session.file.read_text().splitlines()), 4)
+        self.assertEqual(len(session_mod.open_session("old").messages), 2)  # the full history stays in the old session
+        self.assertEqual(len(session_mod.open_session(app.session.id).messages), 4)
         self.assertEqual(app.provider.requests[1].messages[-1], {"role": "user", "content": ext.SUMMARY_REQUEST})
 
     def test_below_the_threshold_nothing_happens(self):

@@ -153,14 +153,14 @@ class Context:
         app = self._app
         old = app.session
         old.save()
-        app.session = open_session(new_id())
+        app.session = open_session(new_id(), app.cwd)
         app.messages.extend(messages)
         app.session.save()
         return old.id
 
-    def sessions(self) -> list[str]:
-        """Saved session ids, oldest first."""
-        return list_sessions()
+    def sessions(self, *, all_projects: bool = False) -> list[str]:
+        """Saved session ids, oldest first: this project's (see ``cwd``), or every project's with ``all_projects``."""
+        return list_sessions(None if all_projects else self._app.cwd)
 
     def read_session(self, session_id: str) -> list[dict]:
         """The messages of saved session ``session_id``.

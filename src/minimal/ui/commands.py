@@ -17,7 +17,7 @@ from pathlib import Path
 
 from minimal import config
 from minimal.core.app import App
-from minimal.core.session import list_sessions, new_id, open_session, preview
+from minimal.core.session import list_sessions, new_id, open_session, preview, project_dir, session_project
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
 from minimal.extensions.registry import Command
@@ -35,12 +35,28 @@ def _help(args: str, app: App) -> None:
 
 
 def _new(args: str, app: App) -> None:
-    app.session = open_session(new_id())
+    app.session = open_session(new_id(), app.cwd)
     print(f"New session: {app.session.id}")
 
 
+def _split_all(args: str) -> tuple[bool, list[str]]:
+    """Whether ``--all`` is among the words of ``args``, and the other words."""
+    words = args.split()
+    rest = [w for w in words if w != "--all"]
+    return len(rest) != len(words), rest
+
+
+def _session_label(id: str, all_projects: bool) -> str:
+    where = f"  {session_project(id) or '?'}" if all_projects else ""
+    return f"{id}{where}  {preview(id)}".rstrip()
+
+
 def _sessions(args: str, app: App) -> None:
-    print("\n".join(list_sessions()) or "(none)")
+    all_projects, rest = _split_all(args)
+    if rest:
+        raise ValueError("usage: /sessions [--all]")
+    ids = list_sessions(None if all_projects else app.cwd)
+    print("\n".join(_session_label(i, all_projects) for i in ids) or "(none)")
 
 
 RESUME_CHOICES = 30
@@ -48,22 +64,26 @@ RESUME_CHOICES = 30
 
 
 def _resume(args: str, app: App) -> None:
-    ids = list_sessions()
-    if args:
-        if args not in ids:  # open_session would quietly start a new session under that id
-            raise ValueError(f"no session {args!r}; /sessions lists them")
-        id = args
+    all_projects, rest = _split_all(args)
+    if len(rest) > 1:
+        raise ValueError("usage: /resume [--all] [id]")
+    if rest:
+        id = rest[0]
+        if id not in list_sessions():  # open_session would quietly start a new session under that id
+            raise ValueError(f"no session {id!r}; /sessions --all lists every project's")
     else:
+        ids = list_sessions(None if all_projects else app.cwd)
         recent = [i for i in reversed(ids) if i != app.session.id][:RESUME_CHOICES]
         if not recent:
             print("(none)")
             return
-        id = app.frontend.choose("Resume session", [(i, f"{i}  {preview(i)}".rstrip()) for i in recent])
+        id = app.frontend.choose("Resume session", [(i, _session_label(i, all_projects)) for i in recent])
         if id is None:
             print("Cancelled.")
             return
     app.session = open_session(id)
-    print(f"Resumed session {id} ({len(app.messages)} messages)")
+    elsewhere = f", from {app.session.cwd}" if app.session.cwd and app.session.cwd != project_dir(app.cwd) else ""
+    print(f"Resumed session {id} ({len(app.messages)} messages{elsewhere})")
 
 
 def _available_models(app: App) -> list[str]:
@@ -391,8 +411,8 @@ def _ext_picker(app: App) -> None:
 BUILTIN_COMMANDS: dict[str, Command] = {
     "help": Command(_help, "show the commands"),
     "new": Command(_new, "start a new session"),
-    "sessions": Command(_sessions, "list saved sessions"),
-    "resume": Command(_resume, "resume a saved session: /resume [id]"),
+    "sessions": Command(_sessions, "list this project's saved sessions: /sessions [--all]"),
+    "resume": Command(_resume, "resume a saved session of this project: /resume [--all] [id]"),
     "model": Command(_model, "list models, or change: /model [number|name]"),
     "provider": Command(_provider, "list providers, or switch: /provider <name> [model]"),
     "tools": Command(_tools, "list the tools"),
