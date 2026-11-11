@@ -37,14 +37,6 @@ SETTINGS_FILE = HOME_DIR / "settings.json"
 KEYS_FILE = HOME_DIR / "keys.json"
 TRUST_FILE = HOME_DIR / "trusted.json"
 
-LEGACY_FILES = {
-    "config": HOME_DIR / "config.json",
-    "theme": HOME_DIR / "theme.json",
-    "marketplaces": HOME_DIR / "marketplaces.json",
-    "prompt": HOME_DIR / "prompt.md",
-}
-"""Files of minimal 0.1 that :func:`migrate_legacy` folds into :data:`SETTINGS_FILE`."""
-
 SCOPES = ("global", "project", "local")
 """Settings layers, lowest first."""
 
@@ -297,58 +289,6 @@ def update_global(changes: dict) -> None:
         else:
             data[key] = value
     write_private(SETTINGS_FILE, data)
-
-
-def migrate_legacy() -> str | None:
-    """Fold minimal 0.1's ``config.json``, ``theme.json``, ``marketplaces.json`` and ``prompt.md`` into :data:`SETTINGS_FILE`.
-
-    Runs only when the settings file does not exist yet and a legacy file does.
-    The JSON files are deleted once moved; ``prompt.md`` stays and is referenced
-    as ``prompt.base``. An unreadable file is left in place and reported.
-
-    Returns:
-        What happened, for the user; ``None`` if there was nothing to do.
-    """
-    if SETTINGS_FILE.exists() or not any(path.exists() for path in LEGACY_FILES.values()):
-        return None
-    data: dict = {}
-    moved: list[Path] = []
-    problems: list[str] = []
-    wanted = {
-        "config": {"provider": str, "model": str},
-        "theme": {"theme": str},
-        "marketplaces": {"marketplaces": list},
-    }
-    for name, keys in wanted.items():
-        path = LEGACY_FILES[name]
-        if not path.exists():
-            continue
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, ValueError) as e:
-            problems.append(f"left {path.name} in place: not valid JSON ({e})")
-            continue
-        if not (isinstance(raw, dict) and all(isinstance(raw.get(k), t) for k, t in keys.items())):
-            problems.append(f"left {path.name} in place: unexpected content")
-            continue
-        if name == "marketplaces" and not _is_str_list(raw["marketplaces"]):
-            problems.append(f"left {path.name} in place: unexpected content")
-            continue
-        data.update({k: raw[k] for k in keys})
-        moved.append(path)
-    if LEGACY_FILES["prompt"].exists():
-        data["prompt"] = {"base": "~/.minimal/prompt.md"}
-    if not data:
-        return "Settings not migrated: " + "; ".join(problems)
-    write_private(SETTINGS_FILE, data)
-    for path in moved:
-        path.unlink()
-    parts = []
-    if moved:
-        parts.append(f"Moved {', '.join(p.name for p in moved)} into ~/.minimal/settings.json")
-    if "prompt" in data:
-        parts.append("prompt.md is kept and set as prompt.base in ~/.minimal/settings.json")
-    return "; ".join(parts + problems)
 
 
 def load_keys() -> dict[str, str]:

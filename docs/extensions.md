@@ -1,6 +1,6 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers the API of minimal 0.2. Coming from 0.1? See [Migrating from 0.1](#migrating-from-01).
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers the API of minimal 0.2.
 
 ```python
 """Greets the user."""
@@ -283,28 +283,3 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas, status sides and theme colours   |
 | `LogoSpec`, `logo_content`, `theme`                         | Logo rendering, UI glyphs and the built-in theme                  |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
-
-## Migrating from 0.1
-
-0.2 is a breaking change: `register(minimal)` no longer receives the internal registry, and `ctx` is no longer the app. Add `__requires__ = ">=0.2"` and update:
-
-| 0.1                                                                 | 0.2                                                              |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `ctx.frontend.ask/choose/choose_many/ask_text(…)`                   | `ctx.ui.ask/choose/choose_many/ask_text(…)`                      |
-| `ctx.session = open_session(new_id())` and copying messages         | `old_id = ctx.new_session(messages)`                             |
-| `ctx.session.id`                                                    | `ctx.session_id`                                                 |
-| `run_agent(...)` from `minimal.api`                                 | `ctx.run_agent(prompt, system_note=..., exclude_tools=...)`      |
-| `ctx.provider.stream(...)` with `build_system_prompt` and `tool_specs` | `ctx.complete(messages, system=None, tools=True)`             |
-| `raise_if_cancelled(ctx)`                                           | `ctx.check_cancelled()`                                          |
-| `ctx.cancelled.is_set()`                                            | `ctx.cancelled` (a `bool`)                                       |
-| `ctx.cancelled.clear()` in a command                                | not needed: every command starts uninterrupted                   |
-| `ctx.registry.tools`                                                | `ctx.tools` or `minimal.tools`                                   |
-| `ctx.reload_extensions()` and `reload_summary(...)`                 | `ctx.reload()`                                                   |
-| `ID_RE`, `SESSIONS_DIR` and reading session files                   | `ctx.sessions()`, `ctx.read_session(id)`                         |
-| a child `Registry()` for a subagent                                 | `ctx.run_agent(..., exclude_tools={"subagent"})`                 |
-| monkeypatching `minimal.tools.shell.clip` to see full bash output   | not needed: `tool_result` handlers see unclipped output          |
-| `Path.cwd()` in handlers                                            | `event["ctx"].cwd`                                               |
-| `"Error: the user denied the execution"`                            | `"Error: " + USER_DENIED`                                        |
-| constants edited at the top of the file                             | `minimal.declare_settings({...})`                                |
-
-`BUILTIN_COMMANDS`, `ID_RE`, `SESSIONS_DIR`, `Registry`, `build_system_prompt`, `new_id`, `open_session`, `raise_if_cancelled`, `reload_summary`, `run_agent` and `tool_specs` are no longer in `minimal.api`. The `register_*` methods and `on` keep their 0.1 signatures (`register_tool` adds `subject_key`), and `on` rejects unknown events.

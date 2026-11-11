@@ -16,6 +16,12 @@
   ends the turn with a `tool_use` that has no `tool_result`, which made every later request fail. The agent loop
   does not run the possibly incomplete calls; it answers each with an error asking for smaller steps and continues.
 
+### Removed
+
+- The migration of minimal 0.1's `config.json`, `theme.json`, `marketplaces.json` and `prompt.md` into
+  `settings.json` (`config.migrate_legacy`, `config.LEGACY_FILES`), and the "Migrating from 0.1" sections of the docs.
+  Settings from 0.1 are no longer read or moved; set them in `~/.minimal/settings.json`.
+
 ## 0.2.0
 
 ### Breaking
@@ -24,8 +30,7 @@
   `Registry`, and every `ctx` (tools, commands, events, widgets, status segments) is a `Context` instead of the
   internal `App`. `minimal.api` is the only import surface; `Registry`, `run_agent`, `open_session`, `new_id`,
   `ID_RE`, `SESSIONS_DIR`, `build_system_prompt`, `tool_specs`, `raise_if_cancelled`, `reload_summary` and
-  `BUILTIN_COMMANDS` were removed from it. See [docs/extensions.md](docs/extensions.md) for the API and a
-  migration table from 0.1.
+  `BUILTIN_COMMANDS` were removed from it. See [docs/extensions.md](docs/extensions.md) for the API.
 - `ctx.cancelled` is a `bool`; `ctx.check_cancelled()` raises `TurnInterrupted`.
 - Event payloads carry `ctx` (`tool_call`, `tool_result`) and `nested` (`turn_end`); `on()` rejects unknown events.
 - `tool_result` handlers see a command's whole output; the agent loop clips what the model sees afterwards.

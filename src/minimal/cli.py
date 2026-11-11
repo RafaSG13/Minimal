@@ -66,12 +66,6 @@ def main() -> None:
     opts = parse_args(sys.argv[1:])
     if opts is None:
         return
-    try:
-        moved = config.migrate_legacy()
-    except OSError as e:
-        moved = f"Could not move the old settings files into ~/.minimal/settings.json: {e}"
-    if moved:
-        print(moved, file=sys.stderr)
     if opts.login or opts.logout:
         try:
             if opts.logout:

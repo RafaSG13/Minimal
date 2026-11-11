@@ -138,7 +138,7 @@ Settings are layered JSON files: `~/.minimal/settings.json` (global) < `.minimal
 }
 ```
 
-A project's `permissions.allow`, `extensions.disabled` and `extensions.settings` apply only after `/trust`. 0.1's `~/.minimal/config.json`, `theme.json` and `marketplaces.json` are moved into `~/.minimal/settings.json` on the first start, and `prompt.md` becomes `prompt.base`. The keys, merge rules, permission syntax and examples are in [docs/settings.md](docs/settings.md).
+A project's `permissions.allow`, `extensions.disabled` and `extensions.settings` apply only after `/trust`. The keys, merge rules, permission syntax and examples are in [docs/settings.md](docs/settings.md).
 
 ---
 
@@ -177,7 +177,7 @@ def register(minimal):
     minimal.append_system_prompt("Always reply in the user's language.")
 ```
 
-`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo. Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.complete` and `ctx.run_agent` for model calls, `ctx.new_session`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__requires__`), every member, event payloads, settings, widgets, themes, logos, publishing, and migrating from 0.1. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
+`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo. Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.complete` and `ctx.run_agent` for model calls, `ctx.new_session`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__requires__`), every member, event payloads, settings, widgets, themes, logos and publishing. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
 
 The repository has three more, loaded the same way (`minimal -e extensions/compact.py`) or copied to `~/.minimal/extensions/` (tools in its `tools/` subfolder):
 
@@ -241,7 +241,7 @@ flowchart LR
 
 ```
 src/minimal/         packages from the bottom up; each imports only from the ones above it
-  config.py          layered settings (settings.json global/project/local), migration from 0.1 files, API keys, trust records
+  config.py          layered settings (settings.json global/project/local), API keys, trust records
   providers/
     base.py          Provider interface, Reply, Usage, canonical message format
     anthropic.py     Claude via the Anthropic Messages API (API key)
@@ -321,7 +321,7 @@ The suite needs no network or API key. It covers:
 | `test_providers.py`   | Provider conversions (Gemini and OpenAI history/streaming, Anthropic/Claude requests, token usage) |
 | `test_claude_auth.py` | Browser login round trip, token refresh                                                          |
 | `test_config.py`      | Saved keys, how the startup provider is chosen                                                   |
-| `test_settings.py`    | Settings layers and precedence, validation errors, trust-gated keys, prompt files, migration from 0.1 files |
+| `test_settings.py`    | Settings layers and precedence, validation errors, trust-gated keys, prompt files |
 | `test_permissions.py` | Allow/deny rules for bash, paths and extension tools; deny with `-y`; shell operators             |
 | `test_extension_api.py` | The `Extension` and `Context` facades: decorators, events, settings, sessions, nested agents, package folders, `__requires__`, disabling |
 | `test_security.py`    | Trust digests and the `/trust` scan                                                              |
