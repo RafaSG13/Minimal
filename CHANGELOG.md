@@ -31,6 +31,14 @@
   include every project's sessions (`/resume <id>` works for any id, and `/sessions` now shows a preview of each one);
   `ctx.sessions(all_projects=False)` and `list_sessions(cwd)`/`last_session(cwd)` filter by project. Sessions saved
   before this change have no header, so they only appear with `--all`.
+- The marketplace installs versions, not just whatever is at HEAD. For each item it takes the newest commit in the
+  marketplace's git history whose `__api__` this minimal can run (HEAD's if it can, else the latest older one, shown
+  as "latest for this minimal (newer needs API 2)"), in `/ext`, `ext_search` and `ext_install`. Each extensions folder
+  (global and project) now has a `.lock.json` recording, for each marketplace extension installed in it, the
+  marketplace, commit, `__version__`, `__api__` and the SHA-256 of the installed files. An update is offered when the
+  commit differs, no longer when the bytes do, so a local edit is not mistaken for an update; an edited copy is marked
+  "local changes", starts unticked in "Update these?" (ticking it overwrites it) and `ext_install` refuses to replace
+  it unless called with the new `force: true`. A copy without a lock entry is still compared byte by byte.
 
 ### Fixed
 

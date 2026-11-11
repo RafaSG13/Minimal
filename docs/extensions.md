@@ -249,7 +249,11 @@ A project's `./.minimal/extensions/` is code from the repository, so minimal doe
 
 ## Publishing and `minimal ext check`
 
-A marketplace is a git repository with `extensions/`, `themes/`, `tools/` and `widgets/` folders holding extension files and package folders. Listings need a docstring and `__version__`; one whose `__requires__` this minimal does not meet is shown but not installed.
+A marketplace is a git repository with `extensions/`, `themes/`, `tools/` and `widgets/` folders holding extension files and package folders. Listings need a docstring, `__version__` and `__api__`.
+
+**Versions are commits.** minimal keeps a clone of the marketplace and, for each item, looks at the commits that touched its path, newest first. It offers and installs the newest one whose `__api__` this minimal can run: HEAD's if it can, otherwise an older one (extracted with `git archive`, and labelled "latest for this minimal (newer needs API 2)"). So publishing a version for a new API major does not strand users of the old one, as long as the old version stays in the history; an item with no version for this minimal is shown but not installed.
+
+**The lockfile.** Each extensions folder (`~/.minimal/extensions/` and `./.minimal/extensions/`) has a `.lock.json` written by the marketplace on install and update and cleaned on uninstall. It is keyed by extension id (`name`, or `category/name`) and holds `marketplace`, `commit`, `version`, `api` and `sha256` (over each installed file's path and bytes) of the copy as installed. The loader skips dot-files, so it is never loaded. Updates compare commits, not bytes: an item is outdated when its locked commit is not the one on offer. A copy whose files no longer match `sha256` has local changes; `/ext` leaves its update unticked ("local changes will be overwritten") and `ext_install` refuses it unless called with `force: true`. A copy without a lock entry (installed by hand or by an older minimal) is compared byte by byte with the offered version and has no local-change protection.
 
 ```
 /ext publish <path> [name]     push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
@@ -292,6 +296,6 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 `minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.0`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
-Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace lists it but does not install it. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
+Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 
 **Changing the API.** Adding something bumps the minor version, and extensions that use it declare that minor (`__api__ = "1.1"`). Changing or removing something bumps the major version and is recorded in `REMOVED`; extensions written for the old major stop loading with a clear message until a version for the new one is installed. While minimal has no users outside its author there is no deprecation period: the old name goes in the same release. Once it does, a name will keep working, with a warning, for one minor version before the major that removes it.
