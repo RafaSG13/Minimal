@@ -1,0 +1,36 @@
+README.md
+  h_e81853c41416fb 72,102,129,229,254,259
+pyproject.toml
+  h_e81853c41416fb 26-28
+src/minimal/app.py
+  h_e81853c41416fb 26,29,105-109,113-116,204,281,286-287,314,317-320,329-331,336-346,352-354,358-364
+src/minimal/audit.py
+  h_e81853c41416fb 1-235
+src/minimal/cli.py
+  h_e81853c41416fb 34
+src/minimal/commands.py
+  h_e81853c41416fb 16,164-191,323,341,354,356-357
+src/minimal/extensions.py
+  h_e81853c41416fb 20,64-86
+src/minimal/tools.py
+  h_e81853c41416fb 555
+src/minimal/tui.py
+  h_e81853c41416fb 843-844,1079-1081,1083
+tests/test_marketplace.py
+  h_e81853c41416fb 111,150-152,186-188
+tests/test_security.py
+  h_e81853c41416fb 16,100-107,110-113,116,119-121,123,127,132-141,143,145,153-154,156,162,166-200
+tests/test_tui.py
+  h_e81853c41416fb 10,266-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d3553e3e0b4021f95a1ea8c389315587ef95f790",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
