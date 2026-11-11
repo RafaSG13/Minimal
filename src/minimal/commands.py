@@ -13,7 +13,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from minimal import config, extensions, marketplace, setup
+from minimal import audit, config, extensions, marketplace, setup
 from minimal.app import App, reload_summary
 from minimal.providers import claude_auth
 from minimal.registry import Command
@@ -161,7 +161,34 @@ def _exit(args: str, app: App) -> None:
 
 
 def _reload(args: str, app: App) -> None:
-    print(reload_summary(*app.reload_extensions()))
+    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+
+
+def _trust(args: str, app: App) -> None:
+    """Show a static scan of the project's extensions and ask once whether to trust and load them.
+
+    Trust is saved for the digest of the bytes reported, so files changed after the
+    report stay untrusted: the reload that follows reads them again and skips them.
+    """
+    if args:
+        raise ValueError("usage: /trust")
+    project = extensions.read_project_extensions(app.cwd)
+    if project is None:
+        print(f"No project extensions in {extensions.project_extensions_dir(app.cwd)}.")
+        return
+    if app.is_trusted(project):
+        print(f"The project extensions in {project.directory} are already trusted.")
+        if app.untrusted is not None:  # trusted elsewhere since the last reload
+            print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+        return
+    print(audit.format_report(project))
+    if not app.frontend.ask(
+        f"Trust and load these {len(project.sources)} project extension(s)? Review the scan above: they run with your permissions."
+    ):
+        print("Not trusted: the project extensions stay unloaded.")
+        return
+    config.save_trusted(project.key, project.digest)
+    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
 EXT_USAGE = "/ext [list|publish <path> [name]]"
@@ -293,9 +320,7 @@ def _ext_picker(app: App) -> None:
             return
     to_update = []
     if outdated:
-        picked = app.frontend.choose_many(
-            "Update these?", [(e.listing.name, _entry_label(e), True) for e in outdated]
-        )
+        picked = app.frontend.choose_many("Update these?", [(e.listing.name, _entry_label(e), True) for e in outdated])
         if picked is None:
             print("Cancelled.")
             return
@@ -313,7 +338,7 @@ def _ext_picker(app: App) -> None:
     for e in to_remove:
         for s in e.installed:
             print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd, category)}")
-    print(reload_summary(*app.reload_extensions()))
+    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
 BUILTIN_COMMANDS: dict[str, Command] = {
@@ -326,7 +351,10 @@ BUILTIN_COMMANDS: dict[str, Command] = {
     "tools": Command(_tools, "list the tools"),
     "theme": Command(_theme, "pick the colour theme, or switch: /theme <name>"),
     "reload": Command(_reload, "reload extensions from disk"),
+    "trust": Command(_trust, "review this project's extensions and choose whether to trust and load them"),
     "ext": Command(_ext, f"pick extensions to install, update or remove; {EXT_USAGE}"),
+    "extensions": Command(_ext, f"pick extensions to install, update or remove; {EXT_USAGE}"),
+    "quit": Command(_exit, "quit"),
     "setup": Command(_setup, "choose and save the default provider, its login or key, and the model", terminal=True),
     "login": Command(_login, "sign in with a Claude Pro/Max subscription in the browser", terminal=True),
     "logout": Command(_logout, "forget the Claude login"),

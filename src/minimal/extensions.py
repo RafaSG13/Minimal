@@ -17,7 +17,7 @@ An extension is a ``.py`` file that defines ``register(minimal)``, where ``minim
 Search order (each folder in sorted order, files starting with ``_`` skipped):
 
 1. ``~/.minimal/extensions/``
-2. ``<cwd>/.minimal/extensions/`` (from a snapshot the caller read and had approved)
+2. ``<cwd>/.minimal/extensions/`` (from a snapshot the user trusted)
 3. every ``--ext`` path (a file or a folder)
 
 Within each folder, its own files load first, then those of its ``themes/``,
@@ -59,6 +59,29 @@ class ExtensionSource:
 def read_extensions(files: list[Path]) -> list[ExtensionSource]:
     """Read ``files`` once, in order. Raises ``OSError`` if any cannot be read."""
     return [ExtensionSource(file, file.read_bytes()) for file in files]
+
+
+@dataclass(frozen=True)
+class ProjectExtensions:
+    """A project's extensions as read once: what is scanned, trusted (by ``digest``) and run."""
+
+    directory: Path
+    """:func:`project_extensions_dir` of the project, unresolved (for display)."""
+    key: str
+    """``str(directory.resolve())``: the key in :data:`~minimal.config.TRUST_FILE`."""
+    sources: tuple[ExtensionSource, ...]
+    digest: str
+    """:func:`files_digest` of ``sources``."""
+
+
+def read_project_extensions(cwd: str) -> ProjectExtensions | None:
+    """Snapshot of ``cwd``'s project extensions; ``None`` if there are none. Raises ``OSError`` if one cannot be read."""
+    directory = project_extensions_dir(cwd)
+    files = extension_files(directory)
+    if not files:
+        return None
+    sources = tuple(read_extensions(files))  # the only read of these files: what is hashed, reviewed and run
+    return ProjectExtensions(directory, str(directory.resolve()), sources, files_digest(list(sources)))
 
 
 def category_dir(directory: Path, category: str) -> Path:

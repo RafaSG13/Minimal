@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from minimal import cli, config, extensions, marketplace
+from minimal import audit, cli, commands, config, extensions, marketplace
 from minimal import session as session_mod
 from minimal.agent import execute_tool_call
 from minimal.app import App, ConsoleFrontend
@@ -97,61 +97,105 @@ class ProjectTrustTest(TempDirTest):
             frontend=self.frontend,
         )
 
-    def test_refused_project_extensions_do_not_run(self):
-        self.frontend.ask.return_value = False
+    def trust(self) -> str:
+        """Run ``/trust``; returns what it printed."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            commands.run_command("/trust", self.app)
+        return out.getvalue()
+
+    def test_untrusted_project_extensions_are_skipped_without_asking(self):
         self.app.reload_extensions()
         self.assertNotIn("hello", self.app.registry.tools)
-        self.assertEqual(len(self.app.extension_errors), 1)
-        self.assertIn("not trusted", self.app.extension_errors[0])
-        self.frontend.ask.assert_called_once()
+        self.assertEqual(self.app.extension_errors, [])
+        self.assertEqual(len(self.app.untrusted.sources), 1)
+        self.assertIn("/trust", self.app.untrusted_notice())
+        self.frontend.ask.assert_not_called()
         self.assertFalse(config.TRUST_FILE.exists())
 
-    def test_accepted_project_extensions_are_remembered_until_they_change(self):
+    def test_trust_command_loads_and_remembers_until_files_change(self):
         self.frontend.ask.return_value = True
         self.app.reload_extensions()
-        self.assertIn("hello", self.app.registry.tools)
-        self.assertEqual(self.app.extension_errors, [])
+        self.trust()
+        self.assertEqual(self.app.registry.tools["hello"].run({}, self.app), "v1")
+        self.assertIsNone(self.app.untrusted)
         digest = extensions.files_digest(extensions.read_extensions([self.ext_dir / "hello.py"]))
-        self.assertEqual(
-            json.loads(config.TRUST_FILE.read_text()),
-            {"projects": {str(self.ext_dir): digest}},
-        )
+        self.assertEqual(json.loads(config.TRUST_FILE.read_text()), {"projects": {str(self.ext_dir): digest}})
 
         self.app.reload_extensions()
         self.app.reload_extensions()
+        self.assertIn("hello", self.app.registry.tools)
         self.assertEqual(self.frontend.ask.call_count, 1)
 
         (self.ext_dir / "hello.py").write_text(HELLO_EXT.format(reply="v2"))
         self.app.reload_extensions()
-        self.assertEqual(self.frontend.ask.call_count, 2)
-        self.assertEqual(self.app.registry.tools["hello"].run({}, self.app), "v2")
+        self.assertNotIn("hello", self.app.registry.tools)
+        self.assertIsNotNone(self.app.untrusted)
+        self.assertEqual(self.frontend.ask.call_count, 1)
 
-    def test_files_changed_while_the_prompt_is_open_run_as_approved(self):
+    def test_refused_trust_keeps_them_unloaded(self):
+        self.frontend.ask.return_value = False
+        self.app.reload_extensions()
+        self.trust()
+        self.assertNotIn("hello", self.app.registry.tools)
+        self.assertFalse(config.TRUST_FILE.exists())
+
+    def test_files_changed_during_review_are_not_loaded(self):
         hello = self.ext_dir / "hello.py"
-        approved = extensions.files_digest(extensions.read_extensions([hello]))
+        reviewed = extensions.files_digest(extensions.read_extensions([hello]))
 
         def edit_then_accept(question):
             hello.write_text(HELLO_EXT.format(reply="evil"))
-            (self.ext_dir / "extra.py").write_text(HELLO_EXT.format(reply="extra").replace('"hello"', '"extra"'))
             return True
 
         self.frontend.ask.side_effect = edit_then_accept
         self.app.reload_extensions()
-        self.assertEqual(self.app.registry.tools["hello"].run({}, self.app), "v1")
-        self.assertNotIn("extra", self.app.registry.tools)
-        self.assertEqual(json.loads(config.TRUST_FILE.read_text()), {"projects": {str(self.ext_dir): approved}})
-
-        self.frontend.ask.side_effect = None
-        self.frontend.ask.return_value = False
-        self.app.reload_extensions()  # the edited folder no longer matches the approved digest
-        self.assertEqual(self.frontend.ask.call_count, 2)
+        self.trust()
+        self.assertEqual(json.loads(config.TRUST_FILE.read_text()), {"projects": {str(self.ext_dir): reviewed}})
         self.assertNotIn("hello", self.app.registry.tools)
+        self.assertIsNotNone(self.app.untrusted)
 
     def test_trust_project_option_does_not_ask(self):
         self.app.trust_project = True
         self.app.reload_extensions()
         self.assertIn("hello", self.app.registry.tools)
+        self.assertIsNone(self.app.untrusted)
         self.frontend.ask.assert_not_called()
+
+
+AUDITED = b'''"""Reads ~/.env for nothing."""
+import os
+import subprocess as sp
+sp.run(["x"])
+key = os.environ["K"]
+open(p, "w")
+path = "~/.minimal/keys.json"
+minimal.on("tool_call", f)
+eval(s)
+open(p)
+minimal.on("custom", f)
+s.replace("a", "b")
+'''
+
+
+class AuditTest(unittest.TestCase):
+    def test_scan_flags_capabilities_on_their_lines(self):
+        found = {(f.line, f.capability) for f in audit.scan(AUDITED)}
+        self.assertEqual(
+            found,
+            {
+                (3, "commands"),
+                (4, "commands"),
+                (5, "environment"),
+                (6, "files"),
+                (7, "secrets"),
+                (8, "tool_call"),
+                (9, "dynamic"),
+            },
+        )
+
+    def test_unparsable_source(self):
+        self.assertEqual([f.capability for f in audit.scan(b"def (")], ["unparsable"])
 
 
 class Started(Exception):

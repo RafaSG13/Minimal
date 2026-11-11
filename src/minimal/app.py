@@ -23,12 +23,10 @@ import minimal.registry
 from minimal import config
 from minimal.agent import run_agent
 from minimal.extensions import (
-    ExtensionSource,
-    extension_files,
-    files_digest,
+    ProjectExtensions,
     load_extensions,
     project_extensions_dir,
-    read_extensions,
+    read_project_extensions,
 )
 from minimal.marketplace import register_marketplace_tools
 from minimal.providers import register_builtin_providers
@@ -104,12 +102,18 @@ def build_system_prompt(registry: Registry, cwd: str) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
-def reload_summary(loaded: list[Path], errors: list[str]) -> str:
-    """Describe the result of :meth:`App.reload_extensions` for the user or the model."""
+def reload_summary(loaded: list[Path], errors: list[str], notice: str | None) -> str:
+    """Describe the result of :meth:`App.reload_extensions` for the user or the model.
+
+    ``notice`` is :meth:`App.untrusted_notice`, added as a ``Not loaded:`` line when set.
+    """
     summary = f"Loaded {len(loaded)} extension(s)"
     if loaded:
         summary += ": " + ", ".join(p.name for p in loaded)
-    return summary + "".join(f"\nFailed: {e}" for e in errors)
+    summary += "".join(f"\nFailed: {e}" for e in errors)
+    if notice:
+        summary += f"\nNot loaded: {notice}"
+    return summary
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -197,8 +201,7 @@ class ConsoleFrontend:
         question = _visible(question)
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print(
-                f"[confirm] denied, no terminal to ask (-y allows tool calls, --trust-project "
-                f"the project's extensions): {question}",
+                f"[confirm] denied, no terminal to ask (-y allows tool calls): {question}",
                 file=sys.stderr,
             )
             return False
@@ -275,11 +278,13 @@ class App:
         session: Current session (``/new`` and ``/resume`` replace it).
         cwd: Working directory for tools and the system prompt.
         auto_approve: Run ``write``/``edit``/``bash`` without asking.
-        trust_project: Load the project's extensions without asking (``--trust-project``).
+        trust_project: Load the project's extensions without ``/trust`` (``--trust-project``).
         extra_extensions: ``--ext`` paths, loaded again on every reload.
         frontend: Where turns are shown and confirmations asked.
         extensions: Extension files loaded by the last reload.
         extension_errors: Failures of the last reload.
+        untrusted: The project's extensions skipped by the last reload because the user
+            has not trusted them (``/trust``); ``None`` if none.
         cancelled: Set to interrupt the turn in progress.
     """
 
@@ -306,7 +311,12 @@ class App:
         self.model = ""
         self.extensions: list[Path] = []
         self.extension_errors: list[str] = []
+        self.untrusted: ProjectExtensions | None = None
         self.cancelled = threading.Event()
+
+    def is_trusted(self, project: ProjectExtensions) -> bool:
+        """Whether ``project`` may load: ``--trust-project``, or the user trusted exactly these files."""
+        return self.trust_project or config.load_trusted().get(project.key) == project.digest
 
     def reload_extensions(self) -> tuple[list[Path], list[str]]:
         """Rebuild the registry: built-ins, marketplace tools, then every extension from disk.
@@ -316,63 +326,42 @@ class App:
         working even if its spec is gone.
 
         The project's extensions (``<cwd>/.minimal/extensions``) load only if the
-        user trusted exactly those files; otherwise they are skipped and the
-        reason is one of the errors.
+        user trusted exactly those files (:meth:`is_trusted`). Otherwise they are
+        skipped without asking and recorded in :attr:`untrusted`; that is not an
+        error. The files are read once: that snapshot is what is hashed and run.
 
         Returns:
             ``(loaded, errors)`` as from :func:`~minimal.extensions.load_extensions`.
         """
-        project, skipped = self._trusted_project_extensions()  # may ask: the registry stays usable meanwhile
+        project, untrusted, read_error = (), None, None
+        try:
+            snapshot = read_project_extensions(self.cwd)
+        except OSError as e:
+            snapshot = None
+            read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
+        if snapshot is not None:
+            if self.is_trusted(snapshot):
+                project = snapshot.sources
+            else:
+                untrusted = snapshot
         self.registry.reset()
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         register_marketplace_tools(self.registry)
         loaded, errors = load_extensions(self.registry, self.cwd, self.extra_extensions, project=project)
-        if skipped:
-            errors.append(skipped)
-        self.extensions, self.extension_errors = loaded, errors
+        if read_error:
+            errors.append(read_error)
+        self.extensions, self.extension_errors, self.untrusted = loaded, errors, untrusted
         self.frontend.reloaded()
         return loaded, errors
 
-    def _trusted_project_extensions(self) -> tuple[list[ExtensionSource], str | None]:
-        """The project's extensions that may load, and why the rest are skipped.
-
-        Returns ``(sources, reason)``: the files to load, or ``[]`` and the
-        reason they were skipped (``None`` when there is nothing to skip).
-
-        They are code from the repository, run with the user's permissions, so
-        the user is asked once per set of files: the answer is remembered in
-        :data:`~minimal.config.TRUST_FILE` by folder and by a digest of the
-        files, and any change to them asks again. ``-y`` does not answer this
-        question; only ``--trust-project`` skips it.
-
-        The files are read once here: that snapshot is what is hashed, what the
-        user approves and what the loader runs. Edits made while the prompt is
-        open are ignored until the next reload, which asks again because the
-        digest then differs.
-        """
-        directory = project_extensions_dir(self.cwd)
-        files = extension_files(directory)
-        if not files:
-            return [], None
-        try:
-            sources = read_extensions(files)  # the only read of these files: what is hashed, asked about and run
-            key = str(directory.resolve())
-        except OSError as e:
-            return [], f"{directory}: cannot read the project extensions ({e}), skipped {len(files)}"
-        digest = files_digest(sources)
-        if self.trust_project or config.load_trusted().get(key) == digest:
-            return sources, None
-        names = ", ".join(s.path.relative_to(directory).as_posix() for s in sources)
-        if self.frontend.ask(
-            "Run this project's extensions? They are Python code that runs with your permissions: "
-            f"{directory} ({names})"
-        ):
-            config.save_trusted(key, digest)
-            return sources, None
-        return [], (
-            f"{directory}: not trusted, skipped {len(sources)} project extension(s); "
-            "start minimal in a terminal and accept the prompt, or pass --trust-project"
+    def untrusted_notice(self) -> str | None:
+        """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""
+        if self.untrusted is None:
+            return None
+        return (
+            f"{len(self.untrusted.sources)} project extension(s) in {self.untrusted.directory} are not trusted, "
+            "so they were not loaded; run /trust to review them"
         )
 
     def use_provider(self, name: str, model: str | None = None) -> None:

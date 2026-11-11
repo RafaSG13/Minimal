@@ -7,7 +7,7 @@ from unittest import mock
 
 from textual.widgets import Input, Markdown, SelectionList, Static
 
-from minimal import extensions
+from minimal import config, extensions
 from minimal.app import App
 from minimal.providers.base import Reply
 from minimal.registry import LogoSpec, Registry
@@ -262,6 +262,30 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await self.wait_until(pilot, self.idle(app))
             self.assertTrue(app.query_one(ToolBlock).has_class("-success"))
         self.assertEqual((self.tmp / "out.txt").read_text(), "x")
+
+    async def test_untrusted_project_extensions_notice_and_trust(self):
+        patcher = mock.patch.object(config, "TRUST_FILE", self.tmp / "trusted.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        ext_dir = self.tmp / ".minimal" / "extensions"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "hello.py").write_text(
+            'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "hi")\n'
+        )
+        self.core.reload_extensions()
+        app = MinimalTui(self.core)
+        status = lambda: str(app.query_one("#status-right", Static).render())  # noqa: E731
+        async with app.run_test() as pilot:
+            self.assertIn("1 untrusted", status())
+            self.assertTrue(any("/trust" in o for o in self.outputs(app)), self.outputs(app))
+            await self.submit(pilot, "/trust")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+            await pilot.pause(0.1)
+            self.assertTrue(any("not trusted yet" in o for o in self.outputs(app)), self.outputs(app))
+            await pilot.press("enter")  # Allow is preselected
+            await self.wait_until(pilot, self.idle(app))
+            self.assertNotIn("untrusted", status())
+        self.assertIn("hello", self.core.registry.tools)
 
     async def test_denied_tool_shows_error(self):
         self.use_write_replies()

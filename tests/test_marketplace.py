@@ -108,7 +108,7 @@ class MarketplaceTest(unittest.TestCase):
         git("push", "--quiet", "origin", "main", cwd=self.work)
 
     def run_ext(self, answers):
-        """Run ``/ext`` with scripted dialog answers; return the frontend and the printed output."""
+        """Run ``/ext`` or ``/extensions`` with scripted dialog answers; return the frontend and the printed output."""
         ui = ScriptedFrontend(answers)
         app = App(
             registry=Registry(),
@@ -147,7 +147,9 @@ class MarketplaceTest(unittest.TestCase):
     def test_picker_installs_updates_removes(self):
         hello = self.global_dir / "hello.py"
         url = str(self.bare)
-        _, out = self.run_ext({"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Install": "global"})
+        _, out = self.run_ext(
+            {"Marketplace": url, "Category": "extensions", "Extensions": ["hello"], "Install": "global"}
+        )
         self.assertEqual(hello.read_text(), HELLO)
         self.assertIn("Installed hello at", out)
 
@@ -181,7 +183,9 @@ class MarketplaceTest(unittest.TestCase):
         # The same name in two categories is ambiguous until the category is given.
         with self.assertRaisesRegex(ValueError, "several categories"):
             marketplace.install("hello")
-        self.assertEqual(marketplace.install("hello", category="tools"), (self.global_dir / "tools" / "hello.py", False))
+        self.assertEqual(
+            marketplace.install("hello", category="tools"), (self.global_dir / "tools" / "hello.py", False)
+        )
         marketplace.install("hello", category="extensions")
         registry = Registry()
         loaded, errors = load_extensions(registry, str(self.tmp))

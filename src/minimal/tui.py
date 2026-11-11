@@ -840,6 +840,8 @@ class MinimalTui(TextualApp):
             await pending
         for e in self.core.extension_errors:
             self.show_error(f"[extension] could not load {e}")
+        if notice := self.core.untrusted_notice():
+            self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" {notice}"), classes="output"))
         self.refresh_status()
         self.query_one("#prompt", Input).focus()
 
@@ -1074,8 +1076,11 @@ class MinimalTui(TextualApp):
         tokens = core.context_tokens
         if tokens is not None:
             right = f"{tokens / 1000:.1f}k ctx{theme.DOT}{right}"
+        untrusted = []
+        if core.untrusted is not None:
+            untrusted.append(Content.assemble((f"{theme.WARNING} {len(core.untrusted.sources)} untrusted", "$warning")))
         self.query_one("#status-right", Static).update(
-            Content(theme.DOT).join([*self._status_segments("right"), Content(right)])
+            Content(theme.DOT).join([*self._status_segments("right"), *untrusted, Content(right)])
         )
 
     def set_busy(self, busy: bool) -> None:
