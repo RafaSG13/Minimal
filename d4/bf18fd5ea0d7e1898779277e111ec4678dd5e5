@@ -1,0 +1,68 @@
+.github/workflows/ci.yml
+  h_e81853c41416fb 25-41
+.github/workflows/release.yml
+  h_e81853c41416fb 18-24
+CHANGELOG.md
+  h_e81853c41416fb 5-19
+README.md
+  h_e81853c41416fb 157,255,326
+docs/extensions.md
+  h_e81853c41416fb 3,9,54,56,173-176,248,273,281,290-297
+extensions/compact.py
+  h_e81853c41416fb 20
+extensions/example.py
+  h_e81853c41416fb 16
+extensions/tools/subagent.py
+  h_e81853c41416fb 15
+extensions/tools/web_search.py
+  h_e81853c41416fb 18
+src/minimal/__init__.py
+  h_e81853c41416fb 17-23
+src/minimal/api.py
+  h_e81853c41416fb 9-10,13,24-26,28-55
+src/minimal/cli.py
+  h_e81853c41416fb 21,106
+src/minimal/core/app.py
+  h_e81853c41416fb 19,36,67-68,93-95,121,190-196,293-295,313,333,351,429-481
+src/minimal/core/context.py
+  h_e81853c41416fb 178-202
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 10
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 43,292,297-298,305-306
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 13-14,43,66-73,187,204-208,213,223,400,422,560,591,630
+src/minimal/extensions/metadata.py
+  h_e81853c41416fb 5,23-24,43,49,54,57-58,60-61,63-78,81,83-85
+src/minimal/ui/commands.py
+  h_e81853c41416fb 1,6-7,19,29,88-92,312,354
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 40,105,499,503,523
+src/minimal/ui/tui/frontend.py
+  h_e81853c41416fb 67-69
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 172,191,266
+tests/test_extension_api.py
+  h_e81853c41416fb 15,18,53-57,60-61,64-65,227-270,272-345
+tests/test_marketplace.py
+  h_e81853c41416fb 17,22,32,42,54-55,142,146,196-208,254,271,339,368,371-373,375-397,406-408,414,424,434
+tests/test_security.py
+  h_e81853c41416fb 24,26,101,108
+tests/test_settings.py
+  h_e81853c41416fb 142
+tests/test_smoke.py
+  h_e81853c41416fb 24,250-256,258,263,293-299,306,427
+tests/test_tui.py
+  h_e81853c41416fb 16,82-86,123-131,282
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d4bf18fd5ea0d7e1898779277e111ec4678dd5e5",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
