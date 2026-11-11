@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,13 +102,21 @@ class ScriptedFrontend:
         pass
 
 
+def remove_tree(path):
+    """Delete ``path``, retrying: on macOS git can still be writing into it when a test ends."""
+    for _ in range(5):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return
+        time.sleep(0.2)
+
+
 class MarketplaceTest(unittest.TestCase):
     def setUp(self):
         if shutil.which("git") is None:
             self.skipTest("git is not installed")
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name)
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(remove_tree, self.tmp)
         self.bare = self.tmp / "market.git"
         self.global_dir = self.tmp / "global"
         env = {

@@ -7,10 +7,11 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
@@ -21,7 +22,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
       - run: uv run ruff check
+      # After ruff, which would lint the checkout: tests/test_bundled_extensions.py loads its items.
+      - uses: actions/checkout@v7
+        with:
+          repository: RafaSG13/minimal-marketplace
+          path: marketplace
+          persist-credentials: false
       - run: uv run python -m unittest discover -s tests
+        env:
+          MARKETPLACE_CHECKOUT: ${{ github.workspace }}/marketplace
   marketplace:
     # The default marketplace's items against this minimal: an API change that would break a published
     # item fails here, before a release ships it.
