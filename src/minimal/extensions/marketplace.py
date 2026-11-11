@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,7 +39,7 @@ from typing import Any
 
 import minimal
 from minimal import config
-from minimal.extensions import loader
+from minimal.extensions import audit, loader
 from minimal.extensions.metadata import read_metadata, satisfies
 from minimal.extensions.registry import Registry
 
@@ -377,6 +377,33 @@ def _find(root: Path, name: str, category: str | None) -> list[Path]:
     return found
 
 
+def _resolve(name: str, url: str | None, category: str | None) -> Path:
+    """``name``'s file or package folder in a synced clone of the marketplace at ``url``.
+
+    Raises:
+        ValueError: if the name or category is invalid, or the name is not in the marketplace or is in several categories.
+    """
+    if category:
+        loader.category_dir(Path(), category)  # validates it: the folder name must not be a path
+    _check_name(name)
+    found = _find(sync(url), name, category)
+    if not found:
+        raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
+    if len(found) > 1:
+        raise ValueError(f"{name} is in several categories ({', '.join(p.parent.name for p in found)}); pick one")
+    return found[0]
+
+
+def confirm_global(sources: Iterable[Path], ask: Callable[[str], bool]) -> bool:
+    """Print the static scan of marketplace extensions about to be installed into the global folder, then ask whether to go on.
+
+    Global extensions run in every project without ``/trust``, so this is the user's only look at the code first.
+    ``ask`` is a yes/no question to the user; a refusal means nothing is installed.
+    """
+    print(audit.format_install_report(loader.read_extensions(sources)))
+    return ask("Allow these extensions to run with your permissions in every project? Review the scan above.")
+
+
 def install(
     name: str, scope: str = "global", cwd: str = ".", url: str | None = None, category: str | None = None
 ) -> tuple[Path, bool]:
@@ -394,15 +421,7 @@ def install(
         ValueError: if the name or category is invalid, the name is not in the marketplace or in
             several categories, or the extension requires another minimal version.
     """
-    if category:
-        loader.category_dir(Path(), category)  # validates it: the folder name must not be a path
-    _check_name(name)
-    found = _find(sync(url), name, category)
-    if not found:
-        raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
-    if len(found) > 1:
-        raise ValueError(f"{name} is in several categories ({', '.join(p.parent.name for p in found)}); pick one")
-    return install_from(found[0], scope, cwd)
+    return install_from(_resolve(name, url, category), scope, cwd)
 
 
 def install_from(src: Path, scope: str, cwd: str) -> tuple[Path, bool]:
@@ -644,7 +663,11 @@ def _ext_install(input: dict, ctx: Any) -> str:
         if len(having) > 1:
             raise ValueError(f"{name} is in several marketplaces ({', '.join(having)}); pass marketplace")
         url = having[0] if having else None
-    dest, updated = install(name, input.get("scope", "global"), ctx.cwd, url=url, category=category)
+    scope = input.get("scope", "global")
+    src = _resolve(name, url, category)
+    if scope == "global" and not confirm_global([src], ctx.ui.ask):
+        raise ValueError(f"{name} was not installed: the user did not approve it")
+    dest, updated = install_from(src, scope, ctx.cwd)
     return f"{'Updated' if updated else 'Installed'} {name} at {dest}. Call reload_extensions to activate it."
 
 

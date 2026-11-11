@@ -397,6 +397,11 @@ def _ext_picker(app: App) -> None:
     if not (to_install or to_remove or to_update):
         print("No changes.")
         return
+    to_review = [e.listing.path for e in to_install if scope == "global"]
+    to_review += [e.listing.path for e in to_update if "global" in e.outdated]
+    if to_review and not marketplace.confirm_global(to_review, app.frontend.ask):
+        print("Cancelled.")
+        return
     for e in to_install:
         dest, _ = marketplace.install_from(e.listing.path, scope, app.cwd)
         print(f"Installed {e.listing.name} at {dest}")
