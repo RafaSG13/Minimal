@@ -12,7 +12,7 @@ from pathlib import Path
 
 from minimal import config
 from minimal.core.app import App
-from minimal.core.session import last_session, new_id, open_session
+from minimal.core.session import TORN_NOTICE, last_session, new_id, open_session
 from minimal.extensions import marketplace
 from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth, register_builtin_providers
@@ -93,6 +93,8 @@ def main() -> None:
     except ValueError as e:  # a session id that is not a plain name
         print(e, file=sys.stderr)
         sys.exit(2)
+    if session.torn_at is not None:
+        print(f"warning: {session.id}: {TORN_NOTICE}", file=sys.stderr)
     app = App(
         registry=Registry(),
         session=session,

@@ -149,6 +149,8 @@ def read_stream(events: Iterable[Any], on_text: TextCallback | None) -> tuple[st
     ``(hop, index)`` because the SDK may chain continuation requests into
     one stream, each starting again at index 0.
 
+    A tool call whose arguments are not valid JSON keeps ``{}`` and makes the status ``"incomplete"``.
+
     Raises:
         RuntimeError: on an ``error`` event.
     """
@@ -179,7 +181,12 @@ def read_stream(events: Iterable[Any], on_text: TextCallback | None) -> tuple[st
             raise RuntimeError(f"Gemini error: {getattr(error, 'message', None) or getattr(error, 'code', None) or error}")
 
     for key, partial in arguments.items():
-        steps[key]["arguments"] = json.loads(partial) if partial.strip() else {}
+        try:
+            steps[key]["arguments"] = json.loads(partial) if partial.strip() else {}
+        except ValueError:
+            steps[key]["arguments"] = {}  # cut off in the middle of the arguments: the call cannot run
+            if status not in _FAILED:
+                status = "incomplete"
     return status, [steps[key] for key in sorted(steps)], usage
 
 
@@ -231,10 +238,10 @@ def to_reply(status: str | None, steps: list[dict], usage: Any = None) -> Reply:
                 {"type": "tool_use", "id": step["id"], "name": step["name"], "input": step.get("arguments") or {}}
             )
 
-    if any(block["type"] == "tool_use" for block in content):
+    if status == "incomplete":
+        stop_reason = "max_tokens"  # also with tool calls: the last one may be cut off, so none are run
+    elif any(block["type"] == "tool_use" for block in content):
         stop_reason = "tool_use"
-    elif status == "incomplete":
-        stop_reason = "max_tokens"
     else:
         stop_reason = "end_turn"
     counts = None

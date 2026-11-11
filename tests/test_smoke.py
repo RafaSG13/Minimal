@@ -211,6 +211,34 @@ class SmokeTest(unittest.TestCase):
             self.assertEqual(len(again.messages), 3)
             self.assertEqual(session_mod.list_sessions(), ["x"])
 
+    def test_session_with_a_cut_off_last_line_opens_and_keeps_saving(self):
+        with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
+            s = session_mod.open_session("x")
+            s.messages += [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+            s.save()
+            with open(s.file, "a", encoding="utf-8") as f:
+                f.write('{"role": "user", "content": "interrupted wri')  # a crash in the middle of a save
+
+            reopened = session_mod.open_session("x")
+            self.assertEqual(reopened.messages, s.messages)
+            self.assertIsNotNone(reopened.torn_at)
+            reopened.messages.append({"role": "user", "content": "c"})
+            reopened.save()
+
+            final = session_mod.open_session("x")
+            self.assertEqual([m["content"] for m in final.messages], ["a", "b", "c"])
+            self.assertIsNone(final.torn_at)
+
+    def test_session_with_a_corrupt_line_in_the_middle_still_fails(self):
+        with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
+            s = session_mod.open_session("x")
+            s.messages += [{"role": "user", "content": "a"}]
+            s.save()
+            with open(s.file, "a", encoding="utf-8") as f:
+                f.write('{"role": "user", "content": "broken\n{"role": "user", "content": "c"}\n')
+            with self.assertRaises(ValueError):
+                session_mod.open_session("x")
+
     def test_resume_command(self):
         with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
             saved = session_mod.open_session("a")

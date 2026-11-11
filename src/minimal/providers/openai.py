@@ -119,8 +119,9 @@ def read_chunks(chunks: Iterable[Any], on_text: TextCallback | None) -> Reply:
     JSON arguments spread over several chunks. The usage comes in a last
     chunk that has no choices.
 
-    Raises:
-        json.JSONDecodeError: if a tool call's arguments are not valid JSON.
+    A reply cut off by the output limit (``finish_reason == "length"``), or whose tool call
+    arguments are not valid JSON, has ``stop_reason == "max_tokens"`` even when it has tool calls;
+    the agent loop does not run those. A call with invalid arguments keeps ``{}`` as its input.
     """
     text = ""
     calls: dict[int, dict] = {}
@@ -151,22 +152,22 @@ def read_chunks(chunks: Iterable[Any], on_text: TextCallback | None) -> Reply:
         if choice.finish_reason:
             finish_reason = choice.finish_reason
 
+    truncated = finish_reason == "length"
     content: list[dict] = [{"type": "text", "text": text}] if text else []
     for index in sorted(calls):
         call = calls[index]
+        try:
+            arguments = json.loads(call["arguments"]) if call["arguments"].strip() else {}
+        except ValueError:
+            arguments, truncated = {}, True  # cut off in the middle of the arguments: the call cannot run
         content.append(
-            {
-                "type": "tool_use",
-                "id": call["id"] or f"call_{index}",
-                "name": call["name"],
-                "input": json.loads(call["arguments"]) if call["arguments"].strip() else {},
-            }
+            {"type": "tool_use", "id": call["id"] or f"call_{index}", "name": call["name"], "input": arguments}
         )
 
-    if calls:
-        stop_reason = "tool_use"
-    elif finish_reason == "length":
+    if truncated:
         stop_reason = "max_tokens"
+    elif calls:
+        stop_reason = "tool_use"
     else:
         stop_reason = "end_turn"
     return Reply(content=content, stop_reason=stop_reason, usage=usage)

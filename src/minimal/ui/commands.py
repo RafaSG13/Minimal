@@ -17,7 +17,7 @@ from pathlib import Path
 
 from minimal import config
 from minimal.core.app import App
-from minimal.core.session import list_sessions, new_id, open_session, preview, project_dir, session_project
+from minimal.core.session import TORN_NOTICE, list_sessions, new_id, open_session, preview, project_dir, session_project
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
 from minimal.extensions.registry import Command
@@ -84,6 +84,8 @@ def _resume(args: str, app: App) -> None:
     app.session = open_session(id)
     elsewhere = f", from {app.session.cwd}" if app.session.cwd and app.session.cwd != project_dir(app.cwd) else ""
     print(f"Resumed session {id} ({len(app.messages)} messages{elsewhere})")
+    if app.session.torn_at is not None:
+        print(f"warning: {TORN_NOTICE}")
 
 
 def _available_models(app: App) -> list[str]:

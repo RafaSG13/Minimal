@@ -112,6 +112,23 @@ class GeminiStreamTest(unittest.TestCase):
         events = [event("interaction.completed", interaction=NS(status="completed", usage=usage))]
         self.assertEqual(to_reply(*read_stream(events, None)).usage, Usage(7, 5, 0, 0))
 
+    def test_truncated_tool_call_is_max_tokens_not_a_crash(self):
+        for status in ("incomplete", "requires_action"):
+            with self.subTest(status=status):
+                events = [
+                    event("interaction.created"),
+                    event("step.start", index=0, step=step({"type": "function_call", "id": "c1", "name": "write", "arguments": {}})),
+                    event("step.delta", index=0, delta=NS(type="arguments_delta", arguments='{"path": "a", "con')),
+                    event("interaction.completed", interaction=NS(status=status)),
+                ]
+                reply = to_reply(*read_stream(events, None))
+                self.assertEqual(reply.stop_reason, "max_tokens")
+                self.assertEqual(reply.content, [{"type": "tool_use", "id": "c1", "name": "write", "input": {}}])
+
+    def test_complete_tool_call_cut_by_the_limit_is_still_max_tokens(self):
+        call = {"type": "function_call", "id": "c1", "name": "read", "arguments": {"path": "x"}}
+        self.assertEqual(to_reply("incomplete", [call]).stop_reason, "max_tokens")
+
 
 class AnthropicRequestTest(unittest.TestCase):
     def capture(self):
@@ -209,6 +226,22 @@ class OpenAITest(unittest.TestCase):
         reply = read_chunks([chunk(delta(content="cut"), finish_reason="length")], None)
         self.assertEqual(reply.stop_reason, "max_tokens")
         self.assertIsNone(reply.usage)
+
+    def test_truncated_tool_call_is_max_tokens_not_a_crash(self):
+        for finish_reason in ("length", "tool_calls"):
+            with self.subTest(finish_reason=finish_reason):
+                chunks = [
+                    chunk(delta(tool_calls=[NS(index=0, id="c1", function=NS(name="write", arguments='{"path": "a", "con'))])),
+                    chunk(delta(content=None), finish_reason=finish_reason),
+                ]
+                reply = read_chunks(chunks, None)
+                self.assertEqual(reply.stop_reason, "max_tokens")
+                self.assertEqual(reply.content, [{"type": "tool_use", "id": "c1", "name": "write", "input": {}}])
+
+    def test_complete_tool_call_cut_by_length_is_still_max_tokens(self):
+        call = NS(index=0, id="c1", function=NS(name="read", arguments='{"path": "x"}'))
+        reply = read_chunks([chunk(delta(tool_calls=[call]), finish_reason="length")], None)
+        self.assertEqual(reply.stop_reason, "max_tokens")
 
 
 if __name__ == "__main__":
