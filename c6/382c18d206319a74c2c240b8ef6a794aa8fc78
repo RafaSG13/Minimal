@@ -1,0 +1,30 @@
+src/minimal/cli.py
+  h_e81853c41416fb 33,97-98
+docs/extensions.md
+  h_e81853c41416fb 170
+README.md
+  h_e81853c41416fb 67,98-99,113
+tests/test_smoke.py
+  h_e81853c41416fb 233-278
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 225-226
+CHANGELOG.md
+  h_e81853c41416fb 12-15,22-23
+src/minimal/ui/commands.py
+  h_e81853c41416fb 20,38,42-53,55-59,67-73,75,80,85-86,414-415
+src/minimal/core/context.py
+  h_e81853c41416fb 156,161-163
+src/minimal/core/session.py
+  h_e81853c41416fb 3-7,37-45,55,62,65,68,71-72,78,84-87,96-98,100-119,122-123,126-130,133-135,146-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c6382c18d206319a74c2c240b8ef6a794aa8fc78",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
