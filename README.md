@@ -39,10 +39,10 @@ Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
 
 ### Install the `minimal` command
 
-The package is published on PyPI as `minimal-agent`; the command it installs is `minimal`.
+The package is published on PyPI as `mnml-agent`; the command it installs is `minimal`.
 
 ```bash
-uv tool install minimal-agent
+uv tool install mnml-agent
 minimal
 ```
 

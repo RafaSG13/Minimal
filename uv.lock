@@ -675,7 +675,7 @@ wheels = [
 ]
 
 [[package]]
-name = "minimal-agent"
+name = "mnml-agent"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

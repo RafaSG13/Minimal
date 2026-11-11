@@ -1,5 +1,5 @@
 [project]
-name = "minimal-agent"
+name = "mnml-agent"
 dynamic = ["version"]
 description = "Minimal, extensible coding-agent harness"
 readme = "README.md"

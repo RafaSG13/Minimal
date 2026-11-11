@@ -13,7 +13,7 @@
 - `ctx.cancelled` is a `bool`; `ctx.check_cancelled()` raises `TurnInterrupted`.
 - Event payloads carry `ctx` (`tool_call`, `tool_result`) and `nested` (`turn_end`); `on()` rejects unknown events.
 - `tool_result` handlers see a command's whole output; the agent loop clips what the model sees afterwards.
-- The PyPI distribution is now **`minimal-agent`** (`uv tool install minimal-agent`); the command and the
+- The PyPI distribution is now **`mnml-agent`** (`uv tool install mnml-agent`); the command and the
   import package stay `minimal`.
 
 ### Added
