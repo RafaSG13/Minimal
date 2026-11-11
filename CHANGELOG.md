@@ -11,11 +11,15 @@
   that removed it and what to use instead. See "API versions" in docs/extensions.md.
 - `minimal.ui.commands.run_command`/`find_command` became `App.run_command`/`App.find_command`, and `ExitRepl` moved
   to `minimal.core.app`; an `App` runs the built-in commands it is given (`App(commands=BUILTIN_COMMANDS)`).
+- A `Frontend` must implement `widget(name)`: the widget it shows for an extension's `register_widget(name, ...)`, or
+  `None` (what `ctx.widget` returns).
 
 ### Added
 
 - `ctx.commands()`, `ctx.run_command(line, builtin=False)`, `ctx.models()`, `ctx.set_model(name)` and
   `ctx.widget(name)`, so extensions such as a slash-command menu or a model picker no longer reach into internals.
+- CI checks the default marketplace against every change to minimal (`minimal ext check` of
+  `RafaSG13/minimal-marketplace`), and a release tag does not publish if any marketplace item fails to load with it.
 
 ### Changed
 
