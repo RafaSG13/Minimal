@@ -15,6 +15,13 @@ jobs:
       - run: uv build
       - name: Tag matches minimal.__version__
         run: test "${GITHUB_REF_NAME#v}" = "$(uv run python -c 'import minimal; print(minimal.__version__)')"
+      - uses: actions/checkout@v7
+        with:
+          repository: RafaSG13/minimal-marketplace
+          path: marketplace
+          persist-credentials: false
+      - name: The default marketplace's items still load on this minimal
+        run: uv pip install -r marketplace/requirements-ci.txt && uv run minimal ext check marketplace
       - uses: actions/upload-artifact@v4
         with:
           name: dist

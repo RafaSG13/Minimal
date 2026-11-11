@@ -14,11 +14,12 @@ from minimal.core.session import Session
 from minimal.extensions import loader, marketplace
 from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import Registry
-from minimal.ui import commands
+from minimal.ui.commands import BUILTIN_COMMANDS
 
 HELLO = '''"""Say hello."""
 
 __version__ = "1.0"
+__api__ = "1"
 
 
 def register(minimal):
@@ -28,6 +29,7 @@ def register(minimal):
 OCEAN = '''"""Deep blue dark theme."""
 
 __version__ = "1.0"
+__api__ = "1"
 
 
 def register(minimal):
@@ -37,6 +39,7 @@ def register(minimal):
 HELLO_TOOL = '''"""Another hello, as a tool."""
 
 __version__ = "1.0"
+__api__ = "1"
 
 
 def register(minimal):
@@ -48,6 +51,8 @@ PKG_INIT = '''"""A package extension."""
 from .helpers import REPLY
 
 __version__ = "1.0"
+__api__ = "1"
+__api__ = "1"
 
 
 def register(minimal):
@@ -134,10 +139,11 @@ class MarketplaceTest(unittest.TestCase):
             auto_approve=True,
             trust_project=True,
             frontend=ui,
+            commands=BUILTIN_COMMANDS,
         )
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            commands.run_command("/ext", app)
+            app.run_command("/ext")
         return ui, out.getvalue()
 
     def test_search_and_install(self):
@@ -187,6 +193,19 @@ class MarketplaceTest(unittest.TestCase):
         _, out = self.run_ext({"Marketplace": None})
         self.assertIn("Cancelled.", out)
 
+    def test_picker_labels_and_skips_an_extension_for_another_api(self):
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "1"', '__api__ = "9"'))
+        ui, out = self.run_ext(
+            {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["hello", "future"], "Install": "global"}
+        )
+        options = next(opts for title, opts in ui.asked if title.startswith("Extensions"))
+        labels = {value: label for value, label, _ in options}
+        self.assertIn("not for this minimal (API 9)", labels["future"])
+        self.assertNotIn("not for this minimal", labels["hello"])
+        self.assertIn("Skipped future: written for minimal API 9, this minimal has API 1.0", out)
+        self.assertTrue((self.global_dir / "hello.py").exists())
+        self.assertFalse((self.global_dir / "future.py").exists())
+
     def test_categories_install_into_subfolders(self):
         self.push_file("themes/ocean.py", OCEAN)
         self.push_file("tools/hello.py", HELLO_TOOL)
@@ -232,7 +251,7 @@ class MarketplaceTest(unittest.TestCase):
 
     def test_publish_pushes_branch(self):
         path = self.tmp / "greet.py"
-        path.write_text('"""Greet people."""\n\n__version__ = "1.0"\n\n\ndef register(minimal):\n    pass\n')
+        path.write_text('"""Greet people."""\n\n__version__ = "1.0"\n__api__ = "1"\n\n\ndef register(minimal):\n    pass\n')
         real_git = shutil.which("git")
         with mock.patch.object(marketplace.shutil, "which", lambda cmd: real_git if cmd == "git" else None):
             message = marketplace.publish(path)
@@ -249,7 +268,7 @@ class MarketplaceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"register\(minimal\)"):
             marketplace.publish(no_register)
         good = self.tmp / "good.py"
-        good.write_text('"""Good."""\n\n__version__ = "1.0"\n\n\ndef register(minimal):\n    pass\n')
+        good.write_text('"""Good."""\n\n__version__ = "1.0"\n__api__ = "1"\n\n\ndef register(minimal):\n    pass\n')
         with self.assertRaisesRegex(ValueError, "invalid extension name"):
             marketplace.publish(good, "Bad-Name")
 
@@ -317,7 +336,7 @@ class MarketplaceTest(unittest.TestCase):
         self.assertEqual(branches, "")
 
     def test_listing_without_version_is_rejected_and_skipped(self):
-        unversioned = '"""No version."""\n\n\ndef register(minimal):\n    pass\n'
+        unversioned = '"""No version."""\n__api__ = "1"\n\n\ndef register(minimal):\n    pass\n'
         self.push_file("extensions/plain.py", unversioned)
         self.assertEqual([x.name for x in marketplace.search()], ["hello"])
         path = self.tmp / "plain.py"
@@ -346,11 +365,36 @@ class MarketplaceTest(unittest.TestCase):
         self.assertFalse(dest.exists())
 
     def test_incompatible_listing_is_not_installed(self):
-        self.push_file("extensions/future.py", HELLO.replace("__version__", '__requires__ = ">=9"\n__version__'))
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "1"', '__api__ = "9"'))
         [listing] = [x for x in marketplace.search() if x.name == "future"]
         self.assertFalse(listing.compatible)
-        with self.assertRaisesRegex(ValueError, "future: requires minimal >=9, this is"):
+        self.assertEqual(listing.api, "9")
+        self.assertIn("written for minimal API 9, this minimal has API 1.0", listing.problem)
+        with self.assertRaisesRegex(ValueError, "future: written for minimal API 9, this minimal has API 1.0"):
             marketplace.install("future")
+        self.assertFalse((self.global_dir / "future.py").exists())
+
+    def test_compatible_listing_has_no_problem(self):
+        [listing] = marketplace.search("hello")
+        self.assertEqual((listing.api, listing.problem, listing.compatible), ("1", None, True))
+
+    def test_describe_requires_an_api(self):
+        path = self.tmp / "noapi.py"
+        path.write_text(HELLO.replace('__api__ = "1"\n', ""))
+        with self.assertRaisesRegex(ValueError, r'noapi\.py: set __api__ = "1"; the minimal API it is written for'):
+            marketplace.describe(path)
+        with self.assertRaisesRegex(ValueError, "set __api__"):
+            marketplace.publish(path)
+
+    def test_describe_rejects_a_malformed_api(self):
+        path = self.tmp / "badapi.py"
+        path.write_text(HELLO.replace('__api__ = "1"', '__api__ = "one"'))
+        with self.assertRaisesRegex(ValueError, "badapi.py: invalid __api__ 'one'"):
+            marketplace.describe(path)
+
+    def test_listing_without_api_is_skipped_by_search(self):
+        self.push_file("extensions/noapi.py", HELLO.replace('__api__ = "1"\n', ""))
+        self.assertEqual([x.name for x in marketplace.search()], ["hello"])
 
 
 class CheckTest(unittest.TestCase):
@@ -359,15 +403,15 @@ class CheckTest(unittest.TestCase):
             root = Path(tmp)
             (root / "extensions").mkdir()
             (root / "extensions" / "hello.py").write_text(HELLO)
-            (root / "extensions" / "nodoc.py").write_text('__version__ = "1.0"\n\ndef register(minimal):\n    pass\n')
-            (root / "extensions" / "future.py").write_text(HELLO.replace("__version__", '__requires__ = ">=9"\n__version__'))
-            (root / "extensions" / "needs.py").write_text('"""Needs a module."""\n__version__ = "1.0"\nimport not_installed_anywhere\ndef register(minimal):\n    pass\n')
+            (root / "extensions" / "nodoc.py").write_text('__version__ = "1.0"\n__api__ = "1"\n\ndef register(minimal):\n    pass\n')
+            (root / "extensions" / "future.py").write_text(HELLO.replace('__api__ = "1"', '__api__ = "9"'))
+            (root / "extensions" / "needs.py").write_text('"""Needs a module."""\n__version__ = "1.0"\n__api__ = "1"\nimport not_installed_anywhere\ndef register(minimal):\n    pass\n')
             lines, ok = marketplace.check([root])
         self.assertFalse(ok)
         self.assertEqual(
             lines,
             [
-                "FAIL extensions/future: requires minimal >=9, this is 0.2.0",
+                "FAIL extensions/future: written for minimal API 9, this minimal has API 1.0: install a version of it made for API 1",
                 "ok   extensions/hello 1.0",
                 "WARN extensions/needs: needs not_installed_anywhere",
                 "FAIL extensions/nodoc: add a module docstring; its first line is the marketplace description",
@@ -377,7 +421,7 @@ class CheckTest(unittest.TestCase):
     def test_broken_import_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "broken.py")
-            path.write_text('"""Broken."""\n__version__ = "1.0"\nfrom math import does_not_exist\ndef register(minimal):\n    pass\n')
+            path.write_text('"""Broken."""\n__version__ = "1.0"\n__api__ = "1"\nfrom math import does_not_exist\ndef register(minimal):\n    pass\n')
             [line], ok = marketplace.check([path])
         self.assertFalse(ok)
         self.assertTrue(line.startswith("FAIL "), line)
@@ -387,7 +431,7 @@ class CheckTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "wraps.py")
             path.write_text(
-                '"""Wraps ext_search."""\n__version__ = "1.0"\n\n\ndef register(minimal):\n'
+                '"""Wraps ext_search."""\n__version__ = "1.0"\n__api__ = "1"\n\n\ndef register(minimal):\n'
                 '    search = minimal.tools["ext_search"]\n'
                 '    minimal.register_tool("my_search", lambda input, ctx: search.run(input, ctx))\n'
             )

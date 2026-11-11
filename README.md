@@ -154,7 +154,7 @@ A project's `./.minimal/extensions/` is code from the repository, so minimal doe
 from datetime import datetime
 
 __version__ = "1.0"
-__requires__ = ">=0.2"
+__api__ = "1"
 
 
 def register(minimal):
@@ -252,7 +252,7 @@ src/minimal/         packages from the bottom up; each imports only from the one
   extensions/
     registry.py      internal Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
     facade.py        Extension: what an extension's register(minimal) receives (decorators, declare_settings)
-    metadata.py      reads docstring, __version__ and __requires__ without running the code; version checks
+    metadata.py      reads docstring, __version__ and __api__ without running the code; API version checks
     loader.py        finds extension files and package folders, imports them and calls their register(minimal)
     audit.py         static scan of extension source for /trust: what a file can do
     marketplace.py   git-based marketplaces: list, search, install, publish, `minimal ext check` (~/.minimal/marketplace cache)
@@ -323,7 +323,7 @@ The suite needs no network or API key. It covers:
 | `test_config.py`      | Saved keys, how the startup provider is chosen                                                   |
 | `test_settings.py`    | Settings layers and precedence, validation errors, trust-gated keys, prompt files |
 | `test_permissions.py` | Allow/deny rules for bash, paths and extension tools; deny with `-y`; shell operators             |
-| `test_extension_api.py` | The `Extension` and `Context` facades: decorators, events, settings, sessions, nested agents, package folders, `__requires__`, disabling |
+| `test_extension_api.py` | The `Extension` and `Context` facades: decorators, events, settings, sessions, commands, nested agents, package folders, `__api__`, disabling |
 | `test_security.py`    | Trust digests and the `/trust` scan                                                              |
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_tui.py`         | The headless terminal UI: streaming, interruption, session replay, dialogs, tool-call states, command output, widgets, header |

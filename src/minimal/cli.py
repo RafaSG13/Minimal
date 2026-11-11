@@ -18,6 +18,7 @@ from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import setup
+from minimal.ui.commands import BUILTIN_COMMANDS
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
@@ -102,6 +103,7 @@ def main() -> None:
         auto_approve=opts.yes,
         trust_project=opts.trust_project,
         extra_extensions=opts.ext,
+        commands=BUILTIN_COMMANDS,
     )
     app.reload_extensions()
     try:

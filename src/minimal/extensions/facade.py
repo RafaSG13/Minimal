@@ -7,7 +7,7 @@ settings from ``extensions.settings.<id>`` in settings.json::
     \"\"\"Greets the user.\"\"\"
 
     __version__ = "1.0"
-    __requires__ = ">=0.2"
+    __api__ = "1"
 
     def register(minimal):
         settings = minimal.declare_settings({"greeting": "hello"})

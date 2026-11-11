@@ -18,7 +18,6 @@ from minimal.extensions import loader
 from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply, Usage
-from minimal.ui.commands import run_command
 
 BUNDLED = Path(__file__).resolve().parent.parent / "extensions"
 
@@ -170,7 +169,7 @@ class SubagentTest(BundledExtensionTest):
         ext_dir = self.tmp / ".minimal" / "extensions"
         ext_dir.mkdir(parents=True)
         hello = ext_dir / "hello.py"
-        hello.write_text('def register(minimal):\n    minimal.register_tool(name="hello", run=lambda i, c: "v1")\n')
+        hello.write_text('__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda i, c: "v1")\n')
         call = {"type": "tool_use", "id": "t1", "name": "subagent", "input": {"prompt": "reload"}}
         reload = {"type": "tool_use", "id": "r1", "name": "reload_extensions", "input": {}}
         use = [
@@ -189,6 +188,7 @@ class SubagentTest(BundledExtensionTest):
             ],
         )
         hello.write_text(
+            '__api__ = "1"\n'
             "def register(minimal):\n"
             '    minimal.register_tool(name="hello", run=lambda i, c: "v2")\n'
             '    minimal.register_tool(name="bye", run=lambda i, c: "bye")\n'
@@ -263,7 +263,7 @@ class CompactTest(BundledExtensionTest):
         app.provider.replies = [text_reply("SUMMARY")]
         app.cancelled.set()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            run_command("/compact", app)
+            app.run_command("/compact")
         self.assertNotEqual(app.session.id, "old")
         self.assertEqual(app.messages[0]["content"], self.ext.SUMMARY_PREFIX + "SUMMARY")
 

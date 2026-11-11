@@ -13,6 +13,7 @@ from minimal.core.session import Session
 from minimal.extensions import loader
 from minimal.extensions.registry import LogoSpec, Registry
 from minimal.providers.base import Reply
+from minimal.ui.commands import BUILTIN_COMMANDS
 from minimal.ui.tui.app import CommandSuggester, MinimalTui, _outside_event_loop
 from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, TextScreen
 from minimal.ui.tui.widgets import ToolBlock, _edit_diff, logo_content
@@ -78,7 +79,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(patcher.stop)
         Counter.calls = 0
         self.core = App(
-            registry=Registry(), session=Session("t", self.tmp / "t.jsonl"), cwd=str(self.tmp), auto_approve=False
+            registry=Registry(),
+            session=Session("t", self.tmp / "t.jsonl"),
+            cwd=str(self.tmp),
+            auto_approve=False,
+            commands=BUILTIN_COMMANDS,
         )
         self.core.reload_extensions()
         self.core.registry.register_widget("counter", lambda ctx: Counter(), area="sidebar")
@@ -114,6 +119,15 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(sidebar.has_class("-has-widgets"))
             self.assertEqual(len(sidebar.query(Counter)), 1)
             self.assertGreaterEqual(Counter.calls, 2)
+
+    async def test_context_widget_returns_the_mounted_extension_widget(self):
+        app = MinimalTui(self.core)
+        self.assertIsNone(self.core.context.widget("counter"))  # nothing is mounted yet
+        async with app.run_test():
+            widget = self.core.context.widget("counter")
+            self.assertIsInstance(widget, Counter)
+            self.assertIs(widget, app.query_one(Counter))
+            self.assertIsNone(self.core.context.widget("missing"))
 
     async def test_escape_interrupts_turn(self):
         provider = self.core.provider = BlockingFakeProvider()
@@ -265,7 +279,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         ext_dir = self.tmp / ".minimal" / "extensions"
         ext_dir.mkdir(parents=True)
         (ext_dir / "hello.py").write_text(
-            'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "hi")\n'
+            '__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "hi")\n'
         )
         self.core.reload_extensions()
         app = MinimalTui(self.core)

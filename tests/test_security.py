@@ -21,9 +21,9 @@ from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.registry import Registry, TurnInterrupted
 from minimal.tools.builtin import register_builtin_tools
 from minimal.tools.common import clip
-from minimal.ui import commands
+from minimal.ui.commands import BUILTIN_COMMANDS
 
-HELLO_EXT = 'def register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
+HELLO_EXT = '__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
 
 class TempDirTest(unittest.TestCase):
@@ -98,13 +98,14 @@ class ProjectTrustTest(TempDirTest):
             cwd=str(self.cwd),
             auto_approve=True,  # -y answers tool confirmations, not the trust question
             frontend=self.frontend,
+            commands=BUILTIN_COMMANDS,
         )
 
     def trust(self) -> str:
         """Run ``/trust``; returns what it printed."""
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            commands.run_command("/trust", self.app)
+            self.app.run_command("/trust")
         return out.getvalue()
 
     def test_untrusted_project_extensions_are_skipped_without_asking(self):

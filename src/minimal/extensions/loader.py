@@ -40,7 +40,7 @@ from typing import Iterable
 
 from minimal import config
 from minimal.extensions.facade import Extension
-from minimal.extensions.metadata import Metadata, check_requires, read_metadata
+from minimal.extensions.metadata import Metadata, check_api, read_metadata
 from minimal.extensions.registry import Registry
 
 GLOBAL_EXTENSIONS_DIR = Path.home() / ".minimal" / "extensions"
@@ -289,19 +289,21 @@ def _import(source: ExtensionSource) -> object:
 def load_source(
     source: ExtensionSource, registry: Registry, settings: config.Settings, scope: str, errors: list[str]
 ) -> None:
-    """Check ``source``'s ``__requires__``, import it and call its ``register`` with an :class:`Extension`.
+    """Check ``source``'s ``__api__``, import it and call its ``register`` with an :class:`Extension`.
 
     Settings it rejects (:meth:`Extension.declare_settings`) are appended to ``errors``.
 
     Raises:
-        ValueError: if it requires another minimal version or has no ``register`` function.
+        ValueError: if it declares no ``__api__`` or one this minimal does not provide, or has no
+            ``register`` function.
         Exception: whatever importing or ``register`` raised.
     """
     try:
         meta = read_metadata(source.entry, str(source.entry_path))
     except ValueError:  # a syntax error: importing reports it as a SyntaxError with its line
         meta = Metadata("", "", "", False)
-    check_requires(meta.requires)
+    else:
+        check_api(meta.api)
     module = _import(source)
     register = getattr(module, "register", None)
     if not callable(register):

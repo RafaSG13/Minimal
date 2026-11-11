@@ -1,12 +1,12 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers the API of minimal 0.2.
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers minimal API 1.0 ([API versions](#api-versions)).
 
 ```python
 """Greets the user."""
 
 __version__ = "1.0"
-__requires__ = ">=0.2"
+__api__ = "1"
 
 
 def register(minimal):
@@ -51,9 +51,9 @@ Metadata is read from the source without running it (for a package, from `__init
 | -------------- | ---------------------------------------------------------------------------------------------------------- |
 | docstring      | Its first line is the description shown by the marketplace (required to publish)                           |
 | `__version__`  | `"1.0"`: a string, required by the marketplace; shown as `minimal.version`                                 |
-| `__requires__` | Versions of minimal it works with: comma-separated clauses of `>=`, `<=`, `==`, `!=`, `>`, `<` and a version, e.g. `">=0.2"` or `">=0.2,<0.4"` |
+| `__api__`      | `"1"`: the [API version](#api-versions) it is written for, required. `"1"` runs on any 1.x; `"1.2"` needs 1.2 or a later 1.x |
 
-An unmet `__requires__` stops the extension from loading with `requires minimal >=9, this is 0.2.0`; an invalid one is an error too. Set `__requires__ = ">=0.2"` on anything that uses the API below.
+An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "1"`), and neither is one written for another major version (`written for minimal API 0, this minimal has API 1.0`) or a newer minor (`needs minimal API 1.3, this minimal has API 1.0: upgrade minimal`).
 
 ## `minimal`: the `Extension`
 
@@ -170,6 +170,10 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `sessions(*, all_projects=False)` | Saved session ids, oldest first: those started in this `cwd`, or every project's with `all_projects=True` |
 | `read_session(session_id)`       | The messages of a saved session; `ValueError` if there is none                             |
 | `reload()`                       | Reloads every extension from disk; returns the summary                                     |
+| `commands()`                     | Every slash command name (without `/`) and its description: built-in and extension commands, an extension's replacing a built-in of the same name |
+| `run_command(line, *, builtin=False)` | Runs `"/name args"` as if the user typed it; its output is printed and errors are reported, not raised. `builtin=True` runs the built-in even when an extension replaced it, so a replacement can hand over to the original |
+| `models()`, `set_model(name)`    | The current provider's models (queried from its API, falling back to its default) and switching to one |
+| `widget(name)`                   | The widget the frontend shows for `register_widget(name, ...)`, or `None` (no terminal UI, or it failed to mount) |
 
 `ctx.ui` asks through whatever is showing minimal (the terminal UI or the plain terminal):
 
@@ -241,7 +245,7 @@ A project's `./.minimal/extensions/` is code from the repository, so minimal doe
 
 ## Reloading
 
-`/reload`, the model's `reload_extensions` tool and `ctx.reload()` rebuild every registration from disk in place: new tools are offered on the model's next request, even in the middle of a turn, and widgets are remounted. Load errors (syntax errors, unmet `__requires__`, setting errors) are listed in the summary, and returned to the model when it reloaded.
+`/reload`, the model's `reload_extensions` tool and `ctx.reload()` rebuild every registration from disk in place: new tools are offered on the model's next request, even in the middle of a turn, and widgets are remounted. Load errors (syntax errors, a missing or unsupported `__api__`, setting errors) are listed in the summary, and returned to the model when it reloaded.
 
 ## Publishing and `minimal ext check`
 
@@ -266,7 +270,7 @@ WARN extensions/mermaid: needs termaid
 FAIL widgets/broken: syntax error: '(' was never closed (broken.py, line 2)
 ```
 
-`WARN` means a module the extension imports is not installed here; `FAIL` is a missing docstring or version, an unmet or invalid `__requires__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+`WARN` means a module the extension imports is not installed here; `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
 
 ## What `minimal.api` exports
 
@@ -274,7 +278,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 | Name                                                        | What it is                                                        |
 | ----------------------------------------------------------- | ----------------------------------------------------------------- |
-| `__version__`                                               | minimal's version                                                 |
+| `__version__`, `API_VERSION`                                | minimal's version, and the version of this API ([API versions](#api-versions)) |
 | `Extension`, `Context`, `UI`, `Tool`                        | The objects described above                                       |
 | `Provider`, `ProviderSpec`, `Reply`, `Usage`, `result_text` | Providers and replies; `result_text(content)` is a reply's text   |
 | `TurnInterrupted`                                           | Raised when the user interrupts                                   |
@@ -283,3 +287,11 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas, status sides and theme colours   |
 | `LogoSpec`, `logo_content`, `theme`                         | Logo rendering, UI glyphs and the built-in theme                  |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
+
+## API versions
+
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.0`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+
+Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace lists it but does not install it. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
+
+**Changing the API.** Adding something bumps the minor version, and extensions that use it declare that minor (`__api__ = "1.1"`). Changing or removing something bumps the major version and is recorded in `REMOVED`; extensions written for the old major stop loading with a clear message until a version for the new one is installed. While minimal has no users outside its author there is no deprecation period: the old name goes in the same release. Once it does, a name will keep working, with a warning, for one minor version before the major that removes it.
