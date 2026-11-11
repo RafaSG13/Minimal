@@ -230,6 +230,52 @@ class SmokeTest(unittest.TestCase):
             self.assertEqual(app.session.id, "a")
             self.assertIn("no session 'zzz'", stderr.getvalue())
 
+    def make_sessions(self, **projects):
+        """Save one session per ``id=project`` keyword, in that order, each holding one message."""
+        for id, project in projects.items():
+            folder = Path(self.cwd) / project
+            folder.mkdir(exist_ok=True)
+            s = session_mod.open_session(id, str(folder))
+            s.messages.append({"role": "user", "content": f"hello {id}"})
+            s.save()
+        return {p: str(Path(self.cwd) / p) for p in set(projects.values())}
+
+    def test_sessions_belong_to_the_project_they_were_started_in(self):
+        with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
+            where = self.make_sessions(a="one", b="two", c="one")
+            self.assertEqual(session_mod.list_sessions(where["one"]), ["a", "c"])
+            self.assertEqual(session_mod.last_session(where["one"]), "c")
+            self.assertEqual(session_mod.last_session(where["two"]), "b")
+            self.assertIsNone(session_mod.last_session(str(Path(self.cwd) / "elsewhere")))
+            self.assertEqual(session_mod.list_sessions(), ["a", "b", "c"])
+            reopened = session_mod.open_session("a", where["two"])  # an existing session keeps its own project
+            self.assertEqual(session_mod.list_sessions(where["one"]), ["a", "c"])
+            self.assertEqual(reopened.messages, [{"role": "user", "content": "hello a"}])
+            self.assertEqual(session_mod.preview("a"), "hello a")
+
+    def test_sessions_and_resume_commands_default_to_this_project(self):
+        with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
+            where = self.make_sessions(a="one", b="two", c="one")
+            app = App(registry=self.registry, session=session_mod.open_session("new", where["one"]), cwd=where["one"], auto_approve=True)
+            offered = []
+            app.frontend = SimpleNamespace(choose=lambda title, options: offered.append([v for v, _ in options]))
+
+            def output(line):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    run_command(line, app)
+                return out.getvalue()
+
+            listing = output("/sessions")
+            self.assertIn("a  hello a", listing)
+            self.assertNotIn("hello b", listing)
+            self.assertIn("hello b", output("/sessions --all"))
+            output("/resume")
+            output("/resume --all")
+            self.assertEqual(offered, [["c", "a"], ["c", "b", "a"]])  # newest first
+            self.assertIn(f"from {Path(where['two']).resolve()}", output("/resume b"))  # an explicit id works anywhere
+            self.assertEqual(app.session.id, "b")
+
     def test_register_logo_validates(self):
         registry = Registry()
         with self.assertRaisesRegex(ValueError, "same length"):

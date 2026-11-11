@@ -30,7 +30,7 @@ Usage:
                                (exit status 1 if any fails; runs without a terminal or a provider)
 
 Options:
-  -c, --continue        resume the last session
+  -c, --continue        resume the last session of this directory
   -s, --session <id>    open (or create) a specific session
   --provider <name>     model integration: anthropic, claude, gemini, openai, or one added by an extension
                         (default $MINIMAL_PROVIDER, else the settings' provider)
@@ -88,9 +88,8 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        session = open_session(
-            opts.session or (last_session() if opts.cont else None) or new_id()
-        )
+        cwd = os.getcwd()
+        session = open_session(opts.session or (last_session(cwd) if opts.cont else None) or new_id(), cwd)
     except ValueError as e:  # a session id that is not a plain name
         print(e, file=sys.stderr)
         sys.exit(2)
