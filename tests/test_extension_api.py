@@ -459,6 +459,29 @@ class ExtensionApiTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "on_dispose: fn must be callable"):
             self.app.registry.on_dispose("not callable")
 
+    def test_data_dir(self):
+        self.extension(
+            "keeper.py",
+            """
+            def register(minimal):
+                minimal.register_tool("dirs", lambda input, ctx: (minimal.data_dir(), minimal.data_dir("global")))
+                minimal.register_tool("bad", lambda input, ctx: minimal.data_dir("repo"))
+            """,
+            folder=self.global_dir / "tools",
+        )
+        home = self.tmp / "data-home"
+        with mock.patch.object(config, "HOME_DIR", home):
+            self.assertEqual(self.app.reload_extensions()[1], [])
+            project, global_ = self.app.registry.tools["dirs"].run({}, self.app.context)
+            with self.assertRaisesRegex(ValueError, 'data_dir: scope must be "project" or "global"'):
+                self.app.registry.tools["bad"].run({}, self.app.context)
+        key = project.relative_to(home / "data" / "projects").parts[0]
+        self.assertRegex(key, "^[0-9a-f]{16}$")
+        self.assertEqual(project, home / "data" / "projects" / key / "tools" / "keeper")
+        self.assertEqual(global_, home / "data" / "global" / "tools" / "keeper")
+        for path in (project, global_, home / "data"):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700, path)
+
 
 if __name__ == "__main__":
     unittest.main()

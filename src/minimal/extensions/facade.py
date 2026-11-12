@@ -24,6 +24,8 @@ settings from ``extensions.settings.<id>`` in settings.json::
 
 from __future__ import annotations
 
+import hashlib
+import os
 import types
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -147,12 +149,14 @@ class Extension:
         id: str,
         path: Path,
         scope: str,
+        cwd: str,
         metadata: Metadata,
         registry: Registry,
         settings: config.Settings,
         errors: list[str],
     ) -> None:
         self._id, self._path, self._scope, self._metadata = id, path, scope, metadata
+        self._cwd = cwd
         self._registry = registry
         self._user_settings = settings.extension_settings(id)
         self._errors = errors
@@ -179,6 +183,26 @@ class Extension:
     def tools(self) -> Mapping[str, Tool]:
         """Every registered tool by name (read-only, live): call ``tools["bash"].run(input, ctx)`` to reuse one."""
         return types.MappingProxyType(self._registry.tools)
+
+    def data_dir(self, scope: str = "project") -> Path:
+        """A private folder (mode 0700) for this extension's files, outside the repository; created if missing.
+
+        ``"project"``: ``~/.minimal/data/projects/<key>/<id>``, one per working directory (``<key>``
+        is a hash of its real path). ``"global"``: ``~/.minimal/data/global/<id>``, shared by every
+        project. ``<id>`` is :attr:`id` (``tools/subagent`` is a subfolder).
+
+        Raises:
+            ValueError: if ``scope`` is neither.
+        """
+        if scope == "project":
+            key = hashlib.sha256(os.path.realpath(self._cwd).encode()).hexdigest()[:16]
+            path = config.HOME_DIR / "data" / "projects" / key / self._id
+        elif scope == "global":
+            path = config.HOME_DIR / "data" / "global" / self._id
+        else:
+            raise ValueError('data_dir: scope must be "project" or "global"')
+        config.private_dir(path)
+        return path
 
     # --- registering ---------------------------------------------------------
 

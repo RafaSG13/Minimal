@@ -287,11 +287,17 @@ def _import(source: ExtensionSource) -> object:
 
 
 def load_source(
-    source: ExtensionSource, registry: Registry, settings: config.Settings, scope: str, errors: list[str]
+    source: ExtensionSource,
+    registry: Registry,
+    settings: config.Settings,
+    scope: str,
+    errors: list[str],
+    cwd: str,
 ) -> None:
     """Check ``source``'s ``__api__``, import it and call its ``register`` with an :class:`Extension`.
 
-    Settings it rejects (:meth:`Extension.declare_settings`) are appended to ``errors``.
+    Settings it rejects (:meth:`Extension.declare_settings`) are appended to ``errors``. ``cwd`` is the
+    working directory, which picks the extension's project data folder (:meth:`Extension.data_dir`).
 
     Raises:
         ValueError: if it declares no ``__api__`` or one this minimal does not provide, a malformed
@@ -313,6 +319,7 @@ def load_source(
             id=ext_id(source.path),
             path=source.path,
             scope=scope,
+            cwd=cwd,
             metadata=meta,
             registry=registry,
             settings=settings,
@@ -322,7 +329,7 @@ def load_source(
 
 
 def load_sources(
-    registry: Registry, sources: Iterable[tuple[ExtensionSource, str]], settings: config.Settings
+    registry: Registry, sources: Iterable[tuple[ExtensionSource, str]], settings: config.Settings, cwd: str
 ) -> tuple[list[Path], list[str]]:
     """Load each ``(source, scope)`` in order into ``registry``.
 
@@ -334,7 +341,7 @@ def load_sources(
     loaded, errors = [], []
     for source, scope in sources:
         try:
-            load_source(source, registry, settings, scope, errors)
+            load_source(source, registry, settings, scope, errors, cwd)
             loaded.append(source.path)
         except Exception as e:
             errors.append(f"{source.path}: {type(e).__name__}: {e}")
@@ -393,7 +400,7 @@ def load_extensions(
                 sources += [(s, "cli") for s in read_extensions([p])]
             except OSError as e:
                 errors.append(f"{p}: {type(e).__name__}: {e}")
-    loaded, load_errors = load_sources(registry, sources, settings)
+    loaded, load_errors = load_sources(registry, sources, settings, cwd)
     return loaded, errors + load_errors
 
 
