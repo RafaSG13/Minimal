@@ -262,6 +262,7 @@ class Registry:
         self.themes: dict[str, ThemeSpec] = {}
         self.logo: LogoSpec | None = None
         self._handlers: dict[str, list[EventHandler]] = {}
+        self._disposers: list[Callable[[], Any]] = []
 
     def reset(self) -> None:
         """Forget everything registered, keeping the same container objects.
@@ -279,6 +280,7 @@ class Registry:
         self.themes.clear()
         self.logo = None
         self._handlers.clear()
+        self._disposers.clear()
 
     def add_tool(self, tool: Tool) -> None:
         """Register a ready-made ``Tool``, replacing any tool with the same name."""
@@ -513,3 +515,25 @@ class Registry:
             if result is not None:
                 results.append(result)
         return results
+
+    def on_dispose(self, fn: Callable[[], Any]) -> None:
+        """Call ``fn()`` at the next :meth:`dispose`: before a reload and when minimal exits.
+
+        Raises:
+            ValueError: if ``fn`` is not callable.
+        """
+        if not callable(fn):
+            raise ValueError("on_dispose: fn must be callable")
+        self._disposers.append(fn)
+
+    def dispose(self) -> None:
+        """Call every :meth:`on_dispose` function, last registered first, then forget them.
+
+        A failing one is reported on stderr and the rest still run.
+        """
+        disposers, self._disposers = self._disposers, []
+        for fn in reversed(disposers):
+            try:
+                fn()
+            except Exception as e:
+                print(f"[extension] error in dispose: {e}", file=sys.stderr)

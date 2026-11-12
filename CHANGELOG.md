@@ -12,6 +12,8 @@
   `session_switch` (`/new`, `/resume`, `ctx.new_session`), `turn_start` (may rewrite the user's message),
   `before_request` (may replace the messages, system prompt or tools of one model request without touching the
   history), `after_response` (each reply and its usage) and `shutdown`. Their payload types are in `minimal.api`.
+- `minimal.on_dispose(fn)`: `fn()` runs before a reload and when minimal exits (last registered first), so an
+  extension can stop the threads, timers and subprocesses it started instead of leaking them on every `/reload`.
 
 ### Changed
 
