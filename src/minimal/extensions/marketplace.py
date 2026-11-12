@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -866,8 +867,13 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
     try:
         source = loader.read_extensions([path])[0]
         loader.load_source(source, make_registry(), config.Settings(), "cli", errors)
-    except ModuleNotFoundError as e:
-        if e.name and not e.name.startswith(("minimal", loader.module_name(path))):
+    except ImportError as e:
+        # ImportError(name=...) for a module missing here, e.g. a hint raised by the extension itself.
+        if (
+            e.name
+            and not e.name.startswith(("minimal", loader.module_name(path)))
+            and _missing(e.name.partition(".")[0])
+        ):
             return f"WARN {label}: needs {e.name}"
         return f"FAIL {label}: {type(e).__name__}: {e}"
     except Exception as e:
@@ -875,6 +881,14 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
     if errors:
         return f"FAIL {label}: {'; '.join(errors)}"
     return f"ok   {label} {listing.version}"
+
+
+def _missing(module: str) -> bool:
+    """Whether the top-level ``module`` cannot be imported here."""
+    try:
+        return importlib.util.find_spec(module) is None
+    except (ValueError, ImportError):
+        return True
 
 
 # --- tools for the model -----------------------------------------------------
