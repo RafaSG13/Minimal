@@ -301,12 +301,10 @@ def logo_content(spec: LogoSpec) -> Content:
         parts: list[str | tuple[str, str]] = []
         for t, b in zip(top_row, bottom_row):
             top, bottom = spec.colors.get(t), spec.colors.get(b)
-            if top is None and bottom is None:
-                parts.append(" ")
+            if top is None:
+                parts.append(" " if bottom is None else (theme.LOWER_HALF, bottom))
             elif bottom is None:
                 parts.append((theme.UPPER_HALF, top))
-            elif top is None:
-                parts.append((theme.LOWER_HALF, bottom))
             elif top == bottom:
                 parts.append((theme.FULL_BLOCK, top))
             else:

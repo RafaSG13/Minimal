@@ -437,7 +437,8 @@ def _copied_files(root: Path) -> list[Path]:
             copying would materialize what it points to (``~/.minimal/keys.json``, say).
     """
     inside = root.resolve()
-    files, folders = [], [root]
+    files: list[Path] = []
+    folders = [root]
     while folders:
         folder = folders.pop()
         names = os.listdir(folder)

@@ -129,7 +129,7 @@ class _Scanner(ast.NodeVisitor):
         self.aliases = aliases
         self.findings: dict[tuple[int, str], Finding] = {}
 
-    def add(self, node: ast.AST, capability: str, detail: str) -> None:
+    def add(self, node: ast.expr | ast.stmt, capability: str, detail: str) -> None:
         self.findings.setdefault((node.lineno, capability), Finding(node.lineno, capability, detail))
 
     def dotted(self, node: ast.AST) -> str | None:

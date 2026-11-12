@@ -15,6 +15,7 @@
   (the user, a formatter or a `bash` command modified it), and ask the model to read it again.
 - `read` shows bytes that are not UTF-8 as U+FFFD, with a note, instead of failing; a binary file (a NUL byte in its
   first 8 KiB) is reported, not printed. `edit` on a file that is not UTF-8 fails with a clear message.
+- CI runs `mypy` and measures test coverage (`coverage report` fails below 83%); `dev` gains `mypy` and `coverage`.
 
 ### Fixed
 

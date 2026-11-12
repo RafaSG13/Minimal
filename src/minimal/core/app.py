@@ -603,6 +603,7 @@ class App:
             ValueError: if the provider is unknown or its credentials are missing.
         """
         self.use_provider(name, model)
+        assert self.provider is not None  # use_provider just set it
         return self.provider, self.model
 
     def run_turn(self, text: str) -> None:
@@ -621,6 +622,7 @@ class App:
         before = len(self.messages)
         self.messages.append({"role": "user", "content": text})
         error = None
+        assert self.provider is not None  # startup (cli) picks a provider before any turn
         try:
             run_agent(
                 provider=self.provider,

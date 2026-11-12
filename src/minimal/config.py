@@ -31,6 +31,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 HOME_DIR = Path.home() / ".minimal"
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -182,7 +183,7 @@ class Settings:
     layers: tuple[Layer, ...] = ()
     trusted: bool = False
 
-    def scalar(self, key: str) -> tuple[object, str | None]:
+    def scalar(self, key: str) -> tuple[Any, str | None]:
         """``(value, scope)`` of ``key`` from the highest layer that sets it; ``(None, None)`` if none does."""
         for layer in reversed(self.layers):
             if key in layer.data:
@@ -214,7 +215,7 @@ class Settings:
     def _applies(self, layer: Layer, key: str) -> bool:
         return self.trusted or layer.scope == "global" or key not in RISKY
 
-    def _concat(self, key: str) -> list[tuple[object, str]]:
+    def _concat(self, key: str) -> list[tuple[Any, str]]:
         return [
             (value, layer.scope)
             for layer in self.layers
