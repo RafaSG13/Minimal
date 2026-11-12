@@ -58,10 +58,24 @@ def _is_settings_map(value: object) -> bool:
     return isinstance(value, dict) and all(isinstance(v, dict) for v in value.values())
 
 
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_max_tokens(value: object) -> bool:
+    return _is_positive_int(value) or (
+        isinstance(value, dict) and all(isinstance(k, str) and _is_positive_int(v) for k, v in value.items())
+    )
+
+
 _TYPES = {
     "provider": (lambda v: isinstance(v, str), "a string"),
     "model": (lambda v: isinstance(v, str), "a string"),
     "theme": (lambda v: isinstance(v, str), "a string"),
+    "max_tokens": (
+        _is_max_tokens,
+        'a positive integer or an object mapping "provider" or "provider/model" to positive integers',
+    ),
     "marketplaces": (_is_str_list, "a list of strings"),
     "prompt.base": (lambda v: isinstance(v, str), "a string"),
     "prompt.append": (lambda v: isinstance(v, str) or _is_str_list(v), "a string or a list of strings"),
@@ -186,6 +200,16 @@ class Settings:
     @property
     def theme(self) -> str | None:
         return self.scalar("theme")[0]
+
+    def max_tokens_for(self, provider: str, model: str) -> int | None:
+        """The ``max_tokens`` setting for ``model`` of ``provider``: the integer, or the object's
+        ``"provider/model"`` entry, else its ``"provider"`` entry; ``None`` if unset (the provider's default)."""
+        value = self.scalar("max_tokens")[0]
+        if isinstance(value, int):
+            return value
+        if isinstance(value, dict):
+            return value.get(f"{provider}/{model}") or value.get(provider)
+        return None
 
     def _applies(self, layer: Layer, key: str) -> bool:
         return self.trusted or layer.scope == "global" or key not in RISKY

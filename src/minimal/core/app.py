@@ -73,10 +73,12 @@ SELF_EXTEND_PROMPT = (
     "@minimal.tool(description=..., input_schema=..., confirm=...) on run(input, ctx) adds a tool (name and "
     "description default to the function's name and docstring); @minimal.command() on run(args, ctx) adds a slash "
     'command; @minimal.on(event) on handler(event) hooks events: "tool_call", "tool_result", "turn_end", '
-    '"session_start", "session_switch", "turn_start", "before_request", "after_response" or "shutdown" '
-    '(event["ctx"] is the Context; turn_end, before_request and after_response have event["nested"] for a '
-    'subagent\'s loop; turn_start may return {{"text": ...}} to rewrite the user\'s message, and before_request '
-    '{{"messages", "system", "tools"}} to send instead for that request only); the same exist as minimal.register_tool, '
+    '"session_start", "session_switch", "turn_start", "before_request", "after_response", "shutdown" or '
+    '"provider_error" (event["ctx"] is the Context; turn_end, before_request and after_response have event["nested"] '
+    'for a subagent\'s loop; turn_start may return {{"text": ...}} to rewrite the user\'s message, before_request '
+    '{{"messages", "system", "tools"}} to send instead for that request only, and provider_error '
+    '{{"retry_after": seconds}} or {{"provider": name, "model": name}} to retry a failed request); the same exist as '
+    "minimal.register_tool, "
     "register_command and on(event, handler). minimal.register_provider(...) adds a model; "
     "minimal.append_system_prompt(text) adds instructions; minimal.on_dispose(fn) runs fn before a reload and at "
     "exit: stop threads, timers and subprocesses there; minimal.data_dir(scope='project'|'global') is a private "
@@ -568,8 +570,19 @@ class App:
         return build_system_prompt(self.registry, self.cwd, self.settings)
 
     def request_options(self) -> dict:
-        """Provider request options (``max_tokens``, ``temperature``) of the next request; empty for the provider's defaults."""
-        return {}
+        """Provider request options of the next request: ``max_tokens`` from the settings
+        (:meth:`~minimal.config.Settings.max_tokens_for`); empty for the provider's defaults."""
+        n = self.settings.max_tokens_for(self.provider_name, self.model)
+        return {} if n is None else {"max_tokens": n}
+
+    def fallback_provider(self, name: str, model: str | None) -> tuple[Provider, str]:
+        """Switch to provider ``name`` (:meth:`use_provider`) after a failed request; return the new provider and model.
+
+        Raises:
+            ValueError: if the provider is unknown or its credentials are missing.
+        """
+        self.use_provider(name, model)
+        return self.provider, self.model
 
     def run_turn(self, text: str) -> None:
         """Send ``text`` to the model, stream the answer to the frontend and save the session.
@@ -602,6 +615,7 @@ class App:
                 cancelled=self.cancelled,
                 permit=self.permit,
                 options=self.request_options(),
+                switch_provider=self.fallback_provider,
             )
         except KeyboardInterrupt:
             self._close_failed_turn(before, "interrupted by the user")

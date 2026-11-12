@@ -122,6 +122,23 @@ class ShutdownEvent(TypedDict):
     ctx: Any
 
 
+class ProviderErrorEvent(TypedDict):
+    """Payload of ``provider_error``: a model request failed.
+
+    Return ``{"retry_after": seconds}`` to send it again after a wait, or ``{"provider": name,
+    "model": name}`` (``model`` optional) to send it again to another provider. Use ``attempt`` to
+    give up: return ``None`` and the error propagates.
+    """
+
+    ctx: Any
+    error: Exception
+    attempt: int
+    """How many times this request has failed, from 1."""
+    provider: str
+    model: str
+    nested: bool
+
+
 def _first_line(doc: str | None) -> str:
     return doc.strip().splitlines()[0] if doc and doc.strip() else ""
 
@@ -266,7 +283,7 @@ class Extension:
     def on(self, event: str, handler: EventHandler | None = None):
         """Subscribe ``handler(event)`` to ``event``: one of :data:`~minimal.extensions.registry.EVENTS`
         (``tool_call``, ``tool_result``, ``turn_end``, ``session_start``, ``session_switch``,
-        ``turn_start``, ``before_request``, ``after_response``, ``shutdown``).
+        ``turn_start``, ``before_request``, ``after_response``, ``shutdown``, ``provider_error``).
 
         Without ``handler``, returns a decorator that subscribes the decorated function.
 
