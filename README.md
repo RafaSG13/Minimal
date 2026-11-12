@@ -9,11 +9,15 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-6f86f4?style=for-the-badge" alt="Version 0.2.0">
+  <a href="https://pypi.org/project/mnml-agent/"><img src="https://img.shields.io/pypi/v/mnml-agent?style=for-the-badge&color=6f86f4&label=PyPI" alt="PyPI version"></a>
+  <a href="https://github.com/RafaSG13/Minimal/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RafaSG13/Minimal/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="MIT License"></a>
+  <br>
   <img src="https://img.shields.io/badge/UI-Textual-b665ea?style=for-the-badge" alt="Textual UI">
   <img src="https://img.shields.io/badge/Claude-D97757?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude">
   <img src="https://img.shields.io/badge/Gemini-4285F4?style=for-the-badge&logo=googlegemini&logoColor=white" alt="Gemini">
+  <img src="https://img.shields.io/badge/OpenAI--compatible-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI-compatible">
   <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/managed%20with-uv-DE5FE9?style=for-the-badge" alt="Managed with uv"></a>
 </p>
 
@@ -38,10 +42,10 @@ Use Claude through an API key or a Pro/Max subscription, Gemini through the free
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Textual UI with a welcome header, Markdown replies, tool-call blocks coloured by state (running, done, failed), live diffs for edits, a confirm dialog, a command palette (<code>Ctrl+P</code>), <code>Esc</code> to interrupt a turn, and a status line with model, provider, directory, git branch and context size.</td></tr>
 <tr><td><b>Provider-neutral history</b></td><td>One canonical message format shaped like the Anthropic Messages API. Each provider converts it on every request, so any session can be resumed with any provider, and <code>/provider</code> switches mid-conversation.</td></tr>
-<tr><td><b>Extensions all the way down</b></td><td>A Python file with <code>register(minimal)</code> can add tools, commands, providers, <code>tool_call</code>/<code>tool_result</code>/<code>turn_end</code> hooks, system-prompt notes, sidebar/top/bottom widgets, colour themes and a pixel-art logo.</td></tr>
+<tr><td><b>Extensions all the way down</b></td><td>A Python file with <code>register(minimal)</code> can add tools, commands, providers, event hooks (tool calls and results, turns, sessions, model requests and their errors), system-prompt notes, sidebar/top/bottom widgets, colour themes and a pixel-art logo.</td></tr>
 <tr><td><b>Self-extending, hot-reloaded</b></td><td>The model knows the extension API. It writes an extension, calls <code>reload_extensions</code>, and the new tools are offered on its very next request — in the middle of a turn, without a restart. Load errors go back to the model so it can fix them.</td></tr>
 <tr><td><b>Git-based marketplace</b></td><td>Browse, install, update, remove and publish extensions from any git repository with <code>/ext</code>. Publishing opens a pull request; the default branch is never pushed to.</td></tr>
-<tr><td><b>Safe by default</b></td><td>Asks before <code>write</code>, <code>edit</code>, <code>bash</code>, <code>reload_extensions</code>, <code>ext_install</code> and <code>ext_publish</code>. Permission rules in settings pre-approve or forbid calls; hooks can veto any tool call or rewrite any result. Saved keys are stored with mode <code>0600</code>.</td></tr>
+<tr><td><b>Safe by default</b></td><td>Asks before <code>write</code>, <code>edit</code>, <code>bash</code>, <code>reload_extensions</code>, <code>ext_install</code> and <code>ext_publish</code>. Permission rules in settings pre-approve or forbid calls; hooks can veto any tool call or rewrite any result. A project's own extensions run only after <code>/trust</code>, edits never overwrite a file that changed since the model read it, and saved keys are stored with mode <code>0600</code>.</td></tr>
 <tr><td><b>Small and readable</b></td><td>Five runtime dependencies. Every module has a docstring describing its role — start at <code>src/minimal/__init__.py</code>.</td></tr>
 </table>
 
@@ -123,13 +127,13 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | `/reload`                    | Reload extensions and settings from disk                                   |
 | `/settings`                  | Show the settings files and each effective setting with where it comes from |
 | `/trust`                     | Scan this project's extensions and trust-gated settings, then choose whether to trust and apply them |
-| `/ext …`                     | Install, update, remove, list and publish extensions                       |
+| `/ext …`                     | Install, update, remove, list and publish extensions (also `/extensions`)  |
 | `/setup`, `/login`, `/logout`| Change the saved default, sign in to Claude, forget the login              |
-| `/exit`                      | Quit (also `Ctrl+Q`)                                                       |
+| `/exit`                      | Quit (also `/quit` and `Ctrl+Q`)                                           |
 
 `/setup` and `/login` run with the UI suspended, in the plain terminal. `/setup` changes the saved default; `/provider` only affects the current session.
 
-`Esc` interrupts the turn in progress: a running `bash` command is killed. It takes effect at the next streamed chunk, tool call or model request. If the model had already replied, the turn stays in the history, closed with a `[turn interrupted: …]` note and an error result for each tool call that had not finished, so the model still knows what it did; otherwise the turn is dropped and the same prompt can be sent again. Interrupting during an automatic compaction aborts it and keeps the answer. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
+`Esc` interrupts the turn in progress: a running `bash` command is killed. It takes effect at the next streamed chunk, tool call or model request. If the model had already replied, the turn stays in the history, closed with a `[turn interrupted: …]` note and an error result for each tool call that had not finished, so the model still knows what it did; otherwise the turn is dropped and the same prompt can be sent again. Interrupting during an automatic compaction (the `compact` extension) aborts it and keeps the answer. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
 
 Typing `/` and part of a command suggests the rest; `→` accepts it. Click a tool call to expand its output (up to 500 lines) and again to collapse it; edits show a diff with the file's line numbers, and `read`/`write` show syntax-highlighted code. `Ctrl+B` hides or shows the sidebar.
 
@@ -196,9 +200,9 @@ def register(minimal):
     minimal.append_system_prompt("Always reply in the user's language.")
 ```
 
-`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo. Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.complete` and `ctx.run_agent` for model calls, `ctx.new_session`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__api__`), every member, event payloads, settings, widgets, themes, logos and publishing. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
+`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo, plus `declare_settings`, `data_dir()` (a private folder outside the repository for the extension's state) and `on_dispose` (cleanup before a reload or exit). Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.notify` for notices, `ctx.complete` and `ctx.run_agent` for model calls, `ctx.new_session`, `ctx.use_provider` and `ctx.queue_user_message`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__api__`, `__dependencies__`), every member, event payloads, settings, widgets, themes, logos and publishing. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
 
-Compaction (`compact`), the `subagent` tool and the `web_search` tool ([Brave Search API](https://api-dashboard.search.brave.com), needs `BRAVE_API_KEY`) are installed from the default marketplace with `/ext`.
+Compaction (`compact`), retries with backoff and a fallback provider (`retry`), the `subagent` tool and the `web_search` tool ([Brave Search API](https://api-dashboard.search.brave.com), needs `BRAVE_API_KEY`) are installed from the default marketplace with `/ext`.
 
 ### Self-extension and hot reload
 
@@ -233,7 +237,7 @@ The model has the `ext_search`, `ext_install` and `ext_publish` tools (each take
 ```mermaid
 flowchart LR
   cli[cli.main] --> app[App]
-  cli --> tui[MinimalTui] --> commands[commands.run_command]
+  cli --> tui[MinimalTui] --> commands[App.run_command]
   tui --> turn[App.run_turn]
   turn --> agent[agent.run_agent]
   agent --> provider{Provider}
@@ -247,7 +251,7 @@ flowchart LR
   turn --> session[Session.save]
 ```
 
-**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), permission rules (a deny fails the call, an allow skips the question), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If a turn fails or is interrupted before the model replied, it is dropped from the history; after that, it is kept, with the finished tool results, an error for each call not finished and a closing `[turn interrupted: …]` note. A reply cut off by the output token limit never runs its tool calls: each gets an error asking for smaller steps. The session file is appended to after every turn.
+**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply; `before_request` handlers may change what one request sends (a summary instead of a long history, say), and a failed request goes to `provider_error` handlers, which may retry it or switch provider. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), permission rules (a deny fails the call, an allow skips the question), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If a turn fails or is interrupted before the model replied, it is dropped from the history; after that, it is kept, with the finished tool results, an error for each call not finished and a closing `[turn interrupted: …]` note. A reply cut off by the output token limit never runs its tool calls: each gets an error asking for smaller steps. The session file is appended to after every turn.
 
 **Frontends.** What the user sees goes through a `Frontend` (`core/app.py`): the terminal UI, or `ConsoleFrontend` (plain stdout and `input()`) for commands that need the real terminal. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
 
@@ -323,10 +327,11 @@ Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or f
 ```bash
 uv sync
 uv run ruff check
-uv run python -m unittest discover -s tests
+uv run mypy
+uv run coverage run -m unittest discover -s tests && uv run coverage report
 ```
 
-The suite needs no network or API key. It covers:
+CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` fails below the threshold in `pyproject.toml`), and checks every item of the default marketplace with `minimal ext check`. Plain `uv run python -m unittest discover -s tests` runs the suite without coverage. The suite needs no network or API key. It covers:
 
 | Test file             | What's covered                                                                                   |
 | --------------------- | ------------------------------------------------------------------------------------------------ |
@@ -341,13 +346,13 @@ The suite needs no network or API key. It covers:
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_tui.py`         | The headless terminal UI: streaming, interruption, session replay, dialogs, tool-call states, command output, widgets, header |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
-| `test_bundled_extensions.py` | Marketplace items through `App`: web search, subagent, compaction. Loads them from `../minimal-marketplace` or `$MARKETPLACE_CHECKOUT`; skipped without a checkout |
+| `test_bundled_extensions.py` | Marketplace items through `App`: web search, subagent, compaction (also in the middle of a turn), retries, scope fence. Loads them from `../minimal-marketplace` or `$MARKETPLACE_CHECKOUT`; skipped without a checkout |
 
 ---
 
 ## Contributing
 
-Issues and pull requests are welcome at [RafaSG13/Minimal](https://github.com/RafaSG13/Minimal/issues). Extensions belong in the [marketplace](https://github.com/RafaSG13/minimal-marketplace) — publish one straight from the app with `/ext publish <path>`.
+Issues and pull requests are welcome at [RafaSG13/Minimal](https://github.com/RafaSG13/Minimal/issues); changes are listed in the [CHANGELOG](CHANGELOG.md). Extensions belong in the [marketplace](https://github.com/RafaSG13/minimal-marketplace) — publish one straight from the app with `/ext publish <path>`.
 
 Licensed under the [MIT License](LICENSE).
 
