@@ -103,12 +103,16 @@ class ScriptedFrontend:
 
 
 def remove_tree(path):
-    """Delete ``path``, retrying: on macOS git can still be writing into it when a test ends."""
-    for _ in range(5):
+    """Delete ``path``, retrying: on macOS git can still be writing into it when a test ends.
+
+    Fails loudly if something keeps writing for over 5 s.
+    """
+    for _ in range(50):
         shutil.rmtree(path, ignore_errors=True)
         if not os.path.exists(path):
             return
-        time.sleep(0.2)
+        time.sleep(0.1)
+    shutil.rmtree(path)
 
 
 class MarketplaceTest(unittest.TestCase):
@@ -125,6 +129,18 @@ class MarketplaceTest(unittest.TestCase):
             "GIT_COMMITTER_NAME": "t",
             "GIT_COMMITTER_EMAIL": "t@example.com",
             "MINIMAL_MARKETPLACE": str(self.bare),
+            # No background gc/maintenance or fsmonitor daemon outliving a git command.
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "4",
+            "GIT_CONFIG_KEY_0": "maintenance.auto",
+            "GIT_CONFIG_VALUE_0": "false",
+            "GIT_CONFIG_KEY_1": "gc.auto",
+            "GIT_CONFIG_VALUE_1": "0",
+            "GIT_CONFIG_KEY_2": "gc.autoDetach",
+            "GIT_CONFIG_VALUE_2": "false",
+            "GIT_CONFIG_KEY_3": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_3": "false",
         }
         for patcher in (
             mock.patch.dict(os.environ, env),

@@ -781,7 +781,7 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
     loader.category_dir(Path(), category)  # validates it
     _check_package_name(path, listing.name, category)
     url = url or marketplace_url()
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         _git("clone", "--quiet", "--", url, tmp)  # "--": a URL starting with "-" is not an option
         folder = Path(tmp, category)
         dest = folder / (listing.name if path.is_dir() else f"{listing.name}.py")
