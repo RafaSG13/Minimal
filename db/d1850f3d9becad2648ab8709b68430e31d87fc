@@ -1,0 +1,16 @@
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 784
+tests/test_marketplace.py
+  h_e81853c41416fb 106-110,114-115,132-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "dbd1850f3d9becad2648ab8709b68430e31d87fc",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
