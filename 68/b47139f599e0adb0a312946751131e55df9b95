@@ -1,0 +1,48 @@
+.github/workflows/ci.yml
+  h_e81853c41416fb 25,32,35
+.gitignore
+  h_e81853c41416fb 6
+CHANGELOG.md
+  h_e81853c41416fb 5-8
+pyproject.toml
+  h_e81853c41416fb 39-44,62-72
+src/minimal/config.py
+  h_e81853c41416fb 34,186,218
+src/minimal/core/agent.py
+  h_e81853c41416fb 31,151,158,288
+src/minimal/core/app.py
+  h_e81853c41416fb 585,604
+src/minimal/core/context.py
+  h_e81853c41416fb 128,149
+src/minimal/extensions/audit.py
+  h_e81853c41416fb 132
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 341-342
+src/minimal/extensions/logo.py
+  h_e81853c41416fb 18,56-57,59,63-65
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 440-441
+src/minimal/ui/commands.py
+  h_e81853c41416fb 86-87,90,232-233,384,394,397,432-433
+src/minimal/ui/setup.py
+  h_e81853c41416fb 107
+src/minimal/ui/tui/frontend.py
+  h_e81853c41416fb 7,71,87-92
+src/minimal/ui/tui/screens.py
+  h_e81853c41416fb 5,45,74,144
+src/minimal/ui/tui/widgets.py
+  h_e81853c41416fb 296-297
+uv.lock
+  h_e81853c41416fb 5-6,8-9,54-117,372-497,822-937,998-999,1015-1016,1021-1089,1119-1127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "68b47139f599e0adb0a312946751131e55df9b95",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
