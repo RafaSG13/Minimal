@@ -31,7 +31,7 @@ def _help(args: str, app: App) -> None:
 
 
 def _new(args: str, app: App) -> None:
-    app.session = open_session(new_id(), app.cwd)
+    app.switch_session(open_session(new_id(), app.cwd))
     print(f"New session: {app.session.id}")
 
 
@@ -77,7 +77,7 @@ def _resume(args: str, app: App) -> None:
         if id is None:
             print("Cancelled.")
             return
-    app.session = open_session(id)
+    app.switch_session(open_session(id))
     elsewhere = f", from {app.session.cwd}" if app.session.cwd and app.session.cwd != project_dir(app.cwd) else ""
     print(f"Resumed session {id} ({len(app.messages)} messages{elsewhere})")
     if app.session.torn_at is not None:

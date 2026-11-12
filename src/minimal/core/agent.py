@@ -2,8 +2,10 @@
 
 One call to :func:`run_agent` handles one user turn:
 
-1. Stream a reply from the provider, offering every registered tool.
-2. Append the reply to ``messages`` as an ``assistant`` message.
+1. Fire ``before_request`` (its handlers may replace the messages, system prompt or
+   tools sent, for that request only) and stream a reply from the provider, offering
+   every registered tool.
+2. Append the reply to ``messages`` as an ``assistant`` message and fire ``after_response``.
 3. If the reply contains no tool calls, fire ``turn_end`` and return it.
 4. Otherwise run each call (see :func:`execute_tool_call`), append the results
    as a ``user`` message and go back to step 1. If the reply was cut off by the
@@ -21,6 +23,7 @@ The loop only sees the canonical message format described in
 from __future__ import annotations
 
 import dataclasses
+import sys
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -108,14 +111,10 @@ def run_agent(
 
     for _ in range(max_turns):
         raise_if_cancelled(cancelled)
-        reply = provider.stream(
-            model=model,
-            system=system,
-            messages=messages,
-            tools=tool_specs(registry, exclude_tools),
-            on_text=stream_text,
-        )
+        request = _before_request(registry, ctx, messages, system, tool_specs(registry, exclude_tools), nested)
+        reply = provider.stream(model=model, on_text=stream_text, **request)
         messages.append(_assistant_message(provider, reply))
+        registry.emit("after_response", {"ctx": ctx, "reply": reply, "usage": reply.usage, "nested": nested})
 
         calls = [block for block in reply.content if block["type"] == "tool_use"]
         if not calls or reply.stop_reason not in ("tool_use", "max_tokens"):
@@ -229,6 +228,31 @@ def tool_specs(registry: Registry, exclude: frozenset[str] = frozenset()) -> lis
         for t in registry.tools.values()
         if t.name not in exclude
     ]
+
+
+_REQUEST_TYPES: dict[str, type] = {"messages": list, "system": str, "tools": list}
+"""What ``before_request`` handlers may replace, and the type each must have."""
+
+
+def _before_request(
+    registry: Registry, ctx: Any, messages: list[dict], system: str, tools: list[dict], nested: bool
+) -> dict[str, Any]:
+    """The ``messages``, ``system`` and ``tools`` of the next request, after the ``before_request`` handlers.
+
+    Results are combined by key, the last handler wins; a value of the wrong type is ignored with a warning.
+    """
+    request: dict[str, Any] = {"messages": messages, "system": system, "tools": tools}
+    for result in registry.emit("before_request", {"ctx": ctx, **request, "nested": nested}):
+        if not isinstance(result, dict):
+            continue
+        for key, value in result.items():
+            if key not in _REQUEST_TYPES:
+                continue
+            if not isinstance(value, _REQUEST_TYPES[key]):
+                print(f'[extension] before_request: ignored "{key}" (wrong type)', file=sys.stderr)
+                continue
+            request[key] = value
+    return request
 
 
 def _assistant_message(provider: Provider, reply: Reply) -> dict:

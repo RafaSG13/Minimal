@@ -14,22 +14,28 @@ from minimal.core.session import Session
 from minimal.extensions import loader
 from minimal.extensions.metadata import api_problem
 from minimal.extensions.registry import Registry
-from minimal.providers.base import Reply
+from minimal.providers.base import Reply, Usage
 from minimal.ui.commands import BUILTIN_COMMANDS
 
 
 class ScriptedProvider:
-    """Replays ``replies`` in order, recording the tool names offered with each request."""
+    """Replays ``replies`` in order, recording the tool names offered with each request and the request itself."""
 
     name = "fake"
 
     def __init__(self, replies):
         self.replies = list(replies)
         self.offered = []
+        self.requests = []
 
     def stream(self, **kw):
         self.offered.append([t["name"] for t in kw["tools"]])
+        self.requests.append({**kw, "messages": list(kw["messages"])})
         return self.replies.pop(0)
+
+
+def text_reply(text, usage=None):
+    return Reply(content=[{"type": "text", "text": text}], stop_reason="end_turn", usage=usage)
 
 
 class ExtensionApiTest(unittest.TestCase):
@@ -233,7 +239,7 @@ class ExtensionApiTest(unittest.TestCase):
         return errors[0]
 
     def test_extension_for_another_api_major_is_not_loaded(self):
-        self.assertIn("written for minimal API 9, this minimal has API 1.0", self.load_errors('"9"'))
+        self.assertIn("written for minimal API 9, this minimal has API 1.1", self.load_errors('"9"'))
 
     def test_extension_without_api_is_not_loaded(self):
         error = self.load_errors(None)
@@ -241,7 +247,7 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertIn('add __api__ = "1"', error)
 
     def test_extension_needing_a_newer_minor_api_is_not_loaded(self):
-        self.assertIn("needs minimal API 1.9, this minimal has API 1.0", self.load_errors('"1.9"'))
+        self.assertIn("needs minimal API 1.9, this minimal has API 1.1", self.load_errors('"1.9"'))
 
     def test_extension_with_a_malformed_api_is_not_loaded(self):
         self.assertIn("invalid __api__ 'x'", self.load_errors('"x"'))
@@ -352,6 +358,71 @@ class ExtensionApiTest(unittest.TestCase):
         self.app.extra_extensions = [str(path)]
         self.app.reload_extensions()
         self.assertIn("quiet", self.app.registry.tools)
+
+    def events(self, *names):
+        """Record every payload of the events ``names`` as ``(name, payload)``."""
+        seen = []
+        for name in names:
+            self.app.registry.on(name, lambda event, name=name: seen.append((name, event)))
+        return seen
+
+    def test_turn_start_rewrites_the_user_message(self):
+        self.app.registry.on("turn_start", lambda event: {"text": event["text"].upper()})
+        self.app.registry.on("turn_start", lambda event: {"text": ""})  # empty: ignored
+        self.app.registry.on("turn_start", lambda event: 1 / 0)  # reported and skipped
+        self.app.provider = ScriptedProvider([text_reply("ok")])
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.app.run_turn("rewritten")
+        self.assertEqual(self.app.messages[0], {"role": "user", "content": "REWRITTEN"})
+        self.assertIn('error in "turn_start" handler', err.getvalue())
+
+    def test_before_request_changes_only_that_request(self):
+        self.app.registry.on("before_request", lambda event: {"system": "X", "tools": "wrong"})
+        self.app.registry.on(
+            "before_request", lambda event: {"messages": [*event["messages"], {"role": "user", "content": "extra"}]}
+        )
+        seen = self.events("before_request", "after_response")
+        usage = Usage(input_tokens=3, output_tokens=4)
+        self.app.provider = ScriptedProvider([text_reply("ok", usage)])
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.app.run_turn("hi")
+        [request] = self.app.provider.requests
+        self.assertEqual(request["system"], "X")
+        self.assertEqual(request["tools"], [])  # "wrong" was not a list
+        self.assertEqual(request["messages"][-1], {"role": "user", "content": "extra"})
+        self.assertIn('[extension] before_request: ignored "tools" (wrong type)', err.getvalue())
+        self.assertEqual([m["role"] for m in self.app.messages], ["user", "assistant"])
+        [(_, before), (_, after)] = seen
+        self.assertFalse(before["nested"])
+        self.assertEqual((after["usage"], after["reply"].content, after["nested"]), (usage, [{"type": "text", "text": "ok"}], False))
+
+    def test_session_events(self):
+        seen = self.events("session_start", "session_switch", "shutdown")
+        self.app.begin()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.app.run_command("/new")
+        new = self.app.session.id
+        old = self.app.context.new_session([])
+        self.app.shutdown()
+        self.assertEqual(
+            [(name, {k: v for k, v in e.items() if k != "ctx"}) for name, e in seen],
+            [
+                ("session_start", {"resumed": False}),
+                ("session_switch", {"old_id": "first", "new_id": new}),
+                ("session_switch", {"old_id": old, "new_id": self.app.session.id}),
+                ("shutdown", {}),
+            ],
+        )
+        self.assertTrue(all(e["ctx"] is self.app.context for _, e in seen))
+        self.app.messages.append({"role": "user", "content": "x"})
+        self.app.begin()
+        self.assertEqual(seen[-1], ("session_start", {"ctx": self.app.context, "resumed": True}))
+
+    def test_unknown_event_lists_every_event(self):
+        with self.assertRaisesRegex(ValueError, "use one of tool_call, .*, before_request, after_response, shutdown"):
+            self.app.registry.on("nope", print)
 
 
 if __name__ == "__main__":

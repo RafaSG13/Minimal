@@ -8,6 +8,10 @@
   `/ext` and the model's `ext_install` ask whether to install the missing ones into minimal's Python (`uv pip install`,
   else `pip`); the extension stays installed either way. `minimal ext check --install-deps` installs them before
   checking, which is what CI runs (no more `requirements-ci.txt`).
+- Extension API 1.1 (`minimal.API_VERSION = "1.1"`). New events: `session_start` (once, when the UI is up),
+  `session_switch` (`/new`, `/resume`, `ctx.new_session`), `turn_start` (may rewrite the user's message),
+  `before_request` (may replace the messages, system prompt or tools of one model request without touching the
+  history), `after_response` (each reply and its usage) and `shutdown`. Their payload types are in `minimal.api`.
 
 ### Changed
 

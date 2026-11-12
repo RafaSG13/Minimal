@@ -32,7 +32,7 @@ from typing import Any, TypedDict
 from minimal import config
 from minimal.extensions.metadata import Metadata
 from minimal.extensions.registry import CommandRun, EventHandler, Registry, Tool, ToolRun, check_event
-from minimal.providers.base import Provider
+from minimal.providers.base import Provider, Reply, Usage
 
 
 class ToolCallEvent(TypedDict):
@@ -62,6 +62,59 @@ class TurnEndEvent(TypedDict):
     ctx: Any
     nested: bool
     """The loop ran inside a tool, such as a subagent."""
+
+
+class SessionStartEvent(TypedDict):
+    """Payload of ``session_start``: fired once per process when the UI is up."""
+
+    ctx: Any
+    resumed: bool
+    """The session already had messages (``-c``, ``-s``)."""
+
+
+class SessionSwitchEvent(TypedDict):
+    """Payload of ``session_switch``: ``/new``, ``/resume`` or ``ctx.new_session`` replaced the session (the old one is saved)."""
+
+    ctx: Any
+    old_id: str
+    new_id: str
+
+
+class TurnStartEvent(TypedDict):
+    """Payload of ``turn_start``: the user sent ``text``. Return ``{"text": str}`` to rewrite it before it enters the history."""
+
+    ctx: Any
+    text: str
+
+
+class BeforeRequestEvent(TypedDict):
+    """Payload of ``before_request``: fired before each model request.
+
+    Return any of ``{"messages": list, "system": str, "tools": list}`` to send that instead, for
+    this request only (the history does not change). Do not mutate the payload; return copies.
+    """
+
+    ctx: Any
+    messages: list[dict]
+    system: str
+    tools: list[dict]
+    nested: bool
+    """The loop runs inside a tool, such as a subagent."""
+
+
+class AfterResponseEvent(TypedDict):
+    """Payload of ``after_response``: a reply was appended to the history."""
+
+    ctx: Any
+    reply: Reply
+    usage: Usage | None
+    nested: bool
+
+
+class ShutdownEvent(TypedDict):
+    """Payload of ``shutdown``: minimal is exiting."""
+
+    ctx: Any
 
 
 def _first_line(doc: str | None) -> str:
@@ -184,7 +237,9 @@ class Extension:
         self._registry.append_system_prompt(text)
 
     def on(self, event: str, handler: EventHandler | None = None):
-        """Subscribe ``handler(event)`` to ``event`` (``tool_call``, ``tool_result`` or ``turn_end``).
+        """Subscribe ``handler(event)`` to ``event``: one of :data:`~minimal.extensions.registry.EVENTS`
+        (``tool_call``, ``tool_result``, ``turn_end``, ``session_start``, ``session_switch``,
+        ``turn_start``, ``before_request``, ``after_response``, ``shutdown``).
 
         Without ``handler``, returns a decorator that subscribes the decorated function.
 

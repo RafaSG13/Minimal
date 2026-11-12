@@ -71,8 +71,11 @@ SELF_EXTEND_PROMPT = (
     "them. "
     "@minimal.tool(description=..., input_schema=..., confirm=...) on run(input, ctx) adds a tool (name and "
     "description default to the function's name and docstring); @minimal.command() on run(args, ctx) adds a slash "
-    'command; @minimal.on("tool_call"|"tool_result"|"turn_end") on handler(event) hooks events (event["ctx"] is the '
-    'Context; turn_end has event["nested"] for a subagent\'s loop); the same exist as minimal.register_tool, '
+    'command; @minimal.on(event) on handler(event) hooks events: "tool_call", "tool_result", "turn_end", '
+    '"session_start", "session_switch", "turn_start", "before_request", "after_response" or "shutdown" '
+    '(event["ctx"] is the Context; turn_end, before_request and after_response have event["nested"] for a '
+    'subagent\'s loop; turn_start may return {{"text": ...}} to rewrite the user\'s message, and before_request '
+    '{{"messages", "system", "tools"}} to send instead for that request only); the same exist as minimal.register_tool, '
     "register_command and on(event, handler). minimal.register_provider(...) adds a model; "
     "minimal.append_system_prompt(text) adds instructions; settings = minimal.declare_settings({{...defaults}}) "
     "declares settings the user sets under extensions.settings.<id> in ~/.minimal/settings.json (id is the name, or "
@@ -426,6 +429,21 @@ class App:
         self.provider_name = name
         self.model = model or spec.default_model
 
+    def begin(self) -> None:
+        """Fire ``session_start``: once per process, when the UI is up (a reload does not fire it again)."""
+        self.registry.emit("session_start", {"ctx": self.context, "resumed": bool(self.messages)})
+
+    def switch_session(self, session: Session) -> None:
+        """Save the current session, continue in ``session`` and fire ``session_switch``."""
+        old = self.session
+        old.save()
+        self.session = session
+        self.registry.emit("session_switch", {"ctx": self.context, "old_id": old.id, "new_id": session.id})
+
+    def shutdown(self) -> None:
+        """Fire ``shutdown``: minimal is exiting."""
+        self.registry.emit("shutdown", {"ctx": self.context})
+
     def available_models(self) -> tuple[list[str], str | None]:
         """The models the current provider offers, queried from its API, and why the query failed (``None`` if it did not).
 
@@ -516,13 +534,16 @@ class App:
     def run_turn(self, text: str) -> None:
         """Send ``text`` to the model, stream the answer to the frontend and save the session.
 
-        If the turn fails or is interrupted, the frontend gets the error. If the
-        model had already replied, the turn stays in the history, closed with an
-        assistant note saying why it ended (every ``tool_use`` has its result), so
-        the model still knows what it did. If it had not, the turn is discarded and
-        the same prompt can be sent again.
+        ``turn_start`` handlers may rewrite ``text`` first. If the turn fails or is
+        interrupted, the frontend gets the error. If the model had already replied,
+        the turn stays in the history, closed with an assistant note saying why it
+        ended (every ``tool_use`` has its result), so the model still knows what it
+        did. If it had not, the turn is discarded and the same prompt can be sent again.
         """
         self.cancelled.clear()
+        for result in self.registry.emit("turn_start", {"ctx": self.context, "text": text}):
+            if isinstance(result, dict) and isinstance(result.get("text"), str) and result["text"]:
+                text = result["text"]
         before = len(self.messages)
         self.messages.append({"role": "user", "content": text})
         error = None
