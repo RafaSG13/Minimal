@@ -1,0 +1,28 @@
+CHANGELOG.md
+  h_e81853c41416fb 17-18
+docs/extensions.md
+  h_e81853c41416fb 144,317
+src/minimal/core/app.py
+  h_e81853c41416fb 81-82
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 27-28,152,159,187-206
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 290-295,299-300,322,332,344,403
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 1107
+tests/test_extension_api.py
+  h_e81853c41416fb 462-484
+tests/test_marketplace.py
+  h_e81853c41416fb 786-788
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "2d7edf594271ad49e40d7f8545c5f11328d492ef",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
