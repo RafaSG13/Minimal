@@ -140,6 +140,7 @@ minimal.on("turn_end", lambda event: None)
 | `register_status(name, render, side="right")`                       | A status-line segment ([Status segments](#status-segments))   |
 | `register_theme(name, *, dark, background, foreground, accent, **colors)` | A colour theme ([Themes](#themes))                      |
 | `register_logo(art, colors, align="center")`                        | Pixel art in the welcome header ([Header logo](#header-logo)) |
+| `on_dispose(fn)`                                                    | `fn()` runs before a reload and when minimal exits (last registered first): stop the threads, timers and subprocesses the extension started. Returns `fn`, so it also works as a decorator |
 
 ### Settings
 
@@ -258,7 +259,7 @@ A project's `./.minimal/extensions/` is code from the repository, so minimal doe
 
 ## Reloading
 
-`/reload`, the model's `reload_extensions` tool and `ctx.reload()` rebuild every registration from disk in place: new tools are offered on the model's next request, even in the middle of a turn, and widgets are remounted. Load errors (syntax errors, a missing or unsupported `__api__`, setting errors) are listed in the summary, and returned to the model when it reloaded.
+`/reload`, the model's `reload_extensions` tool and `ctx.reload()` rebuild every registration from disk in place: new tools are offered on the model's next request, even in the middle of a turn, and widgets are remounted. Before that, every `on_dispose` function of the extensions loaded so far runs, so a thread or timer started by the old copy does not outlive it. Load errors (syntax errors, a missing or unsupported `__api__`, setting errors) are listed in the summary, and returned to the model when it reloaded.
 
 ## Publishing and `minimal ext check`
 
@@ -310,7 +311,9 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it. API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`; an extension using any of them declares `__api__ = "1.1"`.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+
+API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`, and `minimal.on_dispose`. An extension using any of them declares `__api__ = "1.1"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

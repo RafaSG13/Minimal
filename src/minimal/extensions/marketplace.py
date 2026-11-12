@@ -1101,9 +1101,10 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
     if not listing.compatible:
         return f"FAIL {label}: {listing.problem}"
     errors: list[str] = []
+    registry = make_registry()
     try:
         source = loader.read_extensions([path])[0]
-        loader.load_source(source, make_registry(), config.Settings(), "cli", errors)
+        loader.load_source(source, registry, config.Settings(), "cli", errors)
     except ImportError as e:
         # ImportError(name=...) for a module missing here, e.g. a hint raised by the extension itself.
         if (
@@ -1115,6 +1116,8 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
         return f"FAIL {label}: {type(e).__name__}: {e}"
     except Exception as e:
         return f"FAIL {label}: {type(e).__name__}: {e}"
+    finally:
+        registry.dispose()
     if errors:
         return f"FAIL {label}: {'; '.join(errors)}"
     return f"ok   {label} {listing.version}"

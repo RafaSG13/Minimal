@@ -424,6 +424,41 @@ class ExtensionApiTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "use one of tool_call, .*, before_request, after_response, shutdown"):
             self.app.registry.on("nope", print)
 
+    def test_on_dispose_runs_before_a_reload_and_at_shutdown(self):
+        log = self.tmp / "log"
+        self.extension(
+            "disposing.py",
+            f"""
+            import pathlib
+            LOG = pathlib.Path({str(log)!r})
+
+            def write(line):
+                with LOG.open("a") as f:
+                    f.write(line + "\\n")
+
+            def register(minimal):
+                write("register")
+                minimal.on_dispose(lambda: write("dispose"))
+
+                @minimal.on_dispose
+                def boom():
+                    raise RuntimeError("boom")
+            """,
+        )
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.app.reload_extensions()[1], [])
+            self.app.reload_extensions()
+            self.assertEqual(log.read_text().split(), ["register", "dispose", "register"])
+            self.app.shutdown()
+            self.app.shutdown()  # disposers run once
+        self.assertEqual(log.read_text().split(), ["register", "dispose", "register", "dispose"])
+        self.assertEqual(err.getvalue().count("[extension] error in dispose: boom"), 2)
+
+    def test_on_dispose_needs_a_callable(self):
+        with self.assertRaisesRegex(ValueError, "on_dispose: fn must be callable"):
+            self.app.registry.on_dispose("not callable")
+
 
 if __name__ == "__main__":
     unittest.main()

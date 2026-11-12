@@ -77,7 +77,8 @@ SELF_EXTEND_PROMPT = (
     'subagent\'s loop; turn_start may return {{"text": ...}} to rewrite the user\'s message, and before_request '
     '{{"messages", "system", "tools"}} to send instead for that request only); the same exist as minimal.register_tool, '
     "register_command and on(event, handler). minimal.register_provider(...) adds a model; "
-    "minimal.append_system_prompt(text) adds instructions; settings = minimal.declare_settings({{...defaults}}) "
+    "minimal.append_system_prompt(text) adds instructions; minimal.on_dispose(fn) runs fn before a reload and at "
+    "exit: stop threads, timers and subprocesses there; settings = minimal.declare_settings({{...defaults}}) "
     "declares settings the user sets under extensions.settings.<id> in ~/.minimal/settings.json (id is the name, or "
     "category/name in a subfolder). minimal.register_widget(name, create, area) adds a visual "
     'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '
@@ -388,6 +389,7 @@ class App:
         self.settings = config.Settings(tuple(layers), trusted)
         self.permissions = Permissions(self.settings)
         self.setting_errors = setting_errors
+        self.registry.dispose()
         self.registry.reset()
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
@@ -441,8 +443,9 @@ class App:
         self.registry.emit("session_switch", {"ctx": self.context, "old_id": old.id, "new_id": session.id})
 
     def shutdown(self) -> None:
-        """Fire ``shutdown``: minimal is exiting."""
+        """Fire ``shutdown`` (minimal is exiting), then run the extensions' ``on_dispose`` functions."""
         self.registry.emit("shutdown", {"ctx": self.context})
+        self.registry.dispose()
 
     def available_models(self) -> tuple[list[str], str | None]:
         """The models the current provider offers, queried from its API, and why the query failed (``None`` if it did not).

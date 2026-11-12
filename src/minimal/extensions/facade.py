@@ -257,6 +257,19 @@ class Extension:
 
         return decorate
 
+    def on_dispose(self, fn: Callable[[], Any]) -> Callable[[], Any]:
+        """Call ``fn()`` before the extensions are reloaded and when minimal exits; returns ``fn``, so it works as a decorator.
+
+        Stop the threads, timers and subprocesses the extension started there: a reload imports it
+        again and calls ``register`` on a fresh ``minimal``. Disposers run last registered first; one
+        that raises is reported and the rest still run.
+
+        Raises:
+            ValueError: if ``fn`` is not callable.
+        """
+        self._registry.on_dispose(fn)
+        return fn
+
     def tool(
         self,
         name: str | None = None,
