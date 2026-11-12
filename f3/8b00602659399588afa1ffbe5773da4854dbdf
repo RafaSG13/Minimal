@@ -1,0 +1,18 @@
+CHANGELOG.md
+  h_e81853c41416fb 3
+src/minimal/__init__.py
+  h_e81853c41416fb 16
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 274-379
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f38b00602659399588afa1ffbe5773da4854dbdf",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
