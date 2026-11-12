@@ -19,7 +19,15 @@ from pathlib import Path
 from minimal import config
 from minimal.core.app import App, ExitRepl
 from minimal.core.context import Context
-from minimal.core.session import TORN_NOTICE, list_sessions, new_id, open_session, preview, project_dir, session_project
+from minimal.core.session import (
+    TORN_NOTICE,
+    list_sessions,
+    new_id,
+    open_session,
+    preview,
+    project_dir,
+    session_header,
+)
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
 from minimal.extensions.registry import Registry
@@ -51,8 +59,10 @@ def _split_all(args: str) -> tuple[bool, list[str]]:
 
 
 def _session_label(id: str, all_projects: bool) -> str:
-    where = f"  {session_project(id) or '?'}" if all_projects else ""
-    return f"{id}{where}  {preview(id)}".rstrip()
+    header = session_header(id)
+    where = f"  {header.get('cwd') or '?'}" if all_projects else ""
+    parent = f"  (from {header['parent']})" if isinstance(header.get("parent"), str) and header["parent"] else ""
+    return f"{id}{where}  {preview(id)}{parent}".rstrip()
 
 
 def _sessions(args: str, ctx: Context) -> None:
@@ -75,6 +85,9 @@ def _resume(args: str, ctx: Context) -> None:
         raise ValueError("usage: /resume [--all] [id]")
     if rest:
         id = rest[0]
+        if id == app.session.id:
+            print(f"Already in session {id}.")
+            return
         if id not in list_sessions():  # open_session would quietly start a new session under that id
             raise ValueError(f"no session {id!r}; /sessions --all lists every project's")
     else:
@@ -92,6 +105,13 @@ def _resume(args: str, ctx: Context) -> None:
     print(f"Resumed session {id} ({len(app.messages)} messages{elsewhere})")
     if app.session.torn_at is not None:
         print(f"warning: {TORN_NOTICE}")
+
+
+def _title(args: str, ctx: Context) -> None:
+    session = _app(ctx).session
+    if args.strip():
+        session.set_title(args)
+    print(f"Title: {session.title}" if session.title else "No title. Name this session with /title <text>.")
 
 
 def _model(args: str, ctx: Context) -> None:
@@ -445,6 +465,7 @@ def register_builtin_commands(registry: Registry) -> None:
         ("new", _new, "start a new session", False),
         ("sessions", _sessions, "list this project's saved sessions: /sessions [--all]", False),
         ("resume", _resume, "resume a saved session of this project: /resume [--all] [id]", False),
+        ("title", _title, "show or set this session's title (shown by /sessions and /resume): /title [text]", False),
         ("model", _model, "list models, or change: /model [number|name]", False),
         ("provider", _provider, "list providers, or switch: /provider <name> [model]", False),
         ("tools", _tools, "list the tools", False),

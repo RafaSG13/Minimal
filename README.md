@@ -93,6 +93,10 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 
 **Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
 
+**Files.** `edit` replaces one exact, unique piece of text, every occurrence with `replace_all`, or several pieces in one call with `edits` (all or none), and returns the changed lines. `edit` and `write` refuse a file that changed on disk since the model last read, wrote or edited it (you, a formatter or a `bash` command touched it), so the model reads it again instead of overwriting your changes. `read` shows bytes that are not UTF-8 as `�` and does not print binary files.
+
+**Sessions.** A session is open in one minimal at a time: `-c`, `-s` or `/resume` of a session another minimal has open fails and says which process holds it. `/title` names a session; `/sessions` and `/resume` show the title (else the first message) and, for a session an extension started from another one (as `compact` does), the one it came from.
+
 ### Providers
 
 | Provider            | `--provider` | Credentials                                                                                                      | Default model       |
@@ -111,6 +115,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | `/help`                      | Show the commands, including those added by extensions                     |
 | `/new`, `/sessions [--all]`  | Start a new session, list this project's saved sessions (every project's with `--all`) |
 | `/resume [--all] [id]`       | Resume a saved session of this project: pick one of the latest (`--all`: of any project), or give an id |
+| `/title [text]`              | Show or set this session's title                                           |
 | `/model [number\|name]`      | List models, or change model                                               |
 | `/provider [name [model]]`   | List providers, or switch for this session and keep the conversation       |
 | `/tools`                     | List the tools                                                             |

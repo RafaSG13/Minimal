@@ -190,7 +190,7 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `system_prompt()`                | The system prompt the next turn would send                                                 |
 | `complete(messages, *, system=None, tools=True, options=None)` | One model request with the current provider and model; returns a `Reply`. No tools are run; `tools=True` offers them anyway to keep the prompt cache warm. `options` (`max_tokens`, `temperature`) go over the ones a turn uses. Interruptible |
 | `run_agent(prompt, *, system_note="", exclude_tools=())` | Runs `prompt` as its own agent loop with an empty history and the same tools (minus `exclude_tools`), confirmations and permissions; returns the text of its last reply. `system_note` is appended to the system prompt; its `turn_end` has `nested` set |
-| `new_session(messages)`          | Saves the current session and continues in a new one holding `messages`; returns the old id |
+| `new_session(messages)`          | Saves the current session and continues in a new one holding `messages` (its header names the old one as `parent`, which `/sessions` shows); returns the old id. `ValueError` if the new session cannot be locked |
 | `sessions(*, all_projects=False)` | Saved session ids, oldest first: those started in this `cwd`, or every project's with `all_projects=True` |
 | `read_session(session_id)`       | The messages of a saved session; `ValueError` if there is none                             |
 | `reload()`                       | Reloads every extension from disk; returns the summary                                     |

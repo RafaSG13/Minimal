@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added
+
+- `edit` takes `replace_all` (change every occurrence) and `edits` (several replacements to one file, applied in
+  order, all or none), and returns the changed lines numbered like `read`. The terminal UI shows a diff for each.
+- `/title [text]` names the session. The title, and the session a new one was started from with `ctx.new_session`
+  (`parent`, e.g. by `compact`), are kept in the session file's header and shown by `/sessions` and `/resume`.
+
+### Changed
+
+- `edit` and `write` refuse a file that changed on disk since the model last read, wrote or edited it in this session
+  (the user, a formatter or a `bash` command modified it), and ask the model to read it again.
+- `read` shows bytes that are not UTF-8 as U+FFFD, with a note, instead of failing; a binary file (a NUL byte in its
+  first 8 KiB) is reported, not printed. `edit` on a file that is not UTF-8 fails with a clear message.
+
+### Fixed
+
+- Two minimal processes could continue the same session (`-c` in two terminals, `/resume` of a session open
+  elsewhere) and interleave their messages in one file. A session is now locked (`<id>.lock`, `flock`) by the minimal
+  that has it open: starting or resuming it elsewhere fails and names the process that holds it.
+
 ## 0.4.0
 
 ### Added
