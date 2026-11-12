@@ -338,7 +338,8 @@ def load_sources(
         line per extension that failed plus one per setting it rejected. A failed
         extension is skipped; anything it registered before failing stays registered.
     """
-    loaded, errors = [], []
+    loaded: list[Path] = []
+    errors: list[str] = []
     for source, scope in sources:
         try:
             load_source(source, registry, settings, scope, errors, cwd)

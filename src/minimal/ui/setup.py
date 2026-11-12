@@ -104,6 +104,7 @@ def _ensure_login(login: claude_auth.Credentials | None) -> None:
 def _ensure_key(spec: ProviderSpec) -> None:
     if not spec.env_keys:
         return
+    keep_label: str | None
     if any(k in config.load_keys() for k in spec.env_keys):
         keep_label = "Keep the saved key"
     else:

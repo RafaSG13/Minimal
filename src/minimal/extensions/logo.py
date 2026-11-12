@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import cast
 
 KEYS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 """Pixel characters, one per colour (none is transparent)."""
@@ -52,13 +53,16 @@ def convert(
     w, h = img.size
     coords = [(x, y) for y in range(h) for x in range(w)]
     access = img.load()
-    pixels = [access[xy] for xy in coords]
+    assert access is not None  # an RGBA image loaded from a file has pixel data
+    pixels = cast("list[tuple[int, int, int, int]]", [access[xy] for xy in coords])
     opaque = [a >= 128 for _, _, _, a in pixels]
-    rgb = [p[:3] for p in pixels]
+    rgb: list[tuple[int, ...]] = [p[:3] for p in pixels]
     if len({c for c, o in zip(rgb, opaque) if o}) > max_colors:
         quantized = img.convert("RGB").quantize(colors=max_colors, method=Image.Quantize.MEDIANCUT)
         palette, indices = quantized.getpalette(), quantized.load()
-        rgb = [tuple(palette[3 * indices[xy] : 3 * indices[xy] + 3]) for xy in coords]
+        assert palette is not None and indices is not None  # quantize() returns a paletted image
+        indexes = cast("list[int]", [indices[xy] for xy in coords])
+        rgb = [tuple(palette[3 * i : 3 * i + 3]) for i in indexes]
     keys: dict[tuple[int, ...], str] = {}
     for color, is_opaque in zip(rgb, opaque):
         if is_opaque and color not in keys:

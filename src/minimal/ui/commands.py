@@ -96,10 +96,11 @@ def _resume(args: str, ctx: Context) -> None:
         if not recent:
             print("(none)")
             return
-        id = app.frontend.choose("Resume session", [(i, _session_label(i, all_projects)) for i in recent])
-        if id is None:
+        picked = app.frontend.choose("Resume session", [(i, _session_label(i, all_projects)) for i in recent])
+        if picked is None:
             print("Cancelled.")
             return
+        id = picked
     app.switch_session(open_session(id))
     elsewhere = f", from {app.session.cwd}" if app.session.cwd and app.session.cwd != project_dir(app.cwd) else ""
     print(f"Resumed session {id} ({len(app.messages)} messages{elsewhere})")
@@ -248,8 +249,8 @@ def _settings(args: str, ctx: Context) -> None:
         raise ValueError("usage: /settings")
     settings = app.settings
     print("Files:")
-    for scope, path in config.settings_files(app.cwd).items():
-        print(f"  {scope:<8} {path}{'' if path.exists() else ' (not found)'}")
+    for file_scope, path in config.settings_files(app.cwd).items():
+        print(f"  {file_scope:<8} {path}{'' if path.exists() else ' (not found)'}")
     lines = []
     for key in _SCALARS:
         value, scope = settings.scalar(key)
@@ -400,7 +401,7 @@ def _ext_picker(app: App) -> None:
     outdated = [e for e in entries if e.outdated and e.listing.compatible and e.listing.name in ticked]
     scope = "global"
     if to_install:
-        scope = app.frontend.choose(
+        where = app.frontend.choose(
             f"Install {len(to_install)} item(s) into",
             [
                 ("global", f"Global: {loader.category_dir(loader.GLOBAL_EXTENSIONS_DIR, category)}"),
@@ -410,9 +411,10 @@ def _ext_picker(app: App) -> None:
                 ),
             ],
         )
-        if scope is None:
+        if where is None:
             print("Cancelled.")
             return
+        scope = where
     to_update = []
     if outdated:
         picked = app.frontend.choose_many(
@@ -447,8 +449,8 @@ def _ext_picker(app: App) -> None:
             print(f"Updated {e.listing.name} at {dest}")
     try:
         msg = marketplace.ensure_dependencies([e.release.listing for e in to_install + to_update], app.frontend.ask)
-    except RuntimeError as e:
-        msg = str(e)
+    except RuntimeError as err:
+        msg = str(err)
     if msg:
         print(msg)
     for e in to_remove:

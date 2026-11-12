@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from textual import events
@@ -41,7 +42,7 @@ class ConfirmScreen(ModalScreen[bool]):
     BINDINGS = [
         ("left,up", "pick(True)", "Allow"),
         ("right,down", "pick(False)", "Deny"),
-        ("tab", "toggle", "Switch"),
+        ("tab", "switch", "Switch"),
         ("enter", "confirm", "Confirm"),
         ("escape", "answer(False)", "Deny"),
     ]
@@ -70,7 +71,7 @@ class ConfirmScreen(ModalScreen[bool]):
         self.query_one("#yes").set_class(allow, "-selected")
         self.query_one("#no").set_class(not allow, "-selected")
 
-    def action_toggle(self) -> None:
+    def action_switch(self) -> None:
         self.action_pick(not self.allow)
 
     def action_confirm(self) -> None:
@@ -140,7 +141,7 @@ class ChoiceScreen(DialogScreen):
 
     HINT = "enter selects · esc cancels"
 
-    def __init__(self, heading: str, options: list[tuple[str, str | Content]]) -> None:
+    def __init__(self, heading: str, options: Sequence[tuple[str, str | Content]]) -> None:
         super().__init__(heading)
         self.options = options
 

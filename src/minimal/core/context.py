@@ -125,6 +125,7 @@ class Context:
         """
         app = self._app
         opts = {**app.request_options(), **(options or {})}
+        assert app.provider is not None  # startup picks a provider before any extension runs
         return app.provider.stream(
             model=app.model,
             system=self.system_prompt() if system is None else system,
@@ -145,6 +146,7 @@ class Context:
             system_note: Appended to the system prompt.
         """
         app = self._app
+        assert app.provider is not None  # startup picks a provider before any extension runs
         reply = agent.run_agent(
             provider=app.provider,
             model=app.model,

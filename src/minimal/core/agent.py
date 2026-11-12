@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 from minimal.extensions.registry import Registry, Tool, TurnInterrupted
 from minimal.providers.base import Provider, Reply
@@ -148,14 +148,14 @@ def run_agent(
 
         if reply.stop_reason == "max_tokens":
             # Every tool_use needs its tool_result or the next request is invalid, and the last call is incomplete.
-            results = [
+            results: list[dict] = [
                 {"type": "tool_result", "tool_use_id": call["id"], "content": "Error: " + TRUNCATED, "is_error": True}
                 for call in calls
             ]
             messages.append({"role": "user", "content": results})
             continue
 
-        results: list[dict] = []
+        results = []
         try:
             for call in calls:
                 raise_if_cancelled(cancelled)
@@ -285,7 +285,7 @@ def _before_request(
             if not isinstance(value, _REQUEST_TYPES[key]):
                 print(f'[extension] before_request: ignored "{key}" (wrong type)', file=sys.stderr)
             elif key == "options":
-                opts.update(value)
+                opts.update(cast("dict[str, Any]", value))
             else:
                 request[key] = value
     if opts:

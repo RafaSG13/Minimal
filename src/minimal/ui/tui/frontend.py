@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import threading
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 from textual.content import Content
 from textual.screen import ModalScreen
@@ -68,7 +68,7 @@ class TuiFrontend:
         return next((widget for widget_name, widget in self.tui.ext_widgets if widget_name == name), None)
 
     def notify(self, text: str, kind: str) -> None:
-        severity = {"info": "information"}.get(kind, kind)
+        severity = cast("Literal['information', 'warning', 'error']", {"info": "information"}.get(kind, kind))
         self._on_ui(lambda: self.tui.notify(text, severity=severity, markup=False))
 
     def queued(self) -> None:
@@ -84,9 +84,12 @@ class TuiFrontend:
             done.set()
 
         self.tui.pending_modal = done
-        self.tui.call_from_thread(
-            lambda: self.tui.push_screen(screen, callback=on_done)
-        )
+
+        async def push() -> None:
+            await self.tui.push_screen(screen, callback=on_done)
+
+        # mypy solves call_from_thread's result type as Never when the result is unused.
+        self.tui.call_from_thread(push)  # type: ignore[arg-type]
         done.wait()
         self.tui.pending_modal = None
         return result[0] if result else None
