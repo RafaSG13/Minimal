@@ -52,6 +52,7 @@ Metadata is read from the source without running it (for a package, from `__init
 | docstring      | Its first line is the description shown by the marketplace (required to publish)                           |
 | `__version__`  | `"1.0"`: a string, required by the marketplace; shown as `minimal.version`                                 |
 | `__api__`      | `"1"`: the [API version](#api-versions) it is written for, required. `"1"` runs on any 1.x; `"1.2"` needs 1.2 or a later 1.x |
+| `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
 
 An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "1"`), and neither is one written for another major version (`written for minimal API 0, this minimal has API 1.0`) or a newer minor (`needs minimal API 1.3, this minimal has API 1.0: upgrade minimal`).
 
@@ -264,6 +265,7 @@ The model's `ext_publish` tool does the same, with an optional `category` and `m
 ```bash
 minimal ext check my_ext.py my_pkg/      # files or package folders
 minimal ext check .                      # a whole marketplace checkout
+minimal ext check --install-deps .       # install every item's missing __dependencies__ first (CI)
 ```
 
 It loads each extension without a terminal or a provider and prints one line per item:
@@ -274,7 +276,9 @@ WARN extensions/mermaid: needs termaid
 FAIL widgets/broken: syntax error: '(' was never closed (broken.py, line 2)
 ```
 
-`WARN` means a module the extension imports is not installed here; `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+`WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+
+Only the package name of a `__dependencies__` entry is checked when deciding what is missing, not its version range.
 
 ## What `minimal.api` exports
 

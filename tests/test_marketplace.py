@@ -17,6 +17,7 @@ from minimal.core.app import App
 from minimal.core.session import Session
 from minimal.extensions import loader, marketplace
 from minimal.extensions.loader import load_extensions
+from minimal.extensions.metadata import read_metadata
 from minimal.extensions.registry import Registry
 from minimal.ui.commands import BUILTIN_COMMANDS
 
@@ -291,6 +292,16 @@ class MarketplaceTest(unittest.TestCase):
         picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["risky"], "Install": "project"}
         _, out = self.run_ext(picked)  # no "Allow" answer: asking would raise StopIteration
         self.assertIn("Installed risky at", out)
+
+    def test_picker_offers_dependencies_after_installing(self):
+        self.push_file("extensions/deps.py", NEEDS_DEPS.replace("DEPS", '["unittest_no_such_pkg_zz"]'))
+        picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["deps"]}
+        with mock.patch.object(marketplace, "install_dependencies") as install:
+            ui, out = self.run_ext({**picked, "Install unittest_no_such_pkg_zz": False, "Install": "project"})
+        install.assert_not_called()
+        self.assertTrue((self.tmp / ".minimal" / "extensions" / "deps.py").exists())
+        self.assertIn("Not installed: unittest_no_such_pkg_zz. deps will not load until they are installed.", out)
+        self.assertTrue(ui.asked[-1][0].endswith("Needed by deps."), ui.asked)
 
     def test_model_tool_installs_globally_only_after_the_user_says_yes(self):
         self.push_file("extensions/risky.py", RISKY)
@@ -729,6 +740,102 @@ class CheckTest(unittest.TestCase):
             with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as exit:
                 cli.ext_cli(["check", str(path)])
         self.assertEqual((exit.exception.code, out.getvalue()), (0, "ok   extensions/wraps 1.0\n"))
+
+
+NEEDS_DEPS = '''"""Needs packages."""
+
+__version__ = "1.0"
+__api__ = "1"
+__dependencies__ = DEPS
+
+
+def register(minimal):
+    pass
+'''
+
+
+class DependenciesTest(unittest.TestCase):
+    def test_read_metadata(self):
+        meta = read_metadata(NEEDS_DEPS.replace("DEPS", '["x>=1", "y[extra] >= 2, < 3", "z"]').encode(), "deps.py")
+        self.assertEqual(meta.dependencies, ("x>=1", "y[extra] >= 2, < 3", "z"))
+        self.assertEqual(read_metadata(HELLO.encode(), "hello.py").dependencies, ())
+
+    def test_malformed_dependencies_fail_the_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "extensions")
+            root.mkdir()
+            (root / "option.py").write_text(NEEDS_DEPS.replace("DEPS", '["--index-url=evil"]'))
+            (root / "url.py").write_text(NEEDS_DEPS.replace("DEPS", '["pkg @ https://example.com/pkg.zip"]'))
+            (root / "string.py").write_text(NEEDS_DEPS.replace("DEPS", '"x"'))
+            lines, ok = marketplace.check([Path(tmp)])
+        self.assertFalse(ok)
+        expected = 'FAIL extensions/{}: __dependencies__ must be a list of package requirements such as "termaid>=0.3"; got {}'
+        self.assertEqual(
+            lines,
+            [
+                expected.format("option", "['--index-url=evil']"),
+                expected.format("string", "'x'"),
+                expected.format("url", "['pkg @ https://example.com/pkg.zip']"),
+            ],
+        )
+
+    def test_a_malformed_dependencies_is_a_load_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "bad.py")
+            path.write_text(NEEDS_DEPS.replace("DEPS", '["-e ."]'))
+            loaded, errors = loader.load_sources(Registry(), [(loader.read_extensions([path])[0], "cli")], config.Settings())
+        self.assertEqual(loaded, [])
+        self.assertIn("__dependencies__ must be a list", errors[0])
+
+    def test_missing_dependencies(self):
+        self.assertEqual(
+            marketplace.missing_dependencies(["unittest_no_such_pkg_zz", "anthropic>=0.1", "unittest_no_such_pkg_zz"]),
+            ["unittest_no_such_pkg_zz"],
+        )
+
+    def listing(self, name, *dependencies):
+        return marketplace.Listing(name, "d", "1.0", Path(name), "extensions", "1", None, dependencies)
+
+    def test_ensure_dependencies_asks_first(self):
+        listings = [self.listing("a", "anthropic"), self.listing("b", "unittest_no_such_pkg_zz>=1")]
+        with mock.patch.object(marketplace, "install_dependencies") as install:
+            questions = []
+            msg = marketplace.ensure_dependencies(listings, lambda q: questions.append(q) or False)
+            install.assert_not_called()
+            self.assertEqual(msg, "Not installed: unittest_no_such_pkg_zz>=1. b will not load until they are installed.")
+            self.assertIn("Install unittest_no_such_pkg_zz>=1 into minimal's Python", questions[0])
+            self.assertTrue(questions[0].endswith("Needed by b."), questions[0])
+
+            msg = marketplace.ensure_dependencies(listings, lambda q: True)
+            install.assert_called_once_with(["unittest_no_such_pkg_zz>=1"])
+            self.assertEqual(msg, "Installed unittest_no_such_pkg_zz>=1.")
+
+            install.reset_mock()
+            self.assertIsNone(marketplace.ensure_dependencies([self.listing("a", "anthropic")], lambda q: True))
+            install.assert_not_called()
+
+    def test_install_dependencies_reports_the_installer_error(self):
+        failed = subprocess.CompletedProcess([], 1, "", "Resolving...\nerror: no such package\n\n")
+        with mock.patch.object(marketplace.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "^installing a b>=1 failed: error: no such package$"):
+                marketplace.install_dependencies(["a", "b>=1"])
+
+    def test_check_install_deps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "deps.py")
+            path.write_text(NEEDS_DEPS.replace("DEPS", '["unittest_no_such_pkg_zz"]'))
+            with mock.patch.object(marketplace, "install_dependencies") as install:
+                lines, ok = marketplace.check([path], install_deps=True)
+            install.assert_called_once_with(["unittest_no_such_pkg_zz"])
+            self.assertEqual((lines, ok), (["ok   extensions/deps 1.0"], True))
+
+            err = io.StringIO()
+            with (
+                mock.patch.object(marketplace, "install_dependencies", side_effect=RuntimeError("installing x failed")),
+                contextlib.redirect_stderr(err),
+            ):
+                self.assertEqual(marketplace.check([path], install_deps=True), ([], False))
+            self.assertEqual(err.getvalue(), "installing x failed\n")
 
 
 if __name__ == "__main__":

@@ -407,6 +407,12 @@ def _ext_picker(app: App) -> None:
         for s in e.outdated:
             dest, _ = marketplace.install_release(e.release, s, app.cwd)
             print(f"Updated {e.listing.name} at {dest}")
+    try:
+        msg = marketplace.ensure_dependencies([e.release.listing for e in to_install + to_update], app.frontend.ask)
+    except RuntimeError as e:
+        msg = str(e)
+    if msg:
+        print(msg)
     for e in to_remove:
         for s in e.installed:
             print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd, category)}")
