@@ -1,0 +1,34 @@
+CHANGELOG.md
+  h_e81853c41416fb 5-24
+README.md
+  h_e81853c41416fb 96-99,118
+docs/extensions.md
+  h_e81853c41416fb 193
+src/minimal/cli.py
+  h_e81853c41416fb 96-97
+src/minimal/core/app.py
+  h_e81853c41416fb 474-480,482-494,499-504
+src/minimal/core/context.py
+  h_e81853c41416fb 170,174-176
+src/minimal/core/session.py
+  h_e81853c41416fb 5-12,20-21,41-44,72-74,83-95,104,109,114-183,207,225-226,229-231,234-235,240-247,268,272,276-282
+src/minimal/tools/files.py
+  h_e81853c41416fb 5,10,14-24,35-74,77-79,86-88,104,107-113,119,121-123,133,137-138,168-172,175,178,184-187,204-208,210-212,215,217-256,259-263,265-301,305-309,314-319,321
+src/minimal/ui/commands.py
+  h_e81853c41416fb 22-30,62-65,88-90,110-116,468
+src/minimal/ui/tui/widgets.py
+  h_e81853c41416fb 69-70,203-214
+tests/test_smoke.py
+  h_e81853c41416fb 6,73-122,370-425
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f7271e0836e5ac7d0962ad2c8798d8842dc4af2c",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
