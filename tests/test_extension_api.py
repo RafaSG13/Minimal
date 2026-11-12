@@ -482,6 +482,30 @@ class ExtensionApiTest(unittest.TestCase):
         for path in (project, global_, home / "data"):
             self.assertEqual(path.stat().st_mode & 0o777, 0o700, path)
 
+    def test_request_options_are_sent_only_when_set(self):
+        class Strict:
+            """A provider written before request options existed."""
+
+            name = "strict"
+
+            def stream(self, *, model, system, messages, tools, on_text):
+                return text_reply("ok")
+
+        self.app.provider = Strict()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.app.run_turn("hi")
+        self.assertEqual(self.app.context.complete([], tools=False).content, [{"type": "text", "text": "ok"}])
+
+        self.app.registry.on("before_request", lambda event: {"options": {"temperature": 0.5}})
+        self.app.registry.on("before_request", lambda event: {"options": {**event["options"], "max_tokens": 7}})
+        self.app.provider = ScriptedProvider([text_reply("ok")])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.app.run_turn("again")
+        self.assertEqual(self.app.provider.requests[0]["options"], {"temperature": 0.5, "max_tokens": 7})
+        self.app.provider = mock.Mock(stream=mock.Mock(return_value=text_reply("ok")))
+        self.app.context.complete([], options={"max_tokens": 3})
+        self.assertEqual(self.app.provider.stream.call_args.kwargs["options"], {"max_tokens": 3})
+
 
 if __name__ == "__main__":
     unittest.main()

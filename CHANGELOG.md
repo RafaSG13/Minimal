@@ -16,6 +16,10 @@
   extension can stop the threads, timers and subprocesses it started instead of leaking them on every `/reload`.
 - `minimal.data_dir(scope="project")`: a private folder for an extension's own files outside the repository,
   `~/.minimal/data/projects/<hash of the working directory>/<id>` or, with `"global"`, `~/.minimal/data/global/<id>`.
+- Request options for providers: `Provider.stream(..., options=None)` takes `max_tokens` and `temperature` (the
+  built-in providers honour both; OpenAI gets `max_completion_tokens`, other `OPENAI_BASE_URL` servers `max_tokens`).
+  minimal passes `options` only when one is set, so providers written before keep working. `before_request` handlers
+  can add options and `ctx.complete` takes `options`.
 
 ### Changed
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import types
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from minimal.core import agent
 from minimal.core.session import list_sessions, new_id, open_session
@@ -100,24 +100,34 @@ class Context:
         """The system prompt the next turn would send."""
         return self._app.system_prompt()
 
-    def complete(self, messages: list[dict], *, system: str | None = None, tools: bool = True) -> Reply:
+    def complete(
+        self,
+        messages: list[dict],
+        *,
+        system: str | None = None,
+        tools: bool = True,
+        options: Mapping[str, Any] | None = None,
+    ) -> Reply:
         """One model request with the current provider and model; no tools are run.
 
         Args:
             messages: The conversation to send, in the canonical format.
             system: System prompt (default: :meth:`system_prompt`).
             tools: Offer the registered tools, as a turn does (keeps the provider's prompt cache warm).
+            options: Request options (``max_tokens``, ``temperature``) over the ones a turn uses.
 
         Raises:
             TurnInterrupted: if the user interrupts while the reply streams.
         """
         app = self._app
+        opts = {**app.request_options(), **(options or {})}
         return app.provider.stream(
             model=app.model,
             system=self.system_prompt() if system is None else system,
             messages=messages,
             tools=agent.tool_specs(app.registry) if tools else [],
             on_text=lambda _chunk: self.check_cancelled(),
+            **({"options": opts} if opts else {}),
         )
 
     def run_agent(self, prompt: str, *, system_note: str = "", exclude_tools: Iterable[str] = ()) -> str:
@@ -145,6 +155,7 @@ class Context:
             permit=app.permit,
             exclude_tools=frozenset(exclude_tools),
             nested=True,
+            options=app.request_options(),
         )
         return result_text(reply.content) or ""
 

@@ -303,7 +303,7 @@ tests/               unittest suite (see Development)
 
 ### Adding a provider
 
-A provider is a class with a `name` and a `stream(*, model, system, messages, tools, on_text) -> Reply` method (see `providers/base.py`):
+A provider is a class with a `name` and a `stream(*, model, system, messages, tools, on_text, options=None) -> Reply` method (see `providers/base.py`). `options` holds request options such as `max_tokens` and `temperature`; minimal passes it only when one is set, and a provider ignores keys it does not know:
 
 1. Convert the canonical `messages` and `tools` to the API's request format.
 2. Stream the response, calling `on_text(chunk)` for text as it arrives.
