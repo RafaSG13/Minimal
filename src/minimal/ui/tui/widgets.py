@@ -66,6 +66,8 @@ def _tool_title(call: dict) -> Content:
             parts.append((f":{start}-{end}", "$muted"))
         if name == "write" and isinstance(inp.get("content"), str):
             parts.append((f" ({len(inp['content'].splitlines())} lines)", "$muted"))
+        if name == "edit" and isinstance(inp.get("edits"), list):
+            parts.append((f" ({len(inp['edits'])} edits)", "$muted"))
     elif inp:
         parts += [" ", (_one_line(json.dumps(inp, ensure_ascii=False), 120), "$muted")]
     return Content.assemble(*parts)
@@ -198,12 +200,18 @@ class ToolBlock(Static):
         self.tail = False  # the end of the body matters most (bash output)
         self.expanded = False
         name, inp = call["name"], call["input"]
-        if (
-            name == "edit"
-            and isinstance(inp.get("old_string"), str)
-            and isinstance(inp.get("new_string"), str)
-        ):
-            self._set_lines(_edit_diff(inp, _edit_start_line(cwd, inp)), len)
+        if name == "edit":
+            # One replacement (old_string/new_string) or several (edits): a diff for each.
+            replacements = inp["edits"] if isinstance(inp.get("edits"), list) else [inp]
+            diff: list[Content] = []
+            for e in replacements:
+                if not (isinstance(e, dict) and isinstance(e.get("old_string"), str) and isinstance(e.get("new_string"), str)):
+                    continue
+                if diff:
+                    diff.append(Content.styled("⋯", "$dim"))
+                diff += _edit_diff(e, _edit_start_line(cwd, {**e, "path": inp.get("path")}))
+            if diff:
+                self._set_lines(diff, len)
         elif name == "write" and isinstance(inp.get("content"), str):
             lines = inp["content"].rstrip("\n").split("\n")
             self._set_lines(_highlighted("\n".join(lines[:EXPANDED_LINES]), self._path()), len(lines))

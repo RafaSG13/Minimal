@@ -3,6 +3,7 @@ import io
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -68,6 +69,56 @@ class SmokeTest(unittest.TestCase):
             self.run_tool("edit", path="a/b.txt", old_string="hello", new_string="x")
         self.run_tool("edit", path="a/b.txt", old_string="world", new_string="minimal")
         self.assertEqual((Path(self.cwd) / "a/b.txt").read_text(), "hello\nminimal\nhello\n")
+
+    def test_edit_replace_all_and_several_edits_all_or_none(self):
+        file = Path(self.cwd) / "f.txt"
+        file.write_text("a = 1\nb = a\nc = a\n")
+        out = self.run_tool("edit", path="f.txt", old_string="a", new_string="x", replace_all=True)
+        self.assertEqual(file.read_text(), "x = 1\nb = x\nc = x\n")
+        self.assertIn("3 replacements", out)
+        self.assertIn("2\tb = x", out)  # the changed lines come back numbered like read
+        with self.assertRaisesRegex(ValueError, "edit 2: old_string not found"):
+            self.run_tool(
+                "edit",
+                path="f.txt",
+                edits=[{"old_string": "x = 1", "new_string": "x = 2"}, {"old_string": "nope", "new_string": "y"}],
+            )
+        self.assertEqual(file.read_text(), "x = 1\nb = x\nc = x\n")  # the first edit was not written either
+        self.run_tool(
+            "edit",
+            path="f.txt",
+            edits=[{"old_string": "x = 1", "new_string": "x = 2"}, {"old_string": "c = x", "new_string": "c = x + 1"}],
+        )
+        self.assertEqual(file.read_text(), "x = 2\nb = x\nc = x + 1\n")
+        with self.assertRaisesRegex(ValueError, "not both"):
+            self.run_tool("edit", path="f.txt", old_string="b", new_string="y", edits=[])
+
+    def test_changes_made_since_the_last_read_are_not_overwritten(self):
+        file = Path(self.cwd) / "f.txt"
+        file.write_text("one\n")
+        self.run_tool("read", path="f.txt")
+        file.write_text("one, changed by the user\n")
+        with self.assertRaisesRegex(ValueError, "changed on disk since you last read it"):
+            self.run_tool("edit", path="f.txt", old_string="one", new_string="two")
+        with self.assertRaisesRegex(ValueError, "changed on disk"):
+            self.run_tool("write", path="f.txt", content="two\n")
+        self.run_tool("read", path="f.txt")
+        self.run_tool("edit", path="f.txt", old_string="one", new_string="two")
+        self.run_tool("edit", path="f.txt", old_string="two", new_string="three")  # its own edit is known
+        self.assertEqual(file.read_text(), "three, changed by the user\n")
+        file.unlink()
+        self.run_tool("write", path="f.txt", content="new\n")  # nothing left to overwrite
+
+    def test_read_shows_text_that_is_not_utf8_and_skips_binaries(self):
+        (Path(self.cwd) / "latin1.txt").write_bytes("caf\xe9\nok\n".encode("latin-1"))
+        out = self.run_tool("read", path="latin1.txt")
+        self.assertIn("1\tcaf\ufffd", out)
+        self.assertIn("2\tok", out)
+        self.assertIn("not valid UTF-8", out)
+        with self.assertRaisesRegex(ValueError, "not UTF-8"):
+            self.run_tool("edit", path="latin1.txt", old_string="ok", new_string="no")
+        (Path(self.cwd) / "img.bin").write_bytes(b"\x89PNG\r\n\x1a\n\0\0\0")
+        self.assertIn("is a binary file (11 bytes): not shown", self.run_tool("read", path="img.bin"))
 
     def test_bash(self):
         self.assertRegex(self.run_tool("bash", command="echo ok; exit 3"), r"ok[\s\S]*\[exit 3\]")
@@ -315,6 +366,62 @@ class SmokeTest(unittest.TestCase):
             self.assertEqual(offered, [["c", "a"], ["c", "b", "a"]])  # newest first
             self.assertIn(f"from {Path(where['two']).resolve()}", output("/resume b"))  # an explicit id works anywhere
             self.assertEqual(app.session.id, "b")
+
+    def test_a_session_is_held_by_one_minimal_at_a_time(self):
+        sessions = Path(self.cwd) / "sessions"
+        script = (
+            "import sys; from pathlib import Path; from minimal.core import session as s; "
+            f"s.SESSIONS_DIR = Path({str(sessions)!r}); s.open_session('a').lock(); print('locked', flush=True); "
+            "sys.stdin.read()"
+        )
+        other = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(other.wait)
+        self.addCleanup(other.stdout.close)
+        self.addCleanup(other.stdin.close)
+        self.assertEqual(other.stdout.readline(), "locked\n")
+        with mock.patch.object(session_mod, "SESSIONS_DIR", sessions):
+            with self.assertRaisesRegex(session_mod.SessionLocked, f"open in another minimal \\(pid {other.pid}\\)"):
+                session_mod.open_session("a").lock()
+            app = App(
+                registry=self.registry,
+                session=session_mod.open_session("b"),
+                cwd=self.cwd,
+                auto_approve=True,
+                register_commands=register_builtin_commands,
+            )
+            with self.assertRaises(session_mod.SessionLocked):
+                app.switch_session(session_mod.open_session("a"))
+            self.assertEqual(app.session.id, "b")
+            other.stdin.close()
+            other.wait()  # it exits without unlocking, as a crash would: the lock goes with the process
+            app.switch_session(session_mod.open_session("a"))
+            self.assertEqual(app.session.id, "a")
+            app.shutdown()
+            self.assertFalse((sessions / "a.lock").exists())
+
+    def test_title_and_parent_are_kept_in_the_header(self):
+        with mock.patch.object(session_mod, "SESSIONS_DIR", Path(self.cwd) / "sessions"):
+            app = App(
+                registry=self.registry,
+                session=session_mod.open_session("a", self.cwd),
+                cwd=self.cwd,
+                auto_approve=True,
+                register_commands=register_builtin_commands,
+            )
+            app.messages.append({"role": "user", "content": "first question"})
+            app.session.save()
+            with contextlib.redirect_stdout(io.StringIO()):
+                app.run_command("/title Parser rewrite")
+            reopened = session_mod.open_session("a")
+            self.assertEqual(reopened.title, "Parser rewrite")
+            self.assertEqual(reopened.messages, [{"role": "user", "content": "first question"}])
+            self.assertEqual(session_mod.preview("a"), "Parser rewrite")
+            app.context.new_session([{"role": "user", "content": "summary"}])
+            self.assertEqual(session_mod.open_session(app.session.id).parent, "a")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                app.run_command("/sessions")
+            self.assertIn(f"{app.session.id}  summary  (from a)", out.getvalue())
 
     def test_register_logo_validates(self):
         registry = Registry()

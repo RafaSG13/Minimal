@@ -167,11 +167,13 @@ class Context:
     def new_session(self, messages: list[dict]) -> str:
         """Save the current session and continue in a new one holding ``messages``; return the old session's id.
 
-        Fires ``session_switch``.
+        The new session's header names the old one as its ``parent``. Fires ``session_switch``.
         """
         app = self._app
         old = app.session
-        app.switch_session(open_session(new_id(), app.cwd))
+        session = open_session(new_id(), app.cwd)
+        session.parent = old.id
+        app.switch_session(session)
         app.messages.extend(messages)
         app.session.save()
         return old.id

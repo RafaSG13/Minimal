@@ -471,16 +471,37 @@ class App:
         self.registry.emit("session_start", {"ctx": self.context, "resumed": bool(self.messages)})
 
     def switch_session(self, session: Session) -> None:
-        """Save the current session, continue in ``session`` and fire ``session_switch``."""
+        """Save the current session, continue in ``session`` and fire ``session_switch``.
+
+        ``session`` is locked first (:meth:`Session.lock`) and the current one released.
+
+        Raises:
+            SessionLocked: if another minimal holds ``session``; the current session goes on.
+        """
         old = self.session
-        old.save()
+        if session.file == old.file:
+            session.take_lock(old)
+        else:
+            session.lock()
+        try:
+            old.save()
+        except BaseException:
+            if session.file == old.file:
+                old.take_lock(session)
+            else:
+                session.unlock()
+            raise
+        old.unlock()
         self.session = session
         self.registry.emit("session_switch", {"ctx": self.context, "old_id": old.id, "new_id": session.id})
 
     def shutdown(self) -> None:
-        """Fire ``shutdown`` (minimal is exiting), then run the extensions' ``on_dispose`` functions."""
-        self.registry.emit("shutdown", {"ctx": self.context})
-        self.registry.dispose()
+        """Fire ``shutdown`` (minimal is exiting), run the extensions' ``on_dispose`` functions and release the session."""
+        try:
+            self.registry.emit("shutdown", {"ctx": self.context})
+            self.registry.dispose()
+        finally:
+            self.session.unlock()
 
     def available_models(self) -> tuple[list[str], str | None]:
         """The models the current provider offers, queried from its API, and why the query failed (``None`` if it did not).

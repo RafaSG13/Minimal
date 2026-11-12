@@ -93,7 +93,8 @@ def main() -> None:
     try:
         cwd = os.getcwd()
         session = open_session(opts.session or (last_session(cwd) if opts.cont else None) or new_id(), cwd)
-    except ValueError as e:  # a session id that is not a plain name
+        session.lock()
+    except ValueError as e:  # a session id that is not a plain name, or one open in another minimal
         print(e, file=sys.stderr)
         sys.exit(2)
     if session.torn_at is not None:
