@@ -149,11 +149,13 @@ class Context:
         return result_text(reply.content) or ""
 
     def new_session(self, messages: list[dict]) -> str:
-        """Save the current session and continue in a new one holding ``messages``; return the old session's id."""
+        """Save the current session and continue in a new one holding ``messages``; return the old session's id.
+
+        Fires ``session_switch``.
+        """
         app = self._app
         old = app.session
-        old.save()
-        app.session = open_session(new_id(), app.cwd)
+        app.switch_session(open_session(new_id(), app.cwd))
         app.messages.extend(messages)
         app.session.save()
         return old.id

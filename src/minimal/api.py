@@ -13,7 +13,18 @@ This module is versioned by :data:`API_VERSION`, which every extension declares 
 from minimal import API_VERSION, __version__
 from minimal.core.agent import USER_DENIED
 from minimal.core.context import UI, Context
-from minimal.extensions.facade import Extension, ToolCallEvent, ToolResultEvent, TurnEndEvent
+from minimal.extensions.facade import (
+    AfterResponseEvent,
+    BeforeRequestEvent,
+    Extension,
+    SessionStartEvent,
+    SessionSwitchEvent,
+    ShutdownEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    TurnEndEvent,
+    TurnStartEvent,
+)
 from minimal.extensions.registry import EVENTS, STATUS_SIDES, THEME_COLORS, WIDGET_AREAS, LogoSpec, Tool, TurnInterrupted
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage, result_text
 from minimal.tools.search import glob_regex
@@ -21,9 +32,11 @@ from minimal.ui.tui import theme
 from minimal.ui.tui.widgets import logo_content
 
 __all__ = [
-    "API_VERSION", "EVENTS", "STATUS_SIDES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS", "Context",
-    "Extension", "LogoSpec", "Provider", "ProviderSpec", "Reply", "Tool", "ToolCallEvent", "ToolResultEvent",
-    "TurnEndEvent", "TurnInterrupted", "Usage", "__version__", "glob_regex", "logo_content", "result_text", "theme",
+    "API_VERSION", "EVENTS", "STATUS_SIDES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
+    "AfterResponseEvent", "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "Provider", "ProviderSpec",
+    "Reply", "SessionStartEvent", "SessionSwitchEvent", "ShutdownEvent", "Tool", "ToolCallEvent", "ToolResultEvent",
+    "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__", "glob_regex", "logo_content",
+    "result_text", "theme",
 ]  # fmt: skip
 
 _SESSIONS = "ctx.sessions(), ctx.read_session() and ctx.new_session()"

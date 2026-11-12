@@ -122,7 +122,11 @@ def main() -> None:
 
     from minimal.ui.tui.app import run_tui
 
-    run_tui(app)
+    try:
+        run_tui(app)
+    finally:
+        app.shutdown()
+
 
 def ext_cli(args: list[str]) -> None:
     """``minimal ext check [--install-deps] <path>...``: print one line per extension checked and exit 0, or 1 if any failed."""

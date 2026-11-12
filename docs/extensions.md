@@ -1,6 +1,6 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers minimal API 1.0 ([API versions](#api-versions)).
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers minimal API 1.1 ([API versions](#api-versions)).
 
 ```python
 """Greets the user."""
@@ -54,7 +54,7 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__api__`      | `"1"`: the [API version](#api-versions) it is written for, required. `"1"` runs on any 1.x; `"1.2"` needs 1.2 or a later 1.x |
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
 
-An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "1"`), and neither is one written for another major version (`written for minimal API 0, this minimal has API 1.0`) or a newer minor (`needs minimal API 1.3, this minimal has API 1.0: upgrade minimal`).
+An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "1"`), and neither is one written for another major version (`written for minimal API 0, this minimal has API 1.1`) or a newer minor (`needs minimal API 1.3, this minimal has API 1.1: upgrade minimal`).
 
 ## `minimal`: the `Extension`
 
@@ -107,16 +107,28 @@ def guard(event):
 minimal.on("turn_end", lambda event: None)
 ```
 
-`on(event, handler=None)` subscribes `handler(event)`; without a handler it is a decorator. An unknown event name raises `ValueError`. The payloads are typed as `ToolCallEvent`, `ToolResultEvent` and `TurnEndEvent` in `minimal.api`:
+`on(event, handler=None)` subscribes `handler(event)`; without a handler it is a decorator. An unknown event name raises `ValueError`. The payloads are typed in `minimal.api` (`ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`, `SessionStartEvent`, `SessionSwitchEvent`, `TurnStartEvent`, `BeforeRequestEvent`, `AfterResponseEvent`, `ShutdownEvent`):
 
-| Event         | Payload                                      | Return                                                                 |
-| ------------- | -------------------------------------------- | ---------------------------------------------------------------------- |
-| `tool_call`   | `name`, `input`, `ctx`                       | `{"block": True, "reason": str}` vetoes the call; a handler that raises blocks it too |
-| `tool_result` | `name`, `input`, `output`, `is_error`, `ctx` | `{"output": str}` rewrites what the model sees                         |
-| `turn_end`    | `messages`, `ctx`, `nested`                  | ignored                                                                |
+| Event            | Payload                                          | Return                                                                 |
+| ---------------- | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `tool_call`      | `name`, `input`, `ctx`                           | `{"block": True, "reason": str}` vetoes the call; a handler that raises blocks it too |
+| `tool_result`    | `name`, `input`, `output`, `is_error`, `ctx`     | `{"output": str}` rewrites what the model sees                         |
+| `turn_end`       | `messages`, `ctx`, `nested`                      | ignored                                                                |
+| `session_start`  | `ctx`, `resumed`                                 | ignored                                                                |
+| `session_switch` | `ctx`, `old_id`, `new_id`                        | ignored                                                                |
+| `turn_start`     | `ctx`, `text`                                    | `{"text": str}` rewrites the user's message (the last non-empty one wins) |
+| `before_request` | `ctx`, `messages`, `system`, `tools`, `nested`   | `{"messages": list, "system": str, "tools": list}`, any subset: sent instead, for this request only |
+| `after_response` | `ctx`, `reply`, `usage`, `nested`                | ignored                                                                |
+| `shutdown`       | `ctx`                                            | ignored                                                                |
 
 - `tool_result` sees the tool's whole output: `bash` output is not clipped until after the handlers run (up to 1 MB captured), so a handler can compress it.
 - `turn_end` fires when a loop ends with a reply without tool calls. `nested` is `True` for a loop run inside a tool (`ctx.run_agent`, such as the subagent), whose `messages` are its own history, not `ctx.messages`. Skip nested loops for session-level work: `if event["nested"]: return`.
+- `session_start` fires once per process, when the terminal UI is up; `resumed` is true if the session already had messages (`-c`, `-s`). A reload does not fire it again.
+- `session_switch` fires when `/new`, `/resume` or `ctx.new_session` replace the session, after the old one is saved.
+- `turn_start` fires when the user sends a message, before it is added to the history.
+- `before_request` fires before every model request of a loop (`nested` as in `turn_end`). What a handler returns is sent instead for that request only: the history is not changed. Combined by key, the last handler wins; a value of the wrong type is ignored with a warning. Do not mutate what you receive: return copies.
+- `after_response` fires after each reply is added to the history; `usage` is the reply's `Usage`, or `None`.
+- `shutdown` fires when minimal exits.
 
 ### Other registrations
 
@@ -291,14 +303,14 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `Provider`, `ProviderSpec`, `Reply`, `Usage`, `result_text` | Providers and replies; `result_text(content)` is a reply's text   |
 | `TurnInterrupted`                                           | Raised when the user interrupts                                   |
 | `USER_DENIED`                                               | The text of a tool result the user declined                       |
-| `ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`          | Event payload types                                               |
+| `ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`, `SessionStartEvent`, `SessionSwitchEvent`, `TurnStartEvent`, `BeforeRequestEvent`, `AfterResponseEvent`, `ShutdownEvent` | Event payload types |
 | `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas, status sides and theme colours   |
 | `LogoSpec`, `logo_content`, `theme`                         | Logo rendering, UI glyphs and the built-in theme                  |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.0`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it. API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`; an extension using any of them declares `__api__ = "1.1"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

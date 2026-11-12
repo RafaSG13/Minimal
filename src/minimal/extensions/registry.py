@@ -22,6 +22,24 @@ Events (:data:`EVENTS`) and their payloads:
         when that loop ran inside a tool (a subagent), whose ``messages`` are
         not ``ctx.messages``. A handler that is slow (compaction) should call
         ``ctx.check_cancelled()``, which raises :class:`TurnInterrupted` when the user interrupted.
+    ``session_start``  ``{ctx, resumed}``
+        Fired once per process when the UI is up; ``resumed`` is true if the
+        session already had messages. A reload does not fire it again.
+    ``session_switch`` ``{ctx, old_id, new_id}``
+        Fired when ``/new``, ``/resume`` or ``ctx.new_session`` replace the
+        session, after the old one is saved.
+    ``turn_start``   ``{ctx, text}``
+        Fired when the user sends a message, before it enters the history. The
+        last ``{"text": str}`` with a non-empty string rewrites the message.
+    ``before_request`` ``{ctx, messages, system, tools, nested}``
+        Fired before each model request. ``{"messages": list}``, ``{"system": str}``
+        and ``{"tools": list}`` (combined by key, the last wins) are sent instead,
+        for that request only: the history does not change. Handlers must not
+        mutate what they receive; they return copies.
+    ``after_response`` ``{ctx, reply, usage, nested}``
+        Fired after each reply is appended to the history. Results are ignored.
+    ``shutdown``     ``{ctx}``
+        Fired when minimal exits.
 """
 
 from __future__ import annotations
@@ -52,7 +70,17 @@ class TurnInterrupted(Exception):
     """
 
 
-EVENTS = ("tool_call", "tool_result", "turn_end")
+EVENTS = (
+    "tool_call",
+    "tool_result",
+    "turn_end",
+    "session_start",
+    "session_switch",
+    "turn_start",
+    "before_request",
+    "after_response",
+    "shutdown",
+)
 """Events an extension can subscribe to with ``on``."""
 
 WIDGET_AREAS = ("top", "bottom", "sidebar")
@@ -62,7 +90,7 @@ WIDGET_AREAS = ("top", "bottom", "sidebar")
 def check_event(event: str) -> None:
     """Raise ``ValueError`` unless ``event`` is one of :data:`EVENTS`."""
     if event not in EVENTS:
-        raise ValueError(f"unknown event {event!r}; use one of tool_call, tool_result, turn_end")
+        raise ValueError(f"unknown event {event!r}; use one of {', '.join(EVENTS)}")
 
 
 STATUS_SIDES = ("left", "right")

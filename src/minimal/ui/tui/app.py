@@ -217,6 +217,7 @@ class MinimalTui(TextualApp):
             self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" {notice}"), classes="output"))
         self.refresh_status()
         self.query_one("#prompt", Input).focus()
+        self.core.begin()
 
     def on_unmount(self) -> None:
         if self.pending_modal is not None:  # release a worker waiting for an answer
