@@ -1,0 +1,40 @@
+CHANGELOG.md
+  h_e81853c41416fb 23-25,31-33
+docs/extensions.md
+  h_e81853c41416fb 192-194,320
+src/minimal/cli.py
+  h_e81853c41416fb 21,108,145
+src/minimal/core/app.py
+  h_e81853c41416fb 5,13,20,101-103,201-206,310-321,339-341,361,379,382-388,395,428-429,505,510-511,516,530
+src/minimal/core/context.py
+  h_e81853c41416fb 24-27,220-251
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 171,177,250-251,263,282,330-341
+src/minimal/ui/commands.py
+  h_e81853c41416fb 1-2,4-7,21,25,30-36,40-41,58-59,71-72,97-98,120-121,132-133,136-137,155-156,167,171-172,184,188-189,192,198,224,226,263-264,440-463
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 493-496,548-555
+src/minimal/ui/tui/frontend.py
+  h_e81853c41416fb 70-76
+tests/test_extension_api.py
+  h_e81853c41416fb 18,63,509-555
+tests/test_marketplace.py
+  h_e81853c41416fb 22,199
+tests/test_security.py
+  h_e81853c41416fb 24,101
+tests/test_smoke.py
+  h_e81853c41416fb 24,255,298
+tests/test_tui.py
+  h_e81853c41416fb 16,86,123-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "83d839abd6db399b2bd340e8d71c66af133d6e10",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
