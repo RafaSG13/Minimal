@@ -15,9 +15,10 @@ assistant ``tool_use``          entry in that message's ``tool_calls``
 user ``tool_result``            ``tool`` message (``tool_call_id``, ``content``)
 ==============================  =============================================
 
-No output-token limit is sent: the name of that parameter differs between
-servers. Usage is requested in the stream (``stream_options``), which the
-server must support.
+The output-token limit is sent only when the request options set one (``max_tokens``), as
+``max_completion_tokens`` to OpenAI itself and as ``max_tokens`` when ``OPENAI_BASE_URL`` points
+elsewhere: the name of that parameter differs between servers. Usage is requested in the stream
+(``stream_options``), which the server must support.
 
 Credentials: ``OPENAI_API_KEY`` (read by the SDK; local servers accept any value).
 """
@@ -25,6 +26,8 @@ Credentials: ``OPENAI_API_KEY`` (read by the SDK; local servers accept any value
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 from minimal.providers.base import ProviderSpec, Reply, TextCallback, Usage, result_text
@@ -54,7 +57,9 @@ class OpenAIProvider:
         messages: list[dict],
         tools: list[dict],
         on_text: TextCallback | None,
+        options: Mapping[str, Any] | None = None,
     ) -> Reply:
+        options = options or {}
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": to_chat_messages(system, messages),
@@ -69,6 +74,11 @@ class OpenAIProvider:
                 }
                 for t in tools
             ]
+        if options.get("max_tokens") is not None:
+            official = not os.environ.get("OPENAI_BASE_URL")
+            kwargs["max_completion_tokens" if official else "max_tokens"] = options["max_tokens"]
+        if options.get("temperature") is not None:
+            kwargs["temperature"] = options["temperature"]
         with self.client.chat.completions.create(**kwargs) as chunks:
             return read_chunks(chunks, on_text)
 

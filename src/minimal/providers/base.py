@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 TextCallback = Callable[[str], Any]
 
@@ -95,6 +95,7 @@ class Provider(Protocol):
         messages: list[dict],
         tools: list[dict],
         on_text: TextCallback | None,
+        options: Mapping[str, Any] | None = None,
     ) -> Reply:
         """Send one request and return the reply.
 
@@ -104,6 +105,9 @@ class Provider(Protocol):
             messages: Canonical history (see module docstring). Must not be modified.
             tools: ``{"name", "description", "input_schema"}`` for each tool.
             on_text: Called with each text chunk as it streams in.
+            options: Request options: ``max_tokens`` (int, the output limit) and ``temperature``
+                (float). A provider ignores keys it does not know. minimal passes it only when it is
+                not empty, so a provider written before it existed keeps working.
         """
         ...
 

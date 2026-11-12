@@ -535,6 +535,10 @@ class App:
         """The system prompt of the next turn (:func:`build_system_prompt`)."""
         return build_system_prompt(self.registry, self.cwd, self.settings)
 
+    def request_options(self) -> dict:
+        """Provider request options (``max_tokens``, ``temperature``) of the next request; empty for the provider's defaults."""
+        return {}
+
     def run_turn(self, text: str) -> None:
         """Send ``text`` to the model, stream the answer to the frontend and save the session.
 
@@ -565,6 +569,7 @@ class App:
                 confirm=self.confirm,
                 cancelled=self.cancelled,
                 permit=self.permit,
+                options=self.request_options(),
             )
         except KeyboardInterrupt:
             self._close_failed_turn(before, "interrupted by the user")

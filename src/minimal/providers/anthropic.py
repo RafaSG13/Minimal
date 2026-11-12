@@ -6,6 +6,7 @@ conversion is dropping ``provider_data`` and ``usage`` (the API rejects unknown 
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from minimal.providers.base import ProviderSpec, Reply, TextCallback, Usage
@@ -45,16 +46,20 @@ class AnthropicProvider:
         messages: list[dict],
         tools: list[dict],
         on_text: TextCallback | None,
+        options: Mapping[str, Any] | None = None,
     ) -> Reply:
+        options = options or {}
         request = [{"role": m["role"], "content": m["content"]} for m in messages]
         system_param: str | list[dict] = (
             system
             if self.identity is None
             else [{"type": "text", "text": self.identity}, {"type": "text", "text": system}]
         )
+        extra = {"temperature": options["temperature"]} if options.get("temperature") is not None else {}
         with self.client.messages.stream(
             model=model,
-            max_tokens=MAX_TOKENS,
+            max_tokens=options.get("max_tokens", MAX_TOKENS),
+            **extra,
             system=system_param,
             messages=request,
             tools=tools,

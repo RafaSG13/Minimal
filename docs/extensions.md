@@ -117,7 +117,7 @@ minimal.on("turn_end", lambda event: None)
 | `session_start`  | `ctx`, `resumed`                                 | ignored                                                                |
 | `session_switch` | `ctx`, `old_id`, `new_id`                        | ignored                                                                |
 | `turn_start`     | `ctx`, `text`                                    | `{"text": str}` rewrites the user's message (the last non-empty one wins) |
-| `before_request` | `ctx`, `messages`, `system`, `tools`, `nested`   | `{"messages": list, "system": str, "tools": list}`, any subset: sent instead, for this request only |
+| `before_request` | `ctx`, `messages`, `system`, `tools`, `options`, `nested` | `{"messages": list, "system": str, "tools": list}`, any subset: sent instead, for this request only; `{"options": dict}` adds request options |
 | `after_response` | `ctx`, `reply`, `usage`, `nested`                | ignored                                                                |
 | `shutdown`       | `ctx`                                            | ignored                                                                |
 
@@ -126,7 +126,7 @@ minimal.on("turn_end", lambda event: None)
 - `session_start` fires once per process, when the terminal UI is up; `resumed` is true if the session already had messages (`-c`, `-s`). A reload does not fire it again.
 - `session_switch` fires when `/new`, `/resume` or `ctx.new_session` replace the session, after the old one is saved.
 - `turn_start` fires when the user sends a message, before it is added to the history.
-- `before_request` fires before every model request of a loop (`nested` as in `turn_end`). What a handler returns is sent instead for that request only: the history is not changed. Combined by key, the last handler wins; a value of the wrong type is ignored with a warning. Do not mutate what you receive: return copies.
+- `before_request` fires before every model request of a loop (`nested` as in `turn_end`). What a handler returns is sent instead for that request only: the history is not changed. `options` are the request options for the provider (`max_tokens`, `temperature`; empty for its defaults), and a returned `options` dict is merged into them. Combined by key, the last handler wins; a value of the wrong type is ignored with a warning. Do not mutate what you receive: return copies.
 - `after_response` fires after each reply is added to the history; `usage` is the reply's `Usage`, or `None`.
 - `shutdown` fires when minimal exits.
 
@@ -179,7 +179,7 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `check_cancelled()`              | Raise `TurnInterrupted` if the user interrupted                                            |
 | `ui`                             | Questions to the user (below)                                                              |
 | `system_prompt()`                | The system prompt the next turn would send                                                 |
-| `complete(messages, *, system=None, tools=True)` | One model request with the current provider and model; returns a `Reply`. No tools are run; `tools=True` offers them anyway to keep the prompt cache warm. Interruptible |
+| `complete(messages, *, system=None, tools=True, options=None)` | One model request with the current provider and model; returns a `Reply`. No tools are run; `tools=True` offers them anyway to keep the prompt cache warm. `options` (`max_tokens`, `temperature`) go over the ones a turn uses. Interruptible |
 | `run_agent(prompt, *, system_note="", exclude_tools=())` | Runs `prompt` as its own agent loop with an empty history and the same tools (minus `exclude_tools`), confirmations and permissions; returns the text of its last reply. `system_note` is appended to the system prompt; its `turn_end` has `nested` set |
 | `new_session(messages)`          | Saves the current session and continues in a new one holding `messages`; returns the old id |
 | `sessions(*, all_projects=False)` | Saved session ids, oldest first: those started in this `cwd`, or every project's with `all_projects=True` |
@@ -314,7 +314,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 `minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
-API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`, `minimal.on_dispose` and `minimal.data_dir`. An extension using any of them declares `__api__ = "1.1"`.
+API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`, `minimal.on_dispose`, `minimal.data_dir`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

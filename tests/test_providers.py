@@ -1,12 +1,14 @@
+import os
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace as NS
+from unittest import mock
 
 from minimal.providers.anthropic import AnthropicProvider
 from minimal.providers.base import Usage
 from minimal.providers.claude import CLAUDE_CODE_IDENTITY, ClaudeProvider
 from minimal.providers.gemini import read_stream, to_interaction_input, to_reply
-from minimal.providers.openai import read_chunks, to_chat_messages
+from minimal.providers.openai import OpenAIProvider, read_chunks, to_chat_messages
 
 GEMINI_STEPS = [
     {"type": "thought", "signature": "sig1"},
@@ -164,6 +166,17 @@ class AnthropicRequestTest(unittest.TestCase):
         reply = AnthropicProvider(client=client).stream(model="m", system="s", messages=[], tools=[], on_text=None)
         self.assertEqual(reply.usage, Usage(110, 5, 100, 0))
 
+    def test_options_set_max_tokens_and_temperature(self):
+        sent, client = self.capture()
+        provider = AnthropicProvider(client=client)
+        provider.stream(model="m", system="s", messages=[], tools=[], on_text=None)
+        self.assertEqual(sent["max_tokens"], 8192)
+        self.assertNotIn("temperature", sent)
+        provider.stream(
+            model="m", system="s", messages=[], tools=[], on_text=None, options={"max_tokens": 1000, "temperature": 0.2}
+        )
+        self.assertEqual((sent["max_tokens"], sent["temperature"]), (1000, 0.2))
+
 
 def chunk(delta=None, finish_reason=None, usage=None):
     choices = [] if delta is None else [NS(delta=delta, finish_reason=finish_reason)]
@@ -242,6 +255,29 @@ class OpenAITest(unittest.TestCase):
         call = NS(index=0, id="c1", function=NS(name="read", arguments='{"path": "x"}'))
         reply = read_chunks([chunk(delta(tool_calls=[call]), finish_reason="length")], None)
         self.assertEqual(reply.stop_reason, "max_tokens")
+
+    def test_options_name_the_limit_per_server(self):
+        sent = {}
+
+        def create(**kwargs):
+            sent.clear()
+            sent.update(kwargs)
+            return nullcontext([])
+
+        provider = OpenAIProvider(client=NS(chat=NS(completions=NS(create=create))))
+        with mock.patch.dict(os.environ):
+            os.environ.pop("OPENAI_BASE_URL", None)
+            provider.stream(model="m", system="s", messages=[], tools=[], on_text=None)
+            self.assertFalse({"max_tokens", "max_completion_tokens", "temperature"} & set(sent))
+            provider.stream(model="m", system="s", messages=[], tools=[], on_text=None, options={"max_tokens": 50})
+            self.assertEqual(sent["max_completion_tokens"], 50)
+            self.assertNotIn("max_tokens", sent)
+            os.environ["OPENAI_BASE_URL"] = "http://localhost:11434/v1"
+            provider.stream(
+                model="m", system="s", messages=[], tools=[], on_text=None, options={"max_tokens": 50, "temperature": 0}
+            )
+            self.assertEqual((sent["max_tokens"], sent["temperature"]), (50, 0))
+            self.assertNotIn("max_completion_tokens", sent)
 
 
 if __name__ == "__main__":

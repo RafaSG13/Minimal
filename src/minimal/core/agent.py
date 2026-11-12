@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from minimal.extensions.registry import Registry, Tool, TurnInterrupted
@@ -74,6 +74,7 @@ def run_agent(
     exclude_tools: frozenset[str] = frozenset(),
     nested: bool = False,
     max_turns: int = 50,
+    options: Mapping[str, Any] | None = None,
 ) -> Reply:
     """Run the model/tool loop until the model answers without calling tools.
 
@@ -95,6 +96,8 @@ def run_agent(
         exclude_tools: Tools neither offered to the model nor run (a subagent's own tool).
         nested: This loop runs inside a tool (a subagent); passed on in ``turn_end``.
         max_turns: Most model requests allowed for this turn.
+        options: Request options for the provider (``max_tokens``, ``temperature``); ``before_request``
+            handlers may add to them. Passed to ``provider.stream`` only when not empty.
 
     Returns:
         The final reply.
@@ -111,7 +114,9 @@ def run_agent(
 
     for _ in range(max_turns):
         raise_if_cancelled(cancelled)
-        request = _before_request(registry, ctx, messages, system, tool_specs(registry, exclude_tools), nested)
+        request = _before_request(
+            registry, ctx, messages, system, tool_specs(registry, exclude_tools), options or {}, nested
+        )
         reply = provider.stream(model=model, on_text=stream_text, **request)
         messages.append(_assistant_message(provider, reply))
         registry.emit("after_response", {"ctx": ctx, "reply": reply, "usage": reply.usage, "nested": nested})
@@ -230,19 +235,28 @@ def tool_specs(registry: Registry, exclude: frozenset[str] = frozenset()) -> lis
     ]
 
 
-_REQUEST_TYPES: dict[str, type] = {"messages": list, "system": str, "tools": list}
-"""What ``before_request`` handlers may replace, and the type each must have."""
+_REQUEST_TYPES: dict[str, type] = {"messages": list, "system": str, "tools": list, "options": dict}
+"""What ``before_request`` handlers may return, and the type each must have."""
 
 
 def _before_request(
-    registry: Registry, ctx: Any, messages: list[dict], system: str, tools: list[dict], nested: bool
+    registry: Registry,
+    ctx: Any,
+    messages: list[dict],
+    system: str,
+    tools: list[dict],
+    options: Mapping[str, Any],
+    nested: bool,
 ) -> dict[str, Any]:
-    """The ``messages``, ``system`` and ``tools`` of the next request, after the ``before_request`` handlers.
+    """The keyword arguments of the next ``provider.stream`` call (but ``model``, ``on_text``), after the ``before_request`` handlers.
 
-    Results are combined by key, the last handler wins; a value of the wrong type is ignored with a warning.
+    ``messages``, ``system`` and ``tools`` from the handlers replace the ones given; ``options`` are
+    merged into ``options``. Results are combined by key, the last handler wins; a value of the wrong
+    type is ignored with a warning. ``options`` is left out when empty.
     """
     request: dict[str, Any] = {"messages": messages, "system": system, "tools": tools}
-    for result in registry.emit("before_request", {"ctx": ctx, **request, "nested": nested}):
+    opts = dict(options)
+    for result in registry.emit("before_request", {"ctx": ctx, **request, "options": dict(opts), "nested": nested}):
         if not isinstance(result, dict):
             continue
         for key, value in result.items():
@@ -250,8 +264,12 @@ def _before_request(
                 continue
             if not isinstance(value, _REQUEST_TYPES[key]):
                 print(f'[extension] before_request: ignored "{key}" (wrong type)', file=sys.stderr)
-                continue
-            request[key] = value
+            elif key == "options":
+                opts.update(value)
+            else:
+                request[key] = value
+    if opts:
+        request["options"] = opts
     return request
 
 

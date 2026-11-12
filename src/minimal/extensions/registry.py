@@ -31,11 +31,12 @@ Events (:data:`EVENTS`) and their payloads:
     ``turn_start``   ``{ctx, text}``
         Fired when the user sends a message, before it enters the history. The
         last ``{"text": str}`` with a non-empty string rewrites the message.
-    ``before_request`` ``{ctx, messages, system, tools, nested}``
+    ``before_request`` ``{ctx, messages, system, tools, options, nested}``
         Fired before each model request. ``{"messages": list}``, ``{"system": str}``
         and ``{"tools": list}`` (combined by key, the last wins) are sent instead,
-        for that request only: the history does not change. Handlers must not
-        mutate what they receive; they return copies.
+        for that request only: the history does not change; ``{"options": dict}``
+        is merged into the request options (``max_tokens``, ``temperature``).
+        Handlers must not mutate what they receive; they return copies.
     ``after_response`` ``{ctx, reply, usage, nested}``
         Fired after each reply is appended to the history. Results are ignored.
     ``shutdown``     ``{ctx}``

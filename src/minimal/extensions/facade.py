@@ -93,13 +93,16 @@ class BeforeRequestEvent(TypedDict):
     """Payload of ``before_request``: fired before each model request.
 
     Return any of ``{"messages": list, "system": str, "tools": list}`` to send that instead, for
-    this request only (the history does not change). Do not mutate the payload; return copies.
+    this request only (the history does not change), and ``{"options": dict}`` to add request options
+    (``max_tokens``, ``temperature``). Do not mutate the payload; return copies.
     """
 
     ctx: Any
     messages: list[dict]
     system: str
     tools: list[dict]
+    options: dict
+    """The request options so far (``max_tokens``, ``temperature``); empty for the provider's defaults."""
     nested: bool
     """The loop runs inside a tool, such as a subagent."""
 

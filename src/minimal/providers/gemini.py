@@ -24,6 +24,7 @@ Credentials: ``GOOGLE_API_KEY`` or ``GEMINI_API_KEY`` (read by the SDK).
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 from minimal.providers.base import ProviderSpec, Reply, TextCallback, Usage, result_text
@@ -59,7 +60,12 @@ class GeminiProvider:
         messages: list[dict],
         tools: list[dict],
         on_text: TextCallback | None,
+        options: Mapping[str, Any] | None = None,
     ) -> Reply:
+        options = options or {}
+        generation_config: dict[str, Any] = {"max_output_tokens": options.get("max_tokens", MAX_OUTPUT_TOKENS)}
+        if options.get("temperature") is not None:
+            generation_config["temperature"] = options["temperature"]
         stream = self.client.interactions.create(
             model=model,
             input=to_interaction_input(messages),
@@ -68,7 +74,7 @@ class GeminiProvider:
                 {"type": "function", "name": t["name"], "description": t["description"], "parameters": t["input_schema"]}
                 for t in tools
             ],
-            generation_config={"max_output_tokens": MAX_OUTPUT_TOKENS},
+            generation_config=generation_config,
             store=False,
             stream=True,
         )
