@@ -271,6 +271,112 @@ class CompactTest(BundledExtensionTest):
         self.assertNotEqual(app.session.id, "old")
         self.assertEqual(app.messages[0]["content"], self.ext.SUMMARY_PREFIX + "SUMMARY")
 
+    def test_long_turn_is_summarised_before_the_next_request(self):
+        ext, app = self.ext, self.app
+        (self.tmp / "f.txt").write_text("x")
+        app.messages[:] = [
+            {"role": "user", "content": "q0"},
+            {"role": "assistant", "content": [{"type": "text", "text": "a0"}]},
+        ]
+        app.provider.replies = [
+            Reply(
+                content=[{"type": "tool_use", "id": "r1", "name": "read", "input": {"path": "f.txt"}}],
+                stop_reason="tool_use",
+                usage=Usage(input_tokens=ext.COMPACT_AT, output_tokens=1),
+            ),
+            text_reply("SUMMARY"),
+            text_reply("done"),
+        ]
+        self.run_turn(app, "q")
+        requests = app.provider.requests
+        self.assertEqual(len(requests), 3)
+        self.assertTrue(requests[1].messages[-1]["content"].endswith(ext.SUMMARY_REQUEST))
+        self.assertEqual(requests[2].messages[0]["content"], ext.SUMMARY_PREFIX + "SUMMARY")
+        self.assertEqual([m["role"] for m in requests[2].messages], ["user", "assistant", "user"])
+        self.assertNotEqual(app.session.id, "old")
+        self.assertEqual([m["role"] for m in app.messages], ["user", "assistant", "user", "assistant"])
+        self.assertEqual(len(session_mod.open_session("old").messages), 6)
+
+
+class FailingProvider(RecordingProvider):
+    """Like RecordingProvider, but each request raises the next of ``errors`` while any are left."""
+
+    def __init__(self, errors, replies):
+        super().__init__(replies)
+        self.errors = list(errors)
+
+    def stream(self, **kw):
+        if self.errors:
+            self.requests.append(SimpleNamespace(messages=list(kw["messages"]), tools=[]))
+            raise self.errors.pop(0)
+        return super().stream(**kw)
+
+
+class HTTPError(Exception):
+    def __init__(self, status_code, headers=None):
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+        self.response = SimpleNamespace(headers=headers or {})
+
+
+class RetryTest(BundledExtensionTest):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        (self.tmp / "settings.json").write_text(json.dumps({"extensions": {"settings": {"retry": {"base_delay": 0}}}}))
+        self.app = self.make_app("extensions/retry.py", session_mod.open_session("s"), [])
+        self.ext = sys.modules[loader.module_name(MARKETPLACE / "extensions" / "retry.py")]
+
+    def test_rate_limit_is_retried(self):
+        app = self.app
+        app.provider = FailingProvider([HTTPError(429)], [text_reply("ok")])
+        self.run_turn(app, "q")
+        self.assertEqual(len(app.provider.requests), 2)
+        self.assertEqual(app.messages[-1]["content"][0]["text"], "ok")
+
+    def test_client_error_is_not_retried(self):
+        app = self.app
+        app.provider = FailingProvider([HTTPError(400)], [text_reply("ok")])
+        self.run_turn(app, "q")
+        self.assertEqual(len(app.provider.requests), 1)
+        self.assertEqual(app.messages, [])
+
+    def test_verdict_backoff_cap_and_single_fallback(self):
+        verdict = self.ext.verdict
+        settings = {"max_attempts": 2, "base_delay": 2.0, "max_delay": 5.0, "fallback": "openai/gpt-x"}
+        self.assertEqual(verdict(HTTPError(429), 2, "anthropic", settings), {"retry_after": 4.0})
+        self.assertEqual(verdict(HTTPError(503, {"retry-after": "30"}), 1, "anthropic", settings), {"retry_after": 5.0})
+        self.assertEqual(verdict(HTTPError(529), 3, "anthropic", settings), {"provider": "openai", "model": "gpt-x"})
+        self.assertIsNone(verdict(HTTPError(529), 4, "openai", settings))
+
+
+class ScopeFenceTest(BundledExtensionTest):
+    def test_fence_lives_outside_the_repository(self):
+        for patcher in (
+            mock.patch.object(config, "HOME_DIR", self.tmp / "home"),
+            mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        planted = self.tmp / ".minimal" / "state" / "fence.json"
+        planted.parent.mkdir(parents=True)
+        planted.write_text(json.dumps({"globs": ["docs/**"], "lines": None, "blocked": []}))
+        before = planted.read_text()
+        write = {"type": "tool_use", "id": "w1", "name": "write", "input": {"path": "src/x.py", "content": "x"}}
+        app = self.make_app(
+            "extensions/scope_fence.py",
+            session_mod.open_session("s"),
+            [Reply(content=[write], stop_reason="tool_use"), text_reply("ok")],
+        )
+        self.run_turn(app, "go")
+        self.assertTrue((self.tmp / "src" / "x.py").exists())  # the planted fence is ignored
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            app.run_command("/fence docs")
+        self.assertEqual(len(list((self.tmp / "home" / "data" / "projects").rglob("state.json"))), 1)
+        self.assertEqual(planted.read_text(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
