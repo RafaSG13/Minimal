@@ -20,11 +20,17 @@
   built-in providers honour both; OpenAI gets `max_completion_tokens`, other `OPENAI_BASE_URL` servers `max_tokens`).
   minimal passes `options` only when one is set, so providers written before keep working. `before_request` handlers
   can add options and `ctx.complete` takes `options`.
+- `ctx.notify(text, kind="info")` shows a notice (a toast in the terminal UI), `ctx.use_provider(name, model=None)`
+  switches provider, and `ctx.queue_user_message(text)` sends `text` as the user's next message once the current turn
+  or command ends.
 
 ### Changed
 
 - `minimal ext check` reports `WARN … needs <pkg>` (not `FAIL`) when an extension raises
   `ImportError(..., name="<pkg>")` for a package that is not installed.
+- Built-in slash commands live in the registry (`Registry.builtin_commands`, `register_builtin_command`) and receive
+  the same `ctx` as extension commands. `App(commands=BUILTIN_COMMANDS)` became
+  `App(register_commands=register_builtin_commands)`, which registers them again on every reload.
 
 ## 0.3.0
 

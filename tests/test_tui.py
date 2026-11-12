@@ -13,7 +13,7 @@ from minimal.core.session import Session
 from minimal.extensions import loader
 from minimal.extensions.registry import LogoSpec, Registry
 from minimal.providers.base import Reply
-from minimal.ui.commands import BUILTIN_COMMANDS
+from minimal.ui.commands import register_builtin_commands
 from minimal.ui.tui.app import CommandSuggester, MinimalTui, _outside_event_loop
 from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, TextScreen
 from minimal.ui.tui.widgets import ToolBlock, _edit_diff, logo_content
@@ -83,7 +83,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             session=Session("t", self.tmp / "t.jsonl"),
             cwd=str(self.tmp),
             auto_approve=False,
-            commands=BUILTIN_COMMANDS,
+            register_commands=register_builtin_commands,
         )
         self.core.reload_extensions()
         self.core.registry.register_widget("counter", lambda ctx: Counter(), area="sidebar")
@@ -119,6 +119,34 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(sidebar.has_class("-has-widgets"))
             self.assertEqual(len(sidebar.query(Counter)), 1)
             self.assertGreaterEqual(Counter.calls, 2)
+
+    async def test_queued_user_message_starts_the_next_turn(self):
+        def again(event):
+            if len(self.core.messages) < 3:
+                event["ctx"].queue_user_message("again")
+
+        self.core.registry.on("turn_end", again)
+        text = lambda t: Reply(content=[{"type": "text", "text": t}], stop_reason="end_turn")  # noqa: E731
+        self.use_replies(text("one"), text("two"))
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "hi")
+            await self.wait_until(pilot, lambda: len(self.core.messages) == 4 and self.idle(app)())
+            users = [str(s.render()) for s in app.query(".user").results(Static)]
+        self.assertEqual(users, ["hi", "again"])
+        self.assertEqual(self.core.provider.replies, [])
+        self.assertIsNone(self.core.take_queued())
+
+    async def test_notify_and_queue_while_idle(self):
+        self.use_replies(Reply(content=[{"type": "text", "text": "ok"}], stop_reason="end_turn"))
+        app = MinimalTui(self.core)
+        async with app.run_test() as pilot:
+            with mock.patch.object(app, "notify") as notify:
+                self.core.context.notify("careful", "warning")
+            notify.assert_called_once_with("careful", severity="warning", markup=False)
+            self.core.context.queue_user_message("from a timer")  # on the UI thread, nothing running
+            await self.wait_until(pilot, lambda: len(self.core.messages) == 2 and self.idle(app)())
+        self.assertEqual(self.core.messages[0], {"role": "user", "content": "from a timer"})
 
     async def test_context_widget_returns_the_mounted_extension_widget(self):
         app = MinimalTui(self.core)

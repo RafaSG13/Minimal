@@ -67,6 +67,13 @@ class TuiFrontend:
     def widget(self, name: str) -> object | None:
         return next((widget for widget_name, widget in self.tui.ext_widgets if widget_name == name), None)
 
+    def notify(self, text: str, kind: str) -> None:
+        severity = {"info": "information"}.get(kind, kind)
+        self._on_ui(lambda: self.tui.notify(text, severity=severity, markup=False))
+
+    def queued(self) -> None:
+        self._on_ui(self.tui.submit_queued)
+
     def _modal(self, screen: ModalScreen) -> Any:
         """Show ``screen`` from a worker thread and wait for its dismiss value (``None`` on quit)."""
         done = threading.Event()

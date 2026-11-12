@@ -19,7 +19,7 @@ from minimal.extensions import loader, marketplace
 from minimal.extensions.loader import load_extensions
 from minimal.extensions.metadata import read_metadata
 from minimal.extensions.registry import Registry
-from minimal.ui.commands import BUILTIN_COMMANDS
+from minimal.ui.commands import register_builtin_commands
 
 HELLO = '''"""Say hello."""
 
@@ -196,7 +196,7 @@ class MarketplaceTest(unittest.TestCase):
             auto_approve=True,
             trust_project=True,
             frontend=ui,
-            commands=BUILTIN_COMMANDS,
+            register_commands=register_builtin_commands,
         )
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):

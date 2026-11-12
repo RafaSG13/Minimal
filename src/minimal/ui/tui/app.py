@@ -489,8 +489,11 @@ class MinimalTui(TextualApp):
     # --- input ---------------------------------------------------------------
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        line = event.value.strip()
         event.input.clear()
+        self.submit(event.value.strip())
+
+    def submit(self, line: str) -> None:
+        """Send ``line`` as if the user typed it: a ``/command`` or a message to the model."""
         if not line:
             return
         self.in_turn = not line.startswith("/")
@@ -542,6 +545,14 @@ class MinimalTui(TextualApp):
         self.in_turn = False
         self.set_busy(False)
         self.query_one("#prompt", Input).focus()
+        self.submit_queued()
+
+    def submit_queued(self) -> None:
+        """Send the next message an extension queued (``ctx.queue_user_message``), unless a turn or command is running."""
+        if self.query_one("#prompt", Input).disabled:
+            return  # after_action sends it
+        if (queued := self.core.take_queued()) is not None:
+            self.submit(queued)
 
 
 def run_tui(core: App) -> None:

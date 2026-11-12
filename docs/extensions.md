@@ -189,6 +189,9 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `run_command(line, *, builtin=False)` | Runs `"/name args"` as if the user typed it; its output is printed and errors are reported, not raised. `builtin=True` runs the built-in even when an extension replaced it, so a replacement can hand over to the original |
 | `models()`, `set_model(name)`    | The current provider's models (queried from its API, falling back to its default) and switching to one |
 | `widget(name)`                   | The widget the frontend shows for `register_widget(name, ...)`, or `None` (no terminal UI, or it failed to mount) |
+| `notify(text, kind="info")`      | A short notice: a toast in the terminal UI, a line on stderr otherwise. `kind` is `"info"`, `"warning"` or `"error"` |
+| `use_provider(name, model=None)` | Switches provider (and model, default its default) from the next request on, keeping the conversation; `ValueError` if unknown or without credentials |
+| `queue_user_message(text)`       | Sends `text` as the user's next message once the turn or command in progress ends (at once if nothing is running); `/…` runs a command. It does not steer the turn in progress |
 
 `ctx.ui` asks through whatever is showing minimal (the terminal UI or the plain terminal):
 
@@ -314,7 +317,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 `minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
-API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`, `minimal.on_dispose`, `minimal.data_dir`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
+API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

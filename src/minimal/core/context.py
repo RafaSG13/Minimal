@@ -21,6 +21,10 @@ if TYPE_CHECKING:
     from minimal.core.app import App
 
 
+NOTIFY_KINDS = ("info", "warning", "error")
+"""The kinds of :meth:`Context.notify`."""
+
+
 class UI:
     """Questions to the user, through whatever frontend is showing minimal at call time."""
 
@@ -213,3 +217,35 @@ class Context:
     def widget(self, name: str) -> object | None:
         """The widget the frontend shows for extension widget ``name`` (see ``register_widget``); ``None`` if none."""
         return self._app.frontend.widget(name)
+
+    def notify(self, text: str, kind: str = "info") -> None:
+        """Show a short notice to the user (a toast in the terminal UI); ``kind`` is one of :data:`NOTIFY_KINDS`.
+
+        Raises:
+            ValueError: if ``kind`` is not one of them.
+        """
+        if kind not in NOTIFY_KINDS:
+            raise ValueError(f"notify: kind must be one of {', '.join(NOTIFY_KINDS)}")
+        self._app.frontend.notify(text, kind)
+
+    def use_provider(self, name: str, model: str | None = None) -> None:
+        """Switch to provider ``name`` and ``model`` (default: its default model) from the next request on, keeping the conversation.
+
+        Raises:
+            ValueError: if the provider is unknown or its credentials are missing.
+        """
+        self._app.use_provider(name, model)
+
+    def queue_user_message(self, text: str) -> None:
+        """Send ``text`` as the user's next message once the turn or command in progress ends (at once if the UI is idle).
+
+        A text starting with ``/`` runs as a slash command. Messages queue up in order. It does not
+        steer the turn in progress: the model sees it only after that turn ends.
+
+        Raises:
+            ValueError: if ``text`` is empty.
+        """
+        if not text.strip():
+            raise ValueError("queue_user_message: text is empty")
+        self._app.queued.append(text)
+        self._app.frontend.queued()
