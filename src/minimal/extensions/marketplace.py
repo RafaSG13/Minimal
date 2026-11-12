@@ -10,7 +10,10 @@ There is no index; each extension carries its own metadata
 
 * description: first line of the module docstring (required);
 * ``__version__ = "x"``: its version (required);
-* ``__api__ = "1"``: the minimal API it is written for (required).
+* ``__api__ = "1"``: the minimal API it is written for (required);
+* ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional). ``/ext``
+  and ``ext_install`` offer to install the missing ones into minimal's Python after installing
+  the extension (:func:`ensure_dependencies`); ``minimal ext check --install-deps`` installs them.
 
 Versions come from the git history of the cached clone, not from its HEAD alone: the
 candidates of an item are the commits that touched its path, newest first, and the
@@ -42,6 +45,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import importlib.util
+import importlib.metadata
 import io
 import json
 import os
@@ -60,7 +64,7 @@ from typing import Any
 import minimal
 from minimal import config
 from minimal.extensions import audit, loader
-from minimal.extensions.metadata import api_problem, read_metadata
+from minimal.extensions.metadata import DEPENDENCY_RE, api_problem, read_metadata
 from minimal.extensions.registry import Registry
 
 DEFAULT_URL = "https://github.com/RafaSG13/minimal-marketplace.git"
@@ -87,6 +91,8 @@ class Listing:
     """Its ``__api__``."""
     problem: str | None = None
     """Why this minimal cannot run it (:func:`~minimal.extensions.metadata.api_problem`); ``None`` if it can."""
+    dependencies: tuple[str, ...] = ()
+    """Its ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
 
     @property
     def compatible(self) -> bool:
@@ -202,7 +208,9 @@ def _run_git(args: tuple[str, ...], cwd: Path | None) -> bytes:
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"git {args[0]} timed out after {GIT_TIMEOUT}s") from None
     if result.returncode != 0:
-        detail = (result.stderr.strip() or result.stdout.strip()).decode(errors="replace")
+        detail = (result.stderr.strip() or result.stdout.strip()).decode(
+            errors="replace"
+        )
         raise RuntimeError(f"git {args[0]} failed: {detail}")
     return result.stdout
 
@@ -214,7 +222,9 @@ def _git(*args: str, cwd: Path | None = None) -> str:
 
 def _check_name(name: str) -> None:
     if not NAME_RE.fullmatch(name):
-        raise ValueError(f"invalid extension name {name!r}: use lowercase letters, digits and _")
+        raise ValueError(
+            f"invalid extension name {name!r}: use lowercase letters, digits and _"
+        )
 
 
 def _entry_file(path: Path) -> Path:
@@ -238,8 +248,9 @@ def describe(path: Path, name: str | None = None) -> Listing:
 
     Raises:
         ValueError: on a syntax error, an invalid name, a missing ``register``
-            function, module docstring, ``__version__`` or ``__api__``, an invalid ``__api__``,
-            a package named like a category folder, or a package symlink to a folder or outside it.
+            function, module docstring, ``__version__`` or ``__api__``, an invalid ``__api__`` or
+            ``__dependencies__``, a package named like a category folder, or a package symlink to a
+            folder or outside it.
     """
     entry = _entry_file(path)
     try:
@@ -252,11 +263,17 @@ def describe(path: Path, name: str | None = None) -> Listing:
     if not meta.has_register:
         raise ValueError(f"{path}: missing a top-level register(minimal) function")
     if not meta.description:
-        raise ValueError(f"{path}: add a module docstring; its first line is the marketplace description")
+        raise ValueError(
+            f"{path}: add a module docstring; its first line is the marketplace description"
+        )
     if not meta.version:
-        raise ValueError(f'{path}: set __version__ = "1.0"; the marketplace needs a version')
+        raise ValueError(
+            f'{path}: set __version__ = "1.0"; the marketplace needs a version'
+        )
     if not meta.api:
-        raise ValueError(f'{path}: set __api__ = "{minimal.API_VERSION.split(".")[0]}"; the minimal API it is written for')
+        raise ValueError(
+            f'{path}: set __api__ = "{minimal.API_VERSION.split(".")[0]}"; the minimal API it is written for'
+        )
     problem = api_problem(meta.api)
     if problem is not None and problem.startswith("invalid"):
         raise ValueError(f"{path}: {problem}")
@@ -264,7 +281,16 @@ def describe(path: Path, name: str | None = None) -> Listing:
     _check_package_name(path, name, category)
     if path.is_dir():
         _copied_files(path)  # validates its symlinks
-    return Listing(name, meta.description, meta.version, path, category, meta.api, problem)
+    return Listing(
+        name,
+        meta.description,
+        meta.version,
+        path,
+        category,
+        meta.api,
+        problem,
+        meta.dependencies,
+    )
 
 
 def format_listing(listing: Listing) -> str:
@@ -297,10 +323,15 @@ def sync(url: str | None = None) -> Path:
     shutil.rmtree(fresh, ignore_errors=True)
     fresh.parent.mkdir(parents=True, exist_ok=True)
     try:
-        _git("clone", "--quiet", "--", url, str(fresh))  # "--": a URL starting with "-" is not an option
+        _git(
+            "clone", "--quiet", "--", url, str(fresh)
+        )  # "--": a URL starting with "-" is not an option
     except RuntimeError:
         if (target / ".git").is_dir():
-            print(f"[marketplace] could not update {url}; using the cached copy", file=sys.stderr)
+            print(
+                f"[marketplace] could not update {url}; using the cached copy",
+                file=sys.stderr,
+            )
             return target
         raise
     shutil.rmtree(target, ignore_errors=True)
@@ -308,7 +339,9 @@ def sync(url: str | None = None) -> Path:
     return target
 
 
-def releases(query: str = "", url: str | None = None, category: str | None = None) -> list[Release]:
+def releases(
+    query: str = "", url: str | None = None, category: str | None = None
+) -> list[Release]:
     """The offered version (:class:`Release`) of each extension whose name or description contains ``query`` (case-insensitive); all if empty.
 
     Listed by category in :data:`~minimal.extensions.loader.CATEGORIES` order, then by
@@ -320,7 +353,9 @@ def releases(query: str = "", url: str | None = None, category: str | None = Non
         RuntimeError: if git fails.
     """
     if category:
-        loader.category_dir(Path(), category)  # validates it: the folder name must not be a path
+        loader.category_dir(
+            Path(), category
+        )  # validates it: the folder name must not be a path
     url = url or marketplace_url()
     root = sync(url)
     needle = query.lower()
@@ -337,7 +372,9 @@ def releases(query: str = "", url: str | None = None, category: str | None = Non
     return found
 
 
-def search(query: str = "", url: str | None = None, category: str | None = None) -> list[Listing]:
+def search(
+    query: str = "", url: str | None = None, category: str | None = None
+) -> list[Listing]:
     """The offered version of each extension matching ``query``: :func:`releases`' listings."""
     return [release.listing for release in releases(query, url, category)]
 
@@ -356,7 +393,9 @@ def _materialised(root: Path, commit: str, relpath: str) -> Iterator[Path]:
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                 tar.extractall(tmp, filter="data")
         except tarfile.TarError as e:
-            raise ValueError(f"{relpath} at {commit[:12]}: cannot be extracted ({e})") from None
+            raise ValueError(
+                f"{relpath} at {commit[:12]}: cannot be extracted ({e})"
+            ) from None
         yield Path(tmp)
 
 
@@ -380,7 +419,10 @@ def _resolve(root: Path, url: str, path: Path) -> Release:
         try:
             with _materialised(root, commit, relpath) as tmp:
                 older = describe(tmp / relpath)
-        except (RuntimeError, ValueError):  # deleted or invalid at that commit: not a candidate
+        except (
+            RuntimeError,
+            ValueError,
+        ):  # deleted or invalid at that commit: not a candidate
             continue
         if older.compatible:
             return Release(replace(older, path=path), commit, root, url, newer=head)
@@ -407,7 +449,9 @@ def _copied_files(root: Path) -> list[Path]:
             if path.is_symlink():
                 target = path.resolve()
                 if not target.is_file() or not target.is_relative_to(inside):
-                    raise ValueError(f"{path}: links to {target}; a package may only link to files inside it")
+                    raise ValueError(
+                        f"{path}: links to {target}; a package may only link to files inside it"
+                    )
             (folders if path.is_dir() else files).append(path)
     return sorted(files, key=lambda p: p.relative_to(root).as_posix())
 
@@ -424,7 +468,12 @@ def _content_digest(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     digest = hashlib.sha256()
     for file in _copied_files(path):
-        digest.update(file.relative_to(path).as_posix().encode() + b"\0" + file.read_bytes() + b"\0")
+        digest.update(
+            file.relative_to(path).as_posix().encode()
+            + b"\0"
+            + file.read_bytes()
+            + b"\0"
+        )
     return digest.hexdigest()
 
 
@@ -436,13 +485,22 @@ def _is_extension(path: Path) -> bool:
 def _check_package_name(path: Path, name: str, category: str) -> None:
     """Refuse a package that would sit where a category folder lives (``extensions/tools/``)."""
     if path.is_dir() and category == "extensions" and name in loader.CATEGORIES[1:]:
-        raise ValueError(f"{path}: a package in extensions cannot be named {name}; that is the {name}/ category folder")
+        raise ValueError(
+            f"{path}: a package in extensions cannot be named {name}; that is the {name}/ category folder"
+        )
 
 
 def _installed_path(scope: str, cwd: str, category: str, name: str) -> Path | None:
     """The installed copy of ``name`` in ``scope``'s ``category`` folder (the ``.py`` file wins); ``None`` if none."""
     folder = _target_dir(scope, cwd, category)
-    return next((path for path in (folder / f"{name}.py", folder / name) if _is_extension(path)), None)
+    return next(
+        (
+            path
+            for path in (folder / f"{name}.py", folder / name)
+            if _is_extension(path)
+        ),
+        None,
+    )
 
 
 def _digest_or_none(path: Path) -> str | None:
@@ -480,13 +538,21 @@ def _read_lock(scope: str, cwd: str) -> dict[str, dict]:
         data = json.loads(_lock_path(scope, cwd).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return {key: value for key, value in data.items() if isinstance(value, dict)} if isinstance(data, dict) else {}
+    return (
+        {key: value for key, value in data.items() if isinstance(value, dict)}
+        if isinstance(data, dict)
+        else {}
+    )
 
 
 def _lock_entry(scope: str, cwd: str, category: str, name: str) -> dict | None:
     """The lock's entry for ``name``; ``None`` if there is none or it lacks a string ``commit`` or ``sha256``."""
     entry = _read_lock(scope, cwd).get(_lock_id(category, name))
-    if entry is None or not isinstance(entry.get("commit"), str) or not isinstance(entry.get("sha256"), str):
+    if (
+        entry is None
+        or not isinstance(entry.get("commit"), str)
+        or not isinstance(entry.get("sha256"), str)
+    ):
         return None
     return entry
 
@@ -500,7 +566,9 @@ def _write_lock(scope: str, cwd: str, lock: dict[str, dict]) -> None:
         config.write_private(path, lock)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json.dumps(lock, indent=2))
@@ -515,7 +583,11 @@ def _is_modified(scope: str, cwd: str, category: str, name: str) -> bool:
     """Whether the installed copy of ``name`` has local changes: it has a lock entry its files no longer match."""
     path = _installed_path(scope, cwd, category, name)
     entry = _lock_entry(scope, cwd, category, name)
-    return path is not None and entry is not None and _digest_or_none(path) != entry["sha256"]
+    return (
+        path is not None
+        and entry is not None
+        and _digest_or_none(path) != entry["sha256"]
+    )
 
 
 def catalog(url: str, cwd: str) -> list[Entry]:
@@ -534,7 +606,9 @@ def catalog(url: str, cwd: str) -> list[Entry]:
             if path is None:
                 continue
             installed.append(scope)
-            current = _digest_or_none(path)  # None: a symlink was added to the installed copy
+            current = _digest_or_none(
+                path
+            )  # None: a symlink was added to the installed copy
             lock = _lock_entry(scope, cwd, listing.category, listing.name)
             if lock is not None and current != lock["sha256"]:
                 modified.append(scope)
@@ -567,7 +641,14 @@ def _find(root: Path, name: str, category: str | None) -> list[Path]:
     """``name``'s file or package folder in each category (or only ``category``) of marketplace clone ``root``."""
     found = []
     for folder in [category] if category else loader.CATEGORIES:
-        path = next((p for p in (root / folder / f"{name}.py", root / folder / name) if _is_extension(p)), None)
+        path = next(
+            (
+                p
+                for p in (root / folder / f"{name}.py", root / folder / name)
+                if _is_extension(p)
+            ),
+            None,
+        )
         if path is not None:
             found.append(path)
     return found
@@ -580,7 +661,9 @@ def _find_release(name: str, url: str | None, category: str | None) -> Release:
         ValueError: if the name or category is invalid, or the name is not in the marketplace or is in several categories.
     """
     if category:
-        loader.category_dir(Path(), category)  # validates it: the folder name must not be a path
+        loader.category_dir(
+            Path(), category
+        )  # validates it: the folder name must not be a path
     _check_name(name)
     url = url or marketplace_url()
     root = sync(url)
@@ -588,7 +671,9 @@ def _find_release(name: str, url: str | None, category: str | None) -> Release:
     if not found:
         raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
     if len(found) > 1:
-        raise ValueError(f"{name} is in several categories ({', '.join(p.parent.name for p in found)}); pick one")
+        raise ValueError(
+            f"{name} is in several categories ({', '.join(p.parent.name for p in found)}); pick one"
+        )
     return _resolve(root, url, found[0])
 
 
@@ -614,7 +699,84 @@ def confirm_global(releases: Iterable[Release], ask: Callable[[str], bool]) -> b
     with contextlib.ExitStack() as stack:
         sources = [stack.enter_context(release_source(release)) for release in releases]
         print(audit.format_install_report(loader.read_extensions(sources)))
-    return ask("Allow these extensions to run with your permissions in every project? Review the scan above.")
+    return ask(
+        "Allow these extensions to run with your permissions in every project? Review the scan above."
+    )
+
+
+def missing_dependencies(requirements: Iterable[str]) -> list[str]:
+    """The ``requirements`` (``__dependencies__`` entries) whose package is not installed in minimal's Python.
+
+    Only the package name is looked at, not the version range. In order, without duplicates.
+
+    Raises:
+        ValueError: if a requirement is not a valid ``__dependencies__`` entry.
+    """
+    missing = []
+    for requirement in dict.fromkeys(requirements):
+        match = DEPENDENCY_RE.fullmatch(requirement)
+        if match is None:
+            raise ValueError(f"invalid package requirement {requirement!r}")
+        try:
+            importlib.metadata.version(match["name"])
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(requirement)
+    return missing
+
+
+def install_dependencies(requirements: list[str]) -> None:
+    """Install ``requirements`` into minimal's Python: ``uv pip install`` if ``uv`` is on the PATH, else ``pip``.
+
+    Raises:
+        RuntimeError: if the installer fails or takes more than ten minutes.
+    """
+    if shutil.which("uv"):
+        command = ["uv", "pip", "install", "--python", sys.executable, *requirements]
+    else:
+        command = [sys.executable, "-m", "pip", "install", *requirements]
+    wanted = " ".join(requirements)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"installing {wanted} timed out") from None
+    if result.returncode != 0:
+        last = next(
+            (
+                line.strip()
+                for line in reversed(result.stderr.splitlines())
+                if line.strip()
+            ),
+            "",
+        )
+        raise RuntimeError(f"installing {wanted} failed: {last}")
+    importlib.invalidate_caches()
+
+
+def ensure_dependencies(
+    listings: Iterable[Listing], ask: Callable[[str], bool]
+) -> str | None:
+    """Offer to install the ``__dependencies__`` of ``listings`` that minimal's Python lacks.
+
+    ``ask`` is a yes/no question to the user. Called after the extensions are installed: refusing
+    leaves them installed but unable to load until the packages are.
+
+    Returns:
+        What happened, for the user; ``None`` if nothing was missing.
+
+    Raises:
+        RuntimeError: if installing fails (:func:`install_dependencies`).
+    """
+    listings = list(listings)
+    missing = missing_dependencies(r for x in listings for r in x.dependencies)
+    if not missing:
+        return None
+    names = ", ".join(x.name for x in listings if set(x.dependencies) & set(missing))
+    if ask(
+        f"Install {', '.join(missing)} into minimal's Python ({sys.executable})? Needed by {names}."
+    ):
+        install_dependencies(missing)
+        return f"Installed {', '.join(missing)}."
+    return f"Not installed: {', '.join(missing)}. {names} will not load until they are installed."
 
 
 def install(
@@ -665,7 +827,9 @@ def install_release(release: Release, scope: str, cwd: str) -> tuple[Path, bool]
         return install_from(src, scope, cwd, (release.url, release.commit))
 
 
-def install_from(src: Path, scope: str, cwd: str, origin: tuple[str, str] | None = None) -> tuple[Path, bool]:
+def install_from(
+    src: Path, scope: str, cwd: str, origin: tuple[str, str] | None = None
+) -> tuple[Path, bool]:
     """Copy marketplace extension ``src`` (a file or package folder of a synced clone, or extracted from one) into ``scope``'s category folder.
 
     A copy in the other form (``x.py`` for a folder ``x/``, or the reverse) is removed. The lock of
@@ -715,7 +879,9 @@ def install_from(src: Path, scope: str, cwd: str, origin: tuple[str, str] | None
 def _check_replaceable(dest: Path) -> None:
     """Refuse to overwrite ``dest`` if it is a folder but not an extension package: it may hold other extensions."""
     if dest.is_dir() and not _is_extension(dest):
-        raise ValueError(f"{dest} is a folder that is not an extension package; not replacing it")
+        raise ValueError(
+            f"{dest} is a folder that is not an extension package; not replacing it"
+        )
 
 
 def _remove(path: Path) -> None:
@@ -726,7 +892,9 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
-def uninstall(name: str, scope: str = "global", cwd: str = ".", category: str = "extensions") -> Path:
+def uninstall(
+    name: str, scope: str = "global", cwd: str = ".", category: str = "extensions"
+) -> Path:
     """Delete an installed extension (file or package folder), drop its lock entry and return its path.
 
     Raises:
@@ -753,11 +921,18 @@ def installed(cwd: str) -> list[tuple[str, str, Path]]:
         (scope, category, path)
         for scope in ("global", "project")
         for category in loader.CATEGORIES
-        for path in loader.category_entries(_target_dir(scope, cwd, category), category)[0]
+        for path in loader.category_entries(
+            _target_dir(scope, cwd, category), category
+        )[0]
     ]
 
 
-def publish(path: str | Path, name: str | None = None, url: str | None = None, category: str | None = None) -> str:
+def publish(
+    path: str | Path,
+    name: str | None = None,
+    url: str | None = None,
+    category: str | None = None,
+) -> str:
     """Propose an extension to the marketplace on a new branch, opening a pull request if ``gh`` is installed.
 
     Never force-pushes: the branch name carries a timestamp, so it is always new.
@@ -783,12 +958,20 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
     _check_package_name(path, listing.name, category)
     url = url or marketplace_url()
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        _git("clone", "--quiet", "--", url, tmp)  # "--": a URL starting with "-" is not an option
+        _git(
+            "clone", "--quiet", "--", url, tmp
+        )  # "--": a URL starting with "-" is not an option
         folder = Path(tmp, category)
         dest = folder / (listing.name if path.is_dir() else f"{listing.name}.py")
         other = folder / (f"{listing.name}.py" if path.is_dir() else listing.name)
-        if _is_extension(dest) and not _is_extension(other) and _content_digest(dest) == _content_digest(path):
-            raise ValueError(f"{listing.name} is already published with identical content")
+        if (
+            _is_extension(dest)
+            and not _is_extension(other)
+            and _content_digest(dest) == _content_digest(path)
+        ):
+            raise ValueError(
+                f"{listing.name} is already published with identical content"
+            )
         _check_replaceable(dest)
         folder.mkdir(parents=True, exist_ok=True)
         replaced = [p for p in (dest, other) if _is_extension(p)]
@@ -802,14 +985,32 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
         title = f"Publish {listing.name} {listing.version}".strip()
         _git("checkout", "-b", branch, cwd=Path(tmp))
         changed = {dest, *replaced}
-        _git("add", "-A", "--", *(p.relative_to(tmp).as_posix() for p in changed), cwd=Path(tmp))
+        _git(
+            "add",
+            "-A",
+            "--",
+            *(p.relative_to(tmp).as_posix() for p in changed),
+            cwd=Path(tmp),
+        )
         _git("commit", "--quiet", "-m", title, cwd=Path(tmp))
         _git("push", "--quiet", "origin", branch, cwd=Path(tmp))
         if shutil.which("gh") is None:
-            return f"Pushed branch {branch} to {url}; open a pull request to publish it."
+            return (
+                f"Pushed branch {branch} to {url}; open a pull request to publish it."
+            )
         try:
             result = subprocess.run(
-                ["gh", "pr", "create", "--head", branch, "--title", title, "--body", listing.description],
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--head",
+                    branch,
+                    "--title",
+                    title,
+                    "--body",
+                    listing.description,
+                ],
                 cwd=tmp,
                 capture_output=True,
                 text=True,
@@ -825,7 +1026,11 @@ def publish(path: str | Path, name: str | None = None, url: str | None = None, c
 # --- validation ---------------------------------------------------------------
 
 
-def check(paths: list[Path], make_registry: Callable[[], Registry] = Registry) -> tuple[list[str], bool]:
+def check(
+    paths: list[Path],
+    make_registry: Callable[[], Registry] = Registry,
+    install_deps: bool = False,
+) -> tuple[list[str], bool]:
     """Validate extensions the way the marketplace and the loader see them, for ``minimal ext check``.
 
     Each path is an extension file or package folder, or a marketplace root (a
@@ -833,26 +1038,58 @@ def check(paths: list[Path], make_registry: Callable[[], Registry] = Registry) -
     extension must describe itself (:func:`describe`), accept this minimal
     (``__api__``) and load into a fresh registry from ``make_registry``.
 
+    With ``install_deps``, the missing ``__dependencies__`` of every extension are installed
+    first (:func:`install_dependencies`); if that fails, the error goes to stderr and nothing
+    is checked.
+
     Returns:
         ``(lines, ok)``: ``ok   category/name version``, ``WARN category/name: needs <module>``
         when it imports a module that is not installed here, or ``FAIL category/name: problem``;
-        ``ok`` is false if any line is ``FAIL``.
+        ``ok`` is false if any line is ``FAIL`` or installing the dependencies failed.
     """
-    lines: list[str] = []
+    items = _check_items(paths)
+    if install_deps:
+        requirements: list[str] = []
+        for item in items:
+            if isinstance(item, Path):
+                with contextlib.suppress(ValueError):  # reported as FAIL below
+                    requirements += describe(item).dependencies
+        missing = missing_dependencies(requirements)
+        if missing:
+            try:
+                install_dependencies(missing)
+            except RuntimeError as e:
+                print(e, file=sys.stderr)
+                return [], False
+    lines = [
+        item if isinstance(item, str) else _check_one(item, make_registry)
+        for item in items
+    ]
+    return lines, not any(line.startswith("FAIL") for line in lines)
+
+
+def _check_items(paths: list[Path]) -> list[Path | str]:
+    """What :func:`check` looks at, in order: each extension's path, or a ``FAIL`` line for a problem found while listing them."""
+    items: list[Path | str] = []
     for path in paths:
         path = path.resolve()
         if not path.exists():
-            lines.append(f"FAIL {path}: not found")
-        elif path.is_dir() and not (path / "__init__.py").is_file() and any(
-            (path / c).is_dir() for c in loader.CATEGORIES
+            items.append(f"FAIL {path}: not found")
+        elif (
+            path.is_dir()
+            and not (path / "__init__.py").is_file()
+            and any((path / c).is_dir() for c in loader.CATEGORIES)
         ):
             for category in loader.CATEGORIES:
                 entries, shadowed = loader.category_entries(path / category, category)
-                lines += [f"FAIL {category}/{p.name}: both {p.name}.py and {p.name}/ exist; remove one" for p in shadowed]
-                lines += [_check_one(p, make_registry) for p in entries]
+                items += [
+                    f"FAIL {category}/{p.name}: both {p.name}.py and {p.name}/ exist; remove one"
+                    for p in shadowed
+                ]
+                items += entries
         else:
-            lines.append(_check_one(path, make_registry))
-    return lines, not any(line.startswith("FAIL") for line in lines)
+            items.append(path)
+    return items
 
 
 def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
@@ -903,7 +1140,9 @@ def _known_marketplace(url: str | None) -> str | None:
 def _ext_search(input: dict, ctx: Any) -> str:
     category = input.get("category")
     if category:
-        loader.category_dir(Path(), category)  # validates it before any marketplace is synced
+        loader.category_dir(
+            Path(), category
+        )  # validates it before any marketplace is synced
     urls = marketplaces()
     lines = []
     for url in urls:
@@ -917,7 +1156,9 @@ def _ext_search(input: dict, ctx: Any) -> str:
             x = release.listing
             note = "" if x.compatible else f" [{x.problem}]"
             if release.newer is not None:
-                note = f" [latest for this minimal; newer needs API {release.newer.api}]"
+                note = (
+                    f" [latest for this minimal; newer needs API {release.newer.api}]"
+                )
             lines.append(f"{prefix}{x.category}/{format_listing(x)}{note}")
     return "\n".join(lines) or "No extensions found."
 
@@ -937,7 +1178,9 @@ def _ext_install(input: dict, ctx: Any) -> str:
             except RuntimeError:
                 continue
         if len(having) > 1:
-            raise ValueError(f"{name} is in several marketplaces ({', '.join(having)}); pass marketplace")
+            raise ValueError(
+                f"{name} is in several marketplaces ({', '.join(having)}); pass marketplace"
+            )
         url = having[0] if having else None
     scope = input.get("scope", "global")
     release = _find_release(name, url, category)
@@ -945,12 +1188,19 @@ def _ext_install(input: dict, ctx: Any) -> str:
     if scope == "global" and not confirm_global([release], ctx.ui.ask):
         raise ValueError(f"{name} was not installed: the user did not approve it")
     dest, updated = install_release(release, scope, ctx.cwd)
-    return f"{'Updated' if updated else 'Installed'} {name} at {dest}. Call reload_extensions to activate it."
+    msg = ensure_dependencies([release.listing], ctx.ui.ask)
+    done = f"{'Updated' if updated else 'Installed'} {name} at {dest}."
+    return f"{done} {msg + ' ' if msg else ''}Call reload_extensions to activate it."
 
 
 def _ext_publish(input: dict, ctx: Any) -> str:
     url = _known_marketplace(input.get("marketplace")) or marketplace_url()
-    return publish(Path(ctx.cwd, input["path"]), input.get("name"), url=url, category=input.get("category"))
+    return publish(
+        Path(ctx.cwd, input["path"]),
+        input.get("name"),
+        url=url,
+        category=input.get("category"),
+    )
 
 
 _CATEGORY_SCHEMA = {
@@ -959,7 +1209,10 @@ _CATEGORY_SCHEMA = {
     "description": "extensions (general), themes (colour themes), tools (tools for you) or widgets (UI components)",
 }
 
-_MARKETPLACE_SCHEMA = {"type": "string", "description": "Marketplace URL, as listed by ext_search"}
+_MARKETPLACE_SCHEMA = {
+    "type": "string",
+    "description": "Marketplace URL, as listed by ext_search",
+}
 
 
 def register_marketplace_tools(registry: Registry) -> None:
@@ -995,14 +1248,23 @@ def register_marketplace_tools(registry: Registry) -> None:
         input_schema={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Extension name, as listed by ext_search"},
+                "name": {
+                    "type": "string",
+                    "description": "Extension name, as listed by ext_search",
+                },
                 "scope": {
                     "type": "string",
                     "enum": ["global", "project"],
                     "description": "global (every project, default) or project (this folder only)",
                 },
-                "category": {**_CATEGORY_SCHEMA, "description": "Needed only if the name is in several categories"},
-                "marketplace": {**_MARKETPLACE_SCHEMA, "description": "Needed only if several marketplaces have the name"},
+                "category": {
+                    **_CATEGORY_SCHEMA,
+                    "description": "Needed only if the name is in several categories",
+                },
+                "marketplace": {
+                    **_MARKETPLACE_SCHEMA,
+                    "description": "Needed only if several marketplaces have the name",
+                },
                 "force": {
                     "type": "boolean",
                     "description": "Overwrite an installed copy that has local changes (default false)",
@@ -1024,10 +1286,19 @@ def register_marketplace_tools(registry: Registry) -> None:
         input_schema={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "The extension file or package folder"},
-                "name": {"type": "string", "description": "Name to publish under (default: the file name)"},
+                "path": {
+                    "type": "string",
+                    "description": "The extension file or package folder",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Name to publish under (default: the file name)",
+                },
                 "category": _CATEGORY_SCHEMA,
-                "marketplace": {**_MARKETPLACE_SCHEMA, "description": "Where to publish (default: $MINIMAL_MARKETPLACE or the default)"},
+                "marketplace": {
+                    **_MARKETPLACE_SCHEMA,
+                    "description": "Where to publish (default: $MINIMAL_MARKETPLACE or the default)",
+                },
             },
             "required": ["path"],
         },

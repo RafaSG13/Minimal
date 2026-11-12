@@ -2,7 +2,9 @@
 
 - description: first line of the module docstring;
 - ``__version__ = "1.2"``: the extension's own version (the marketplace requires one);
-- ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`).
+- ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`);
+- ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional; :data:`DEPENDENCY_RE`).
+  ``/ext`` offers to install the missing ones into minimal's Python.
 """
 
 from __future__ import annotations
@@ -24,30 +26,67 @@ class Metadata:
     """Top-level ``__api__`` string; ``""`` if none."""
     has_register: bool
     """Whether a top-level ``def register`` exists."""
+    dependencies: tuple[str, ...] = ()
+    """Top-level ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
+
+
+DEPENDENCY_RE = re.compile(
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(\[[A-Za-z0-9._,-]+\])?"
+    r"(\s*(==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9.*+!_-]+(\s*,\s*(==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9.*+!_-]+)*)?"
+)
+"""A valid ``__dependencies__`` entry (always ``fullmatch``): a package name, optional extras and version
+comparisons. No URLs, and nothing starting with ``-`` (it would be an option to ``pip install``)."""
+
+
+def _dependencies(node: ast.expr, filename: str) -> tuple[str, ...]:
+    if isinstance(node, (ast.List, ast.Tuple)) and all(
+        isinstance(e, ast.Constant) and isinstance(e.value, str) and DEPENDENCY_RE.fullmatch(e.value)
+        for e in node.elts
+    ):
+        return tuple(e.value for e in node.elts)  # type: ignore[attr-defined]
+    try:
+        value = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        value = ast.unparse(node)
+    raise ValueError(
+        f'{filename}: __dependencies__ must be a list of package requirements such as "termaid>=0.3"; got {value!r}'
+    )
+
+
+class SourceSyntaxError(ValueError):
+    """:func:`read_metadata` could not parse the source."""
 
 
 def read_metadata(source: bytes, filename: str) -> Metadata:
     """Read ``source``'s metadata with :mod:`ast`; nothing is executed.
 
     Raises:
-        ValueError: if ``source`` does not parse.
+        SourceSyntaxError: if ``source`` does not parse.
+        ValueError: if ``__dependencies__`` is not a list of package requirements.
     """
     try:
         tree = ast.parse(source, filename=filename)
     except (SyntaxError, ValueError) as e:
-        raise ValueError(f"{filename}: syntax error: {e}") from None
+        raise SourceSyntaxError(f"{filename}: syntax error: {e}") from None
     strings = {}
+    dependencies: tuple[str, ...] = ()
     for node in tree.body:
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in ("__version__", "__api__"):
-                    strings[target.id] = node.value.value
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "__dependencies__" in names:
+            dependencies = _dependencies(node.value, filename)
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            for name in names:
+                if name in ("__version__", "__api__"):
+                    strings[name] = node.value.value
     docstring = ast.get_docstring(tree) or ""
     return Metadata(
         description=docstring.strip().splitlines()[0] if docstring.strip() else "",
         version=strings.get("__version__", ""),
         api=strings.get("__api__", ""),
         has_register=any(isinstance(n, ast.FunctionDef) and n.name == "register" for n in tree.body),
+        dependencies=dependencies,
     )
 
 

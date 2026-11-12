@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `__dependencies__ = ["termaid>=0.3"]` declares the third-party packages an extension needs. After installing it,
+  `/ext` and the model's `ext_install` ask whether to install the missing ones into minimal's Python (`uv pip install`,
+  else `pip`); the extension stays installed either way. `minimal ext check --install-deps` installs them before
+  checking, which is what CI runs (no more `requirements-ci.txt`).
+
+### Changed
+
+- `minimal ext check` reports `WARN … needs <pkg>` (not `FAIL`) when an extension raises
+  `ImportError(..., name="<pkg>")` for a package that is not installed.
+
 ## 0.3.0
 
 ### Breaking

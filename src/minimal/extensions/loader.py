@@ -40,7 +40,7 @@ from typing import Iterable
 
 from minimal import config
 from minimal.extensions.facade import Extension
-from minimal.extensions.metadata import Metadata, check_api, read_metadata
+from minimal.extensions.metadata import Metadata, SourceSyntaxError, check_api, read_metadata
 from minimal.extensions.registry import Registry
 
 GLOBAL_EXTENSIONS_DIR = Path.home() / ".minimal" / "extensions"
@@ -294,13 +294,13 @@ def load_source(
     Settings it rejects (:meth:`Extension.declare_settings`) are appended to ``errors``.
 
     Raises:
-        ValueError: if it declares no ``__api__`` or one this minimal does not provide, or has no
-            ``register`` function.
+        ValueError: if it declares no ``__api__`` or one this minimal does not provide, a malformed
+            ``__dependencies__``, or has no ``register`` function.
         Exception: whatever importing or ``register`` raised.
     """
     try:
         meta = read_metadata(source.entry, str(source.entry_path))
-    except ValueError:  # a syntax error: importing reports it as a SyntaxError with its line
+    except SourceSyntaxError:  # importing reports it as a SyntaxError with its line
         meta = Metadata("", "", "", False)
     else:
         check_api(meta.api)

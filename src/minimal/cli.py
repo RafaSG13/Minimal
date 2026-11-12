@@ -27,8 +27,10 @@ Usage:
   minimal --setup              choose the default provider, sign in or enter its key, choose the model
   minimal --login              sign in with a Claude Pro/Max subscription (browser)
   minimal --logout             forget the Claude login
-  minimal ext check <path>...  validate extension files, package folders or a marketplace checkout
-                               (exit status 1 if any fails; runs without a terminal or a provider)
+  minimal ext check [--install-deps] <path>...
+                               validate extension files, package folders or a marketplace checkout
+                               (exit status 1 if any fails; runs without a terminal or a provider);
+                               --install-deps first installs their missing __dependencies__
 
 Options:
   -c, --continue        resume the last session of this directory
@@ -123,9 +125,11 @@ def main() -> None:
     run_tui(app)
 
 def ext_cli(args: list[str]) -> None:
-    """``minimal ext check <path>...``: print one line per extension checked and exit 0, or 1 if any failed."""
-    if len(args) < 2 or args[0] != "check":
-        print("usage: minimal ext check <path>...", file=sys.stderr)
+    """``minimal ext check [--install-deps] <path>...``: print one line per extension checked and exit 0, or 1 if any failed."""
+    install_deps = len(args) > 1 and args[1] == "--install-deps"
+    paths = args[2:] if install_deps else args[1:]
+    if not args or args[0] != "check" or not paths:
+        print("usage: minimal ext check [--install-deps] <path>...", file=sys.stderr)
         sys.exit(2)
 
     def make_registry() -> Registry:
@@ -136,7 +140,7 @@ def ext_cli(args: list[str]) -> None:
         marketplace.register_marketplace_tools(registry)
         return registry
 
-    lines, ok = marketplace.check([Path(p) for p in args[1:]], make_registry)
+    lines, ok = marketplace.check([Path(p) for p in paths], make_registry, install_deps)
     print("\n".join(lines))
     sys.exit(0 if ok else 1)
 
