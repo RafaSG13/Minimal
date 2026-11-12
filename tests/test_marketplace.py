@@ -783,7 +783,9 @@ class DependenciesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "bad.py")
             path.write_text(NEEDS_DEPS.replace("DEPS", '["-e ."]'))
-            loaded, errors = loader.load_sources(Registry(), [(loader.read_extensions([path])[0], "cli")], config.Settings())
+            loaded, errors = loader.load_sources(
+                Registry(), [(loader.read_extensions([path])[0], "cli")], config.Settings(), tmp
+            )
         self.assertEqual(loaded, [])
         self.assertIn("__dependencies__ must be a list", errors[0])
 

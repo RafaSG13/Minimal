@@ -1104,7 +1104,7 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
     registry = make_registry()
     try:
         source = loader.read_extensions([path])[0]
-        loader.load_source(source, registry, config.Settings(), "cli", errors)
+        loader.load_source(source, registry, config.Settings(), "cli", errors, os.getcwd())
     except ImportError as e:
         # ImportError(name=...) for a module missing here, e.g. a hint raised by the extension itself.
         if (

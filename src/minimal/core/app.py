@@ -78,7 +78,8 @@ SELF_EXTEND_PROMPT = (
     '{{"messages", "system", "tools"}} to send instead for that request only); the same exist as minimal.register_tool, '
     "register_command and on(event, handler). minimal.register_provider(...) adds a model; "
     "minimal.append_system_prompt(text) adds instructions; minimal.on_dispose(fn) runs fn before a reload and at "
-    "exit: stop threads, timers and subprocesses there; settings = minimal.declare_settings({{...defaults}}) "
+    "exit: stop threads, timers and subprocesses there; minimal.data_dir(scope='project'|'global') is a private "
+    "folder for the extension's own files, outside the repository; settings = minimal.declare_settings({{...defaults}}) "
     "declares settings the user sets under extensions.settings.<id> in ~/.minimal/settings.json (id is the name, or "
     "category/name in a subfolder). minimal.register_widget(name, create, area) adds a visual "
     'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '

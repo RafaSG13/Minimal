@@ -141,6 +141,7 @@ minimal.on("turn_end", lambda event: None)
 | `register_theme(name, *, dark, background, foreground, accent, **colors)` | A colour theme ([Themes](#themes))                      |
 | `register_logo(art, colors, align="center")`                        | Pixel art in the welcome header ([Header logo](#header-logo)) |
 | `on_dispose(fn)`                                                    | `fn()` runs before a reload and when minimal exits (last registered first): stop the threads, timers and subprocesses the extension started. Returns `fn`, so it also works as a decorator |
+| `data_dir(scope="project")`                                         | Not a registration: a private folder (mode 0700) for the extension's own files, outside the repository, created if missing. `"project"` is `~/.minimal/data/projects/<hash of the working directory>/<id>`, `"global"` is `~/.minimal/data/global/<id>` |
 
 ### Settings
 
@@ -313,7 +314,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 `minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
-API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`, and `minimal.on_dispose`. An extension using any of them declares `__api__ = "1.1"`.
+API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response` and `shutdown`, `minimal.on_dispose` and `minimal.data_dir`. An extension using any of them declares `__api__ = "1.1"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 
