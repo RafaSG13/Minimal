@@ -15,7 +15,7 @@ from minimal.extensions import loader
 from minimal.extensions.metadata import api_problem
 from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply, Usage
-from minimal.ui.commands import BUILTIN_COMMANDS
+from minimal.ui.commands import register_builtin_commands
 
 
 class ScriptedProvider:
@@ -60,7 +60,7 @@ class ExtensionApiTest(unittest.TestCase):
             session=Session("first", self.tmp / "first.jsonl"),
             cwd=str(self.tmp),
             auto_approve=True,
-            commands=BUILTIN_COMMANDS,
+            register_commands=register_builtin_commands,
         )
 
     def extension(self, name, body, folder=None, api='"1"'):
@@ -505,6 +505,53 @@ class ExtensionApiTest(unittest.TestCase):
         self.app.provider = mock.Mock(stream=mock.Mock(return_value=text_reply("ok")))
         self.app.context.complete([], options={"max_tokens": 3})
         self.assertEqual(self.app.provider.stream.call_args.kwargs["options"], {"max_tokens": 3})
+
+    def test_ctx_notify(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.app.context.notify("hi", "warning")
+            self.app.context.notify("plain")
+        self.assertEqual(err.getvalue(), "\x1b[33mwarning: hi\x1b[0m\nplain\n")
+        with self.assertRaisesRegex(ValueError, "kind must be one of info, warning, error"):
+            self.app.context.notify("hi", "loud")
+
+    def test_ctx_queue_user_message(self):
+        self.app.context.queue_user_message("next")
+        self.app.context.queue_user_message("/tools")
+        self.assertEqual((self.app.take_queued(), self.app.take_queued(), self.app.take_queued()), ("next", "/tools", None))
+        with self.assertRaisesRegex(ValueError, "text is empty"):
+            self.app.context.queue_user_message("  ")
+
+    def test_ctx_use_provider(self):
+        self.app.reload_extensions()
+        self.app.registry.register_provider("other", lambda: ScriptedProvider([]), "m1")
+        self.app.context.use_provider("other", "m2")
+        self.assertEqual((self.app.provider_name, self.app.model), ("other", "m2"))
+        with self.assertRaisesRegex(ValueError, "unknown provider: nope"):
+            self.app.context.use_provider("nope")
+
+    def test_builtin_commands_get_ctx_and_can_be_replaced(self):
+        self.extension(
+            "myhelp.py",
+            """
+            def register(minimal):
+                @minimal.command(description="mine")
+                def help(args, ctx):
+                    print("custom help")
+            """,
+        )
+        self.app.reload_extensions()
+        self.assertTrue(self.app.registry.builtin_commands["help"].builtin)
+        self.assertEqual(self.app.context.commands()["help"], "mine")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.app.run_command("/help")
+            self.app.context.run_command("/help", builtin=True)
+            self.app.run_command("/tools")
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "custom help")
+        self.assertIn("  /help       mine", lines)
+        self.assertEqual(lines[-1], ", ".join(self.app.registry.tools))
 
 
 if __name__ == "__main__":

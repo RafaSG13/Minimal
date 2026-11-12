@@ -18,7 +18,7 @@ from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import setup
-from minimal.ui.commands import BUILTIN_COMMANDS
+from minimal.ui.commands import register_builtin_commands
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
@@ -105,7 +105,7 @@ def main() -> None:
         auto_approve=opts.yes,
         trust_project=opts.trust_project,
         extra_extensions=opts.ext,
-        commands=BUILTIN_COMMANDS,
+        register_commands=register_builtin_commands,
     )
     app.reload_extensions()
     try:
@@ -142,6 +142,7 @@ def ext_cli(args: list[str]) -> None:
         register_builtin_tools(registry)
         register_builtin_providers(registry)
         marketplace.register_marketplace_tools(registry)
+        register_builtin_commands(registry)
         return registry
 
     lines, ok = marketplace.check([Path(p) for p in paths], make_registry, install_deps)

@@ -1,9 +1,10 @@
-"""Slash commands: the built-ins (:data:`BUILTIN_COMMANDS`), handed to the :class:`~minimal.core.app.App` that runs them.
+"""Slash commands: the built-ins, registered into the :class:`~minimal.extensions.registry.Registry` by
+:func:`register_builtin_commands` (the :class:`~minimal.core.app.App` calls it on every reload).
 
-Built-in commands are called as ``run(args, app)``, where ``args`` is the text
-after the command name and ``app`` is the :class:`~minimal.core.app.App`;
-extension commands get ``ctx``, the app's :class:`~minimal.core.context.Context`.
-Commands registered by extensions take precedence over built-ins with the same name
+Every command is called as ``run(args, ctx)``, where ``args`` is the text after the command
+name and ``ctx`` is the app's :class:`~minimal.core.context.Context`; built-ins are core code
+and reach the :class:`~minimal.core.app.App` through it (:func:`_app`). Commands registered
+by extensions take precedence over built-ins with the same name
 (:meth:`~minimal.core.app.App.run_command`). Commands print their output; the terminal UI shows it in the transcript.
 """
 
@@ -17,20 +18,27 @@ from pathlib import Path
 
 from minimal import config
 from minimal.core.app import App, ExitRepl
+from minimal.core.context import Context
 from minimal.core.session import TORN_NOTICE, list_sessions, new_id, open_session, preview, project_dir, session_project
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import Command
+from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth
 from minimal.ui import setup
 
 
-def _help(args: str, app: App) -> None:
-    for name, cmd in app.commands().items():
+def _app(ctx: Context) -> App:
+    """The App behind ``ctx``: built-ins are core code and reach the App."""
+    return ctx._app
+
+
+def _help(args: str, ctx: Context) -> None:
+    for name, cmd in _app(ctx).commands().items():
         print(f"  /{name:<10} {cmd.description}")
 
 
-def _new(args: str, app: App) -> None:
+def _new(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     app.switch_session(open_session(new_id(), app.cwd))
     print(f"New session: {app.session.id}")
 
@@ -47,7 +55,8 @@ def _session_label(id: str, all_projects: bool) -> str:
     return f"{id}{where}  {preview(id)}".rstrip()
 
 
-def _sessions(args: str, app: App) -> None:
+def _sessions(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     all_projects, rest = _split_all(args)
     if rest:
         raise ValueError("usage: /sessions [--all]")
@@ -59,7 +68,8 @@ RESUME_CHOICES = 30
 """Most sessions offered by the ``/resume`` picker: the newest ones."""
 
 
-def _resume(args: str, app: App) -> None:
+def _resume(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     all_projects, rest = _split_all(args)
     if len(rest) > 1:
         raise ValueError("usage: /resume [--all] [id]")
@@ -84,7 +94,8 @@ def _resume(args: str, app: App) -> None:
         print(f"warning: {TORN_NOTICE}")
 
 
-def _model(args: str, app: App) -> None:
+def _model(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     models: list[str] = []
     if not args or args.isdigit():
         models, problem = app.available_models()
@@ -106,7 +117,8 @@ def _model(args: str, app: App) -> None:
     print(f"Model: {app.model}")
 
 
-def _provider(args: str, app: App) -> None:
+def _provider(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     if args:
         name, _, model = args.partition(" ")
         app.use_provider(name, model.strip() or None)
@@ -117,11 +129,12 @@ def _provider(args: str, app: App) -> None:
         print(f"{mark} {name:<10} {spec.default_model:<24} {spec.description}")
 
 
-def _tools(args: str, app: App) -> None:
-    print(", ".join(app.registry.tools))
+def _tools(args: str, ctx: Context) -> None:
+    print(", ".join(ctx.tools))
 
 
-def _theme(args: str, app: App) -> None:
+def _theme(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     names, current = app.frontend.themes()
     if not names:
         print("Colour themes only apply to the terminal UI.")
@@ -139,7 +152,8 @@ def _theme(args: str, app: App) -> None:
     print(f"Theme: {name}")
 
 
-def _login(args: str, app: App) -> None:
+def _login(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     try:
         claude_auth.login()
     except KeyboardInterrupt:  # run_command only catches Exception; keep the UI alive
@@ -150,11 +164,12 @@ def _login(args: str, app: App) -> None:
     print(f"Provider: {app.provider_name} · model {app.model}")
 
 
-def _logout(args: str, app: App) -> None:
+def _logout(args: str, ctx: Context) -> None:
     claude_auth.logout()
 
 
-def _setup(args: str, app: App) -> None:
+def _setup(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     if not setup.can_run():
         raise ValueError("setup needs a terminal")
     try:
@@ -166,20 +181,21 @@ def _setup(args: str, app: App) -> None:
     print(f"Provider: {app.provider_name} · model {app.model}")
 
 
-def _exit(args: str, app: App) -> None:
+def _exit(args: str, ctx: Context) -> None:
     raise ExitRepl
 
 
-def _reload(args: str, app: App) -> None:
-    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+def _reload(args: str, ctx: Context) -> None:
+    print(ctx.reload())
 
 
-def _trust(args: str, app: App) -> None:
+def _trust(args: str, ctx: Context) -> None:
     """Show a static scan of the project's extensions and its trust-gated settings, and ask once whether to trust them.
 
     Trust is saved for the digest of what was reported, so files changed after the
     report stay untrusted: the reload that follows reads them again and skips them.
     """
+    app = _app(ctx)
     if args:
         raise ValueError("usage: /trust")
     project = loader.read_project_snapshot(app.cwd, config.risky_subset(config.read_layers(app.cwd)[0]))
@@ -205,8 +221,9 @@ _SCALARS = ("provider", "model", "theme", "prompt.base", "prompt.files")
 """Settings where the highest layer wins; the others are concatenated, merged or global-only lists."""
 
 
-def _settings(args: str, app: App) -> None:
+def _settings(args: str, ctx: Context) -> None:
     """Show the settings files, the effective settings with the scope each comes from, and the reload's errors."""
+    app = _app(ctx)
     if args:
         raise ValueError("usage: /settings")
     settings = app.settings
@@ -243,7 +260,8 @@ _REMOVE = "\x00remove"
 """Marketplace-picker option values that cannot be URLs."""
 
 
-def _ext(args: str, app: App) -> None:
+def _ext(args: str, ctx: Context) -> None:
+    app = _app(ctx)
     words = shlex.split(args)
     if not words:
         _ext_picker(app)
@@ -419,23 +437,27 @@ def _ext_picker(app: App) -> None:
     print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
-BUILTIN_COMMANDS: dict[str, Command] = {
-    "help": Command(_help, "show the commands"),
-    "new": Command(_new, "start a new session"),
-    "sessions": Command(_sessions, "list this project's saved sessions: /sessions [--all]"),
-    "resume": Command(_resume, "resume a saved session of this project: /resume [--all] [id]"),
-    "model": Command(_model, "list models, or change: /model [number|name]"),
-    "provider": Command(_provider, "list providers, or switch: /provider <name> [model]"),
-    "tools": Command(_tools, "list the tools"),
-    "theme": Command(_theme, "pick the colour theme, or switch: /theme <name>"),
-    "reload": Command(_reload, "reload extensions from disk"),
-    "settings": Command(_settings, "show the settings files and the effective settings with where each comes from"),
-    "trust": Command(_trust, "review this project's extensions and choose whether to trust and load them"),
-    "ext": Command(_ext, f"pick extensions to install, update or remove; {EXT_USAGE}"),
-    "extensions": Command(_ext, f"pick extensions to install, update or remove; {EXT_USAGE}"),
-    "quit": Command(_exit, "quit"),
-    "setup": Command(_setup, "choose and save the default provider, its login or key, and the model", terminal=True),
-    "login": Command(_login, "sign in with a Claude Pro/Max subscription in the browser", terminal=True),
-    "logout": Command(_logout, "forget the Claude login"),
-    "exit": Command(_exit, "quit"),
-}
+def register_builtin_commands(registry: Registry) -> None:
+    """Register the built-in slash commands into ``registry`` (:attr:`~minimal.extensions.registry.Registry.builtin_commands`)."""
+    ext = f"pick extensions to install, update or remove; {EXT_USAGE}"
+    for name, run, description, terminal in (
+        ("help", _help, "show the commands", False),
+        ("new", _new, "start a new session", False),
+        ("sessions", _sessions, "list this project's saved sessions: /sessions [--all]", False),
+        ("resume", _resume, "resume a saved session of this project: /resume [--all] [id]", False),
+        ("model", _model, "list models, or change: /model [number|name]", False),
+        ("provider", _provider, "list providers, or switch: /provider <name> [model]", False),
+        ("tools", _tools, "list the tools", False),
+        ("theme", _theme, "pick the colour theme, or switch: /theme <name>", False),
+        ("reload", _reload, "reload extensions from disk", False),
+        ("settings", _settings, "show the settings files and the effective settings with where each comes from", False),
+        ("trust", _trust, "review this project's extensions and choose whether to trust and load them", False),
+        ("ext", _ext, ext, False),
+        ("extensions", _ext, ext, False),
+        ("quit", _exit, "quit", False),
+        ("setup", _setup, "choose and save the default provider, its login or key, and the model", True),
+        ("login", _login, "sign in with a Claude Pro/Max subscription in the browser", True),
+        ("logout", _logout, "forget the Claude login", False),
+        ("exit", _exit, "quit", False),
+    ):
+        registry.register_builtin_command(name, run, description, terminal)

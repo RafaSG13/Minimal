@@ -168,11 +168,13 @@ class Command:
             the text after the command name.
         description: One-line summary shown by ``/help``.
         terminal: Needs the real terminal (the TUI suspends itself while it runs).
+        builtin: One of minimal's own commands (:meth:`Registry.register_builtin_command`).
     """
 
     run: CommandRun
     description: str = ""
     terminal: bool = False
+    builtin: bool = False
 
 
 @dataclass
@@ -245,6 +247,8 @@ class Registry:
     Attributes:
         tools: Tools offered to the model, by name, in registration order.
         commands: Slash commands added by extensions, by name.
+        builtin_commands: minimal's own slash commands, by name; an extension command of the
+            same name replaces one.
         providers: Model integrations, by name (see :mod:`minimal.providers`).
         prompt_parts: Extra paragraphs appended to the system prompt.
         widgets: Visual components for the terminal UI, by name.
@@ -256,6 +260,7 @@ class Registry:
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
         self.commands: dict[str, Command] = {}
+        self.builtin_commands: dict[str, Command] = {}
         self.providers: dict[str, ProviderSpec] = {}
         self.prompt_parts: list[str] = []
         self.widgets: dict[str, WidgetSpec] = {}
@@ -274,6 +279,7 @@ class Registry:
         """
         self.tools.clear()
         self.commands.clear()
+        self.builtin_commands.clear()
         self.providers.clear()
         self.prompt_parts.clear()
         self.widgets.clear()
@@ -320,6 +326,18 @@ class Registry:
         if not callable(run):
             raise ValueError("register_command: run is required")
         self.commands[name] = Command(run, description, terminal)
+
+    def register_builtin_command(
+        self, name: str, run: CommandRun, description: str = "", terminal: bool = False
+    ) -> None:
+        """Register one of minimal's own slash commands (see :meth:`register_command`).
+
+        Raises:
+            ValueError: if ``run`` is not callable.
+        """
+        if not callable(run):
+            raise ValueError("register_builtin_command: run is required")
+        self.builtin_commands[name] = Command(run, description, terminal, builtin=True)
 
     def register_widget(
         self, name: str, create: Callable[[Any], Any], area: str = "sidebar"

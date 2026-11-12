@@ -21,7 +21,7 @@ from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.registry import Registry, TurnInterrupted
 from minimal.tools.builtin import register_builtin_tools
 from minimal.tools.common import clip
-from minimal.ui.commands import BUILTIN_COMMANDS
+from minimal.ui.commands import register_builtin_commands
 
 HELLO_EXT = '__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
@@ -98,7 +98,7 @@ class ProjectTrustTest(TempDirTest):
             cwd=str(self.cwd),
             auto_approve=True,  # -y answers tool confirmations, not the trust question
             frontend=self.frontend,
-            commands=BUILTIN_COMMANDS,
+            register_commands=register_builtin_commands,
         )
 
     def trust(self) -> str:

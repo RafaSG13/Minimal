@@ -2,7 +2,7 @@
 
 :class:`App` is internal: extensions see it through :attr:`App.context`, the
 :class:`~minimal.core.context.Context` passed as ``ctx`` to their tools, slash
-commands, events and widgets. Built-in slash commands get the App itself.
+commands, events and widgets. Built-in slash commands get the same ``ctx``.
 
 What the user sees goes through a :class:`Frontend`: the terminal UI's, or
 :class:`ConsoleFrontend` (plain stdout, the default of an :class:`App` built without one).
@@ -10,13 +10,14 @@ What the user sees goes through a :class:`Frontend`: the terminal UI's, or
 
 from __future__ import annotations
 
+import collections
 import json
 import re
 import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Mapping, Protocol
+from typing import Callable, Iterable, Protocol
 
 import minimal.core.context
 import minimal.extensions.facade
@@ -97,7 +98,9 @@ SELF_EXTEND_PROMPT = (
     "request and ctx.run_agent(prompt) runs a nested agent loop; ctx.new_session(messages) switches to a new session; "
     "ctx.commands() lists the slash commands and ctx.run_command(line, builtin=False) runs one (builtin=True reaches "
     "a built-in the extension replaced); ctx.models() and ctx.set_model(name) list and switch models; "
-    "ctx.widget(name) is the widget shown for register_widget(name, ...); "
+    "ctx.widget(name) is the widget shown for register_widget(name, ...); ctx.notify(text, kind='info'|'warning'|"
+    "'error') shows a notice; ctx.use_provider(name, model=None) switches provider; ctx.queue_user_message(text) "
+    "sends text as the user's next message once the current turn ends; "
     "ctx.cancelled and ctx.check_cancelled() notice an interrupt. "
     "After writing or editing an extension, call reload_extensions and fix any reported errors. "
     "Share and reuse extensions with ext_search, ext_install and ext_publish."
@@ -194,6 +197,12 @@ class Frontend(Protocol):
 
     def widget(self, name: str) -> object | None:
         """The widget the frontend created for extension widget ``name``; ``None`` if it shows none."""
+
+    def notify(self, text: str, kind: str) -> None:
+        """Show a short notice; ``kind`` is ``"info"``, ``"warning"`` or ``"error"``."""
+
+    def queued(self) -> None:
+        """A user message was queued (:meth:`App.take_queued`): send it as soon as no turn or command is running."""
 
 
 class ExitRepl(Exception):
@@ -298,6 +307,18 @@ class ConsoleFrontend:
     def widget(self, name: str) -> object | None:
         return None
 
+    def notify(self, text: str, kind: str) -> None:
+        """On stderr: ``info`` as is, ``warning``/``error`` coloured and prefixed with the kind."""
+        text = _visible(text)
+        if kind == "warning":
+            text = f"\x1b[33mwarning: {text}\x1b[0m"
+        elif kind == "error":
+            text = f"\x1b[31merror: {text}\x1b[0m"
+        print(text, file=sys.stderr, flush=True)
+
+    def queued(self) -> None:
+        """Nothing to do: a console has no loop that sends the next message."""
+
 
 class App:
     """Everything a running ``minimal`` process needs.
@@ -315,7 +336,9 @@ class App:
         trust_project: Apply the project's extensions and trust-gated settings without ``/trust`` (``--trust-project``).
         extra_extensions: ``--ext`` paths, loaded again on every reload.
         frontend: Where turns are shown and confirmations asked.
-        builtin_commands: The slash commands the UI layer provides (``commands``); they receive the App.
+        register_commands: Registers the built-in slash commands into the registry
+            (:attr:`~minimal.extensions.registry.Registry.builtin_commands`), now and on every reload.
+        queued: User messages queued by extensions (``ctx.queue_user_message``), sent when the UI is idle.
         extensions: Extensions loaded by the last reload.
         extension_errors: Failures of the last reload, setting errors included.
         settings: The settings read by the last reload, with project trust applied.
@@ -335,7 +358,7 @@ class App:
         trust_project: bool = False,
         extra_extensions: Iterable[str] = (),
         frontend: Frontend | None = None,
-        commands: Mapping[str, Command] = {},
+        register_commands: Callable[[Registry], None] | None = None,
     ) -> None:
         self.registry = registry
         self.session = session
@@ -353,16 +376,23 @@ class App:
         self.cancelled = threading.Event()
         self.settings = config.Settings()
         self.setting_errors: list[str] = []
-        self.builtin_commands: dict[str, Command] = dict(commands)
+        self.queued: collections.deque[str] = collections.deque()
         self.context = Context(self)
         self.permissions = Permissions(self.settings)
+        self._register_commands = register_commands
+        if register_commands is not None:
+            register_commands(self.registry)  # usable before the first reload
+
+    def take_queued(self) -> str | None:
+        """The oldest message queued with ``ctx.queue_user_message``, removed from the queue; ``None`` if none."""
+        return self.queued.popleft() if self.queued else None
 
     def is_trusted(self, project: ProjectSnapshot) -> bool:
         """Whether ``project`` may apply: ``--trust-project``, or the user trusted exactly this snapshot."""
         return self.trust_project or config.load_trusted().get(project.key) == project.digest
 
     def reload_extensions(self) -> tuple[list[Path], list[str]]:
-        """Rebuild the registry: built-ins, marketplace tools, then every extension from disk.
+        """Rebuild the registry: built-ins (tools, providers, commands), marketplace tools, then every extension from disk.
 
         The registry is cleared in place, so a turn in progress sees the new
         tools on its next model request. The current provider instance keeps
@@ -395,6 +425,8 @@ class App:
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         register_marketplace_tools(self.registry)
+        if self._register_commands is not None:
+            self._register_commands(self.registry)
         project = snapshot.sources if snapshot is not None and trusted else ()
         loaded, errors = load_extensions(self.registry, self.cwd, self.settings, self.extra_extensions, project=project)
         if read_error:
@@ -470,18 +502,18 @@ class App:
 
     def commands(self) -> dict[str, Command]:
         """Every slash command by name: the built-ins, then extension commands (which replace a built-in of the same name)."""
-        return {**self.builtin_commands, **self.registry.commands}
+        return {**self.registry.builtin_commands, **self.registry.commands}
 
     def find_command(self, name: str, *, builtin: bool = False) -> Command | None:
         """The command called ``name``: an extension's if registered (unless ``builtin``), else the built-in."""
         if builtin:
-            return self.builtin_commands.get(name)
-        return self.registry.commands.get(name) or self.builtin_commands.get(name)
+            return self.registry.builtin_commands.get(name)
+        return self.registry.commands.get(name) or self.registry.builtin_commands.get(name)
 
     def run_command(self, line: str, *, builtin: bool = False) -> None:
         """Parse and run a ``/name args`` line; ``builtin`` runs the built-in even if an extension replaced it.
 
-        Built-in commands get the App; extension commands get its :class:`~minimal.core.context.Context`.
+        Every command gets the :class:`~minimal.core.context.Context`.
         The interrupt flag is cleared first: it may be left over from an interrupted turn. Unknown
         commands and errors raised by a command are reported, not raised.
 
@@ -495,7 +527,7 @@ class App:
             return
         self.cancelled.clear()
         try:
-            cmd.run(args.strip(), self if cmd is self.builtin_commands.get(name) else self.context)
+            cmd.run(args.strip(), self.context)
         except ExitRepl:
             raise
         except Exception as e:

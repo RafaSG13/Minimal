@@ -21,7 +21,7 @@ from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import Registry, TurnInterrupted
 from minimal.providers.base import Reply, Usage
 from minimal.tools.builtin import register_builtin_tools
-from minimal.ui.commands import BUILTIN_COMMANDS
+from minimal.ui.commands import register_builtin_commands
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "extensions" / "example.py"
 
@@ -252,7 +252,7 @@ class SmokeTest(unittest.TestCase):
                 session=session_mod.open_session("b"),
                 cwd=self.cwd,
                 auto_approve=True,
-                commands=BUILTIN_COMMANDS,
+                register_commands=register_builtin_commands,
             )
             with contextlib.redirect_stdout(io.StringIO()):
                 app.run_command("/resume a")
@@ -295,7 +295,7 @@ class SmokeTest(unittest.TestCase):
                 session=session_mod.open_session("new", where["one"]),
                 cwd=where["one"],
                 auto_approve=True,
-                commands=BUILTIN_COMMANDS,
+                register_commands=register_builtin_commands,
             )
             offered = []
             app.frontend = SimpleNamespace(choose=lambda title, options: offered.append([v for v, _ in options]))
