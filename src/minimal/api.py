@@ -17,6 +17,7 @@ from minimal.extensions.facade import (
     AfterResponseEvent,
     BeforeRequestEvent,
     Extension,
+    ProviderErrorEvent,
     SessionStartEvent,
     SessionSwitchEvent,
     ShutdownEvent,
@@ -33,10 +34,10 @@ from minimal.ui.tui.widgets import logo_content
 
 __all__ = [
     "API_VERSION", "EVENTS", "STATUS_SIDES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
-    "AfterResponseEvent", "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "Provider", "ProviderSpec",
-    "Reply", "SessionStartEvent", "SessionSwitchEvent", "ShutdownEvent", "Tool", "ToolCallEvent", "ToolResultEvent",
-    "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__", "glob_regex", "logo_content",
-    "result_text", "theme",
+    "AfterResponseEvent", "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "Provider",
+    "ProviderErrorEvent", "ProviderSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent", "ShutdownEvent", "Tool",
+    "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",
+    "glob_regex", "logo_content", "result_text", "theme",
 ]  # fmt: skip
 
 _SESSIONS = "ctx.sessions(), ctx.read_session() and ctx.new_session()"

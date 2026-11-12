@@ -23,6 +23,12 @@
 - `ctx.notify(text, kind="info")` shows a notice (a toast in the terminal UI), `ctx.use_provider(name, model=None)`
   switches provider, and `ctx.queue_user_message(text)` sends `text` as the user's next message once the current turn
   or command ends.
+- `max_tokens` setting: the output-token limit of each request, as an integer or per `"provider"`/`"provider/model"`
+  (`{"max_tokens": {"anthropic": 16000}}`); unset keeps each provider's default (8192 for Anthropic, Claude and
+  Gemini). See docs/settings.md.
+- `provider_error` event: when a model request fails, a handler can return `{"retry_after": seconds}` to send it
+  again after a wait or `{"provider": name, "model": name}` to send it to another provider; `attempt` lets it give up.
+  Without a handler a failed request ends the turn, as before.
 
 ### Changed
 

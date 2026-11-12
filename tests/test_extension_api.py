@@ -553,6 +553,91 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertIn("  /help       mine", lines)
         self.assertEqual(lines[-1], ", ".join(self.app.registry.tools))
 
+    def test_max_tokens_setting(self):
+        config.SETTINGS_FILE.write_text(json.dumps({"max_tokens": {"fake/m": 1234, "other": 99}}))
+        self.assertEqual(self.app.reload_extensions()[1], [])
+        self.app.provider_name, self.app.model = "fake", "m"
+        self.app.provider = ScriptedProvider([text_reply("ok"), text_reply("ok")])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.app.run_turn("hi")
+            self.app.model = "m2"  # no entry for fake/m2 nor fake: the provider's default
+            self.app.run_turn("again")
+        self.assertEqual(self.app.provider.requests[0]["options"], {"max_tokens": 1234})
+        self.assertNotIn("options", self.app.provider.requests[1])
+        self.assertEqual(self.app.settings.max_tokens_for("other", "x"), 99)
+
+        config.SETTINGS_FILE.write_text(json.dumps({"max_tokens": 4000}))
+        self.app.reload_extensions()
+        self.assertEqual(self.app.request_options(), {"max_tokens": 4000})
+        for bad in (0, True, "8k", {"fake": -1}):
+            config.SETTINGS_FILE.write_text(json.dumps({"max_tokens": bad}))
+            [error] = self.app.reload_extensions()[1]
+            self.assertIn('max_tokens must be a positive integer or an object mapping "provider"', error)
+            self.assertEqual(self.app.request_options(), {})
+
+    def failing(self, *outcomes):
+        """A provider that raises or returns each of ``outcomes`` in turn."""
+        provider = mock.Mock(spec=["name", "stream"])
+        provider.name = "fake"
+        provider.stream.side_effect = list(outcomes)
+        return provider
+
+    def test_provider_error_retries(self):
+        seen = []
+
+        def retry_once(event):
+            seen.append((type(event["error"]).__name__, event["attempt"], event["provider"], event["nested"]))
+            return {"retry_after": 0} if event["attempt"] == 1 else None
+
+        self.app.registry.on("provider_error", retry_once)
+        self.app.provider = self.failing(RuntimeError("429"), text_reply("ok"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.app.run_turn("hi")
+        self.assertEqual(self.app.provider.stream.call_count, 2)
+        self.assertEqual(self.app.messages[-1]["content"], [{"type": "text", "text": "ok"}])
+        self.assertEqual(seen, [("RuntimeError", 1, "fake", False)])
+
+        self.app.provider = self.failing(RuntimeError("429"), RuntimeError("still 429"))
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.app.run_turn("again")
+        self.assertEqual(self.app.provider.stream.call_count, 2)  # the handler gave up at attempt 2
+        self.assertIn("Error: still 429", err.getvalue())
+
+    def test_provider_error_without_a_handler_ends_the_turn(self):
+        self.app.provider = self.failing(RuntimeError("boom"))
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.app.run_turn("hi")
+        self.assertIn("Error: boom", err.getvalue())
+        self.assertEqual(self.app.messages, [])
+
+    def test_provider_error_switches_provider(self):
+        self.app.reload_extensions()
+        other = ScriptedProvider([text_reply("from other")])
+        self.app.registry.register_provider("other", lambda: other, "m1")
+        self.app.registry.on("provider_error", lambda event: {"provider": "other", "model": "m2"})
+        self.app.provider_name, self.app.model = "fake", "m"
+        self.app.provider = self.failing(RuntimeError("down"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.app.run_turn("hi")
+        self.assertEqual((self.app.provider_name, self.app.model, self.app.provider), ("other", "m2", other))
+        self.assertEqual(other.requests[0]["model"], "m2")
+        self.assertEqual(self.app.messages[-1]["content"], [{"type": "text", "text": "from other"}])
+
+    def test_interrupt_while_waiting_to_retry(self):
+        def wait_long(event):
+            self.app.cancelled.set()  # the user presses Esc during the wait
+            return {"retry_after": 30}
+
+        self.app.registry.on("provider_error", wait_long)
+        self.app.provider = self.failing(RuntimeError("429"), text_reply("never"))
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.app.run_turn("hi")
+        self.assertIn("Error: interrupted by the user", err.getvalue())
+        self.assertEqual(self.app.provider.stream.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

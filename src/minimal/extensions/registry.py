@@ -41,6 +41,12 @@ Events (:data:`EVENTS`) and their payloads:
         Fired after each reply is appended to the history. Results are ignored.
     ``shutdown``     ``{ctx}``
         Fired when minimal exits.
+    ``provider_error`` ``{ctx, error, attempt, provider, model, nested}``
+        Fired when a model request of a loop fails (``attempt`` counts the failures
+        of that request, from 1). The first result with ``{"retry_after": seconds}``
+        or ``{"provider": name, "model": name}`` decides: switch provider if asked,
+        wait, and send the request again. No such result: the error propagates.
+        Text already streamed before the failure stays shown.
 """
 
 from __future__ import annotations
@@ -81,6 +87,7 @@ EVENTS = (
     "before_request",
     "after_response",
     "shutdown",
+    "provider_error",
 )
 """Events an extension can subscribe to with ``on``."""
 

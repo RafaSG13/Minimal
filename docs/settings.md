@@ -21,6 +21,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `provider`            | string                       | all          | highest layer wins                                                   |
 | `model`               | string                       | all          | highest layer wins                                                   |
 | `theme`               | string                       | all          | highest layer wins                                                   |
+| `max_tokens`          | positive integer, or object: `"provider"` or `"provider/model"` → positive integer | all | highest layer wins; default: each provider's own (8192 for Anthropic, Claude and Gemini, none sent to OpenAI-compatible servers) |
 | `marketplaces`        | list of strings (git URLs or paths) | global only | —                                                         |
 | `prompt.base`         | string: path of the base system prompt (`~` allowed) | global only | — (default: the packaged prompt)          |
 | `prompt.append`       | string or list of strings    | all          | concatenated global → project → local, added to the system prompt     |
@@ -31,6 +32,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `extensions.settings` | object: extension id → object | all         | per id, each layer's object updates the lower ones; project/local only once trusted |
 
 - **`prompt.files`** are read relative to the working directory and added to the system prompt as `Project instructions (<name>)`. Missing files are skipped. Files set by the project or local layer must stay inside the project; others are ignored.
+- **`max_tokens`** is the output-token limit of each model request. `{"max_tokens": 16000}` applies to every model; `{"max_tokens": {"anthropic": 16000, "openai/gpt-5.5": 32000}}` picks by `provider/model` first, then by provider, and leaves the rest at their default.
 - **`extensions.disabled`** lists ids (`compact`, `tools/subagent`, see [extensions](extensions.md#layout-and-where-to-save)) not to load from `~/.minimal/extensions` or `.minimal/extensions`. Extensions passed with `--ext` always load.
 - **`extensions.settings`** holds the values an extension declares with `declare_settings` ([extensions](extensions.md#settings)).
 

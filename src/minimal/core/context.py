@@ -160,6 +160,7 @@ class Context:
             exclude_tools=frozenset(exclude_tools),
             nested=True,
             options=app.request_options(),
+            switch_provider=app.fallback_provider,
         )
         return result_text(reply.content) or ""
 

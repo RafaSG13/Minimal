@@ -4,7 +4,8 @@ One call to :func:`run_agent` handles one user turn:
 
 1. Fire ``before_request`` (its handlers may replace the messages, system prompt or
    tools sent, for that request only) and stream a reply from the provider, offering
-   every registered tool.
+   every registered tool. If the request fails, ``provider_error`` handlers may retry
+   it, after a delay or with another provider; otherwise the error propagates.
 2. Append the reply to ``messages`` as an ``assistant`` message and fire ``after_response``.
 3. If the reply contains no tool calls, fire ``turn_end`` and return it.
 4. Otherwise run each call (see :func:`execute_tool_call`), append the results
@@ -25,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -75,6 +77,7 @@ def run_agent(
     nested: bool = False,
     max_turns: int = 50,
     options: Mapping[str, Any] | None = None,
+    switch_provider: Callable[[str, str | None], tuple[Provider, str]] | None = None,
 ) -> Reply:
     """Run the model/tool loop until the model answers without calling tools.
 
@@ -98,6 +101,9 @@ def run_agent(
         max_turns: Most model requests allowed for this turn.
         options: Request options for the provider (``max_tokens``, ``temperature``); ``before_request``
             handlers may add to them. Passed to ``provider.stream`` only when not empty.
+        switch_provider: Switches to ``(provider name, model or None)`` and returns the new provider
+            and model, for a ``provider_error`` handler that answers ``{"provider": ...}``; ``None``
+            means such an answer re-raises the error.
 
     Returns:
         The final reply.
@@ -105,6 +111,7 @@ def run_agent(
     Raises:
         RuntimeError: if the model is still calling tools after ``max_turns`` requests.
         TurnInterrupted: if ``cancelled`` is set while the turn runs.
+        Exception: a failed model request that no ``provider_error`` handler retried.
     """
 
     def stream_text(chunk: str) -> None:
@@ -117,7 +124,20 @@ def run_agent(
         request = _before_request(
             registry, ctx, messages, system, tool_specs(registry, exclude_tools), options or {}, nested
         )
-        reply = provider.stream(model=model, on_text=stream_text, **request)
+        reply = None
+        attempt = 0
+        while reply is None:
+            try:
+                reply = provider.stream(model=model, on_text=stream_text, **request)
+            except TurnInterrupted:
+                raise
+            except Exception as e:
+                attempt += 1
+                retry = _provider_error(e, attempt, registry, ctx, provider, model, nested, switch_provider, cancelled)
+                if retry is None:
+                    raise
+                provider, model = retry
+                raise_if_cancelled(cancelled)
         messages.append(_assistant_message(provider, reply))
         registry.emit("after_response", {"ctx": ctx, "reply": reply, "usage": reply.usage, "nested": nested})
 
@@ -271,6 +291,59 @@ def _before_request(
     if opts:
         request["options"] = opts
     return request
+
+
+def _is_delay(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
+def _provider_error(
+    error: Exception,
+    attempt: int,
+    registry: Registry,
+    ctx: Any,
+    provider: Provider,
+    model: str,
+    nested: bool,
+    switch_provider: Callable[[str, str | None], tuple[Provider, str]] | None,
+    cancelled: threading.Event | None,
+) -> tuple[Provider, str] | None:
+    """Ask the ``provider_error`` handlers what to do about a failed request; return the provider and model to retry with.
+
+    The first result with ``retry_after`` (seconds, ``>= 0``) or ``provider`` (a name, with an optional
+    ``model``) decides: switch provider if asked, wait, then retry. ``None`` if no handler retries
+    (or one asks for another provider and there is no ``switch_provider``): the caller re-raises.
+
+    Raises:
+        ValueError: if switching provider fails (chained to ``error``).
+        TurnInterrupted: if ``cancelled`` is set while waiting.
+    """
+    payload = {"ctx": ctx, "error": error, "attempt": attempt, "provider": provider.name, "model": model, "nested": nested}
+    verdict = next(
+        (
+            v
+            for v in registry.emit("provider_error", payload)
+            if isinstance(v, dict) and (_is_delay(v.get("retry_after")) or isinstance(v.get("provider"), str))
+        ),
+        None,
+    )
+    if verdict is None:
+        return None
+    if isinstance(verdict.get("provider"), str):
+        if switch_provider is None:
+            return None
+        model_name = verdict.get("model")
+        try:
+            provider, model = switch_provider(verdict["provider"], model_name if isinstance(model_name, str) else None)
+        except ValueError as e:
+            raise e from error
+    delay = float(verdict["retry_after"]) if _is_delay(verdict.get("retry_after")) else 0.0
+    if cancelled is not None:
+        if cancelled.wait(delay):
+            raise TurnInterrupted("interrupted by the user")
+    elif delay:
+        time.sleep(delay)
+    return provider, model
 
 
 def _assistant_message(provider: Provider, reply: Reply) -> dict:
