@@ -1,0 +1,56 @@
+CHANGELOG.md
+  h_e81853c41416fb 11-16,24-28
+README.md
+  h_e81853c41416fb 85,99-100,129,243-245,260,270,296,303,310,312,356
+docs/extensions.md
+  h_e81853c41416fb 152,250,270-300,349,355,360,364-365
+docs/settings.md
+  h_e81853c41416fb 24
+src/minimal/__init__.py
+  h_e81853c41416fb 18
+src/minimal/api.py
+  h_e81853c41416fb 9-11,18-19,34-43,46-48,52-53,56,58,78-82
+src/minimal/cli.py
+  h_e81853c41416fb 15,23,28,44-45,51,111,122,125-129,143,213
+src/minimal/config.py
+  h_e81853c41416fb 76,206-210
+src/minimal/core/app.py
+  h_e81853c41416fb 37,324,346,368-384,395,428
+src/minimal/core/host.py
+  h_e81853c41416fb 1-182
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 256-262
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 251-265,267,280,293,313,367-379
+src/minimal/glyphs.py
+  h_e81853c41416fb 1-37
+src/minimal/ui/frontends.py
+  h_e81853c41416fb 1-110
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 40-41,43,98,100,103,107,162,164,174,180-184,190,198,208-212,218,220,224,252,268,308,336,360,362,368,386,390,407,421,425,436,440-441,443,453-454,458-459,479,489-490,507,511,525,531,539,543,545,558,562,564
+src/minimal/ui/tui/frontend.py
+  h_e81853c41416fb 1,13,62-63,135-154
+src/minimal/ui/tui/theme.py
+  h_e81853c41416fb 18-19,23-40,173-176
+src/minimal/ui/tui/widgets.py
+  h_e81853c41416fb 19,335,338,346,348,351,359
+tests/test_extension_api.py
+  h_e81853c41416fb 10,242,250
+tests/test_frontends.py
+  h_e81853c41416fb 1-131
+tests/test_marketplace.py
+  h_e81853c41416fb 15,262,489-490,704
+tests/test_tui.py
+  h_e81853c41416fb 12,112,132,143,153,163,183,208,225,237,266,277,279-280,294,314,330,342,356,368,380,402,414
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "4035106bb5e6b8826d51b6653f58981a3bf23cd2",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
