@@ -19,7 +19,7 @@ from minimal.core.session import Session
 from minimal import config
 from minimal.extensions import loader
 from minimal.extensions.loader import load_extensions
-from minimal.extensions.registry import Registry, TurnInterrupted
+from minimal.extensions.registry import PanelSpec, Registry, TurnInterrupted, styled_line, styled_lines
 from minimal.providers.base import Reply, Usage
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui.commands import register_builtin_commands
@@ -445,6 +445,49 @@ class SmokeTest(unittest.TestCase):
             registry.register_status("x", "not callable")
         registry.register_status("x", lambda ctx: "")
         self.assertEqual(registry.status["x"].side, "right")
+
+    def test_register_panel_validates(self):
+        registry = Registry()
+        render = lambda ctx: None  # noqa: E731
+        with self.assertRaisesRegex(ValueError, "area must be"):
+            registry.register_panel("p", render, area="middle")
+        with self.assertRaisesRegex(ValueError, "live must be callable"):
+            registry.register_panel("p", render, live=1)
+        for bad in (-1, True, "1"):
+            with self.assertRaisesRegex(ValueError, "interval must be"):
+                registry.register_panel("p", render, interval=bad)
+        with self.assertRaisesRegex(ValueError, "name and render are required"):
+            registry.register_panel("p", "not callable")
+        registry.register_panel("p", render)
+        self.assertEqual(registry.panels["p"], PanelSpec("p", render, "sidebar", None, 0.0))
+
+    def test_register_renderer_validates_kind(self):
+        registry = Registry()
+        render = lambda ctx, block: None  # noqa: E731
+        for kind in ("fence:mermaid", "blockquote:alert", "tool:edit"):
+            registry.register_renderer(kind, render)
+            self.assertIn(kind, registry.renderers)
+        for kind in ("fence:", "blockquote:note", "Fence:x", "widget:x"):
+            with self.assertRaisesRegex(ValueError, "unknown kind"):
+                registry.register_renderer(kind, render)
+        with self.assertRaisesRegex(ValueError, "render is required"):
+            registry.register_renderer("fence:x", None)
+
+    def test_styled_lines(self):
+        self.assertEqual(styled_lines("a\nb"), [[("a", "")], [("b", "")]])
+        self.assertEqual(
+            styled_lines([["x", ("y", "bold muted")], ("z", "error")]),
+            [[("x", ""), ("y", "bold muted")], [("z", "error")]],
+        )
+        self.assertIsNone(styled_lines(None))
+        self.assertEqual(styled_line("x"), [("x", "")])
+        self.assertEqual(styled_line(("x", "bold")), [("x", "bold")])
+        with self.assertRaisesRegex(ValueError, "unknown style 'blink'"):
+            styled_line(("x", "blink"))
+        with self.assertRaises(ValueError):
+            styled_line(3)
+        with self.assertRaises(ValueError):
+            styled_lines(3)
 
 
 class FailingProvider:

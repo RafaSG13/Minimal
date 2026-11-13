@@ -131,6 +131,52 @@ THEME_COLORS = (
 )
 """Optional colours of :meth:`Registry.register_theme`; the terminal UI derives any left out."""
 
+STYLE_COLORS = ("foreground", "accent", "secondary", "success", "warning", "error", "muted", "dim", "diff_added", "diff_removed")
+STYLE_MODIFIERS = ("bold", "italic", "underline", "reverse")
+STYLES = STYLE_COLORS + STYLE_MODIFIERS
+"""Names a style string may combine, space-separated: ``"bold muted"``. ``""`` is the default style."""
+
+StyledLine = list[tuple[str, str]]
+"""One line of styled text: ``(text, style)`` pieces."""
+
+
+def _piece(piece: Any) -> tuple[str, str]:
+    if isinstance(piece, str):
+        return (piece, "")
+    if isinstance(piece, tuple) and len(piece) == 2 and isinstance(piece[0], str) and isinstance(piece[1], str):
+        for token in piece[1].split():
+            if token not in STYLES:
+                raise ValueError(f"unknown style {token!r}; use names from STYLES")
+        return piece
+    raise ValueError(f"expected text, (text, style) or a list of them; got {type(piece).__name__}")
+
+
+def styled_line(value: Any) -> StyledLine:
+    """Normalise a ``str``, a ``(text, style)`` tuple or a list of those pieces to ``(text, style)`` pieces.
+
+    Raises:
+        ValueError: for anything else or a style token not in :data:`STYLES`.
+    """
+    if isinstance(value, list):
+        return [_piece(piece) for piece in value]
+    return [_piece(value)]
+
+
+def styled_lines(value: Any) -> list[StyledLine] | None:
+    """Normalise what a panel or renderer returns: ``None``, a ``str`` (one line per ``"\\n"``) or a list of lines.
+
+    Raises:
+        ValueError: for anything else or an invalid line (see :func:`styled_line`).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [[(line, "")] for line in value.split("\n")]
+    if isinstance(value, list):
+        return [styled_line(line) for line in value]
+    raise ValueError(f"expected text or a list of lines; got {type(value).__name__}")
+
+
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 
 LOGO_TRANSPARENT = " ."
@@ -201,13 +247,49 @@ class WidgetSpec:
 
 
 @dataclass
+class PanelSpec:
+    """A panel of styled text lines an extension adds (see :meth:`Registry.register_panel`).
+
+    Attributes:
+        name: Unique name; registering the same name again replaces it.
+        render: Called as ``render(ctx)``; returns ``None`` (hidden), a ``str`` or a list of lines.
+        area: ``"top"``, ``"bottom"`` or ``"sidebar"``.
+        live: Called as ``live(ctx, event)`` on turn and tool events, or ``None``.
+        interval: Seconds between redraws; ``0`` for none.
+    """
+
+    name: str
+    render: Callable[[Any], Any]
+    area: str = "sidebar"
+    live: Callable[[Any, dict], Any] | None = None
+    interval: float = 0.0
+
+
+@dataclass
+class RendererSpec:
+    """A renderer of one kind of transcript block (see :meth:`Registry.register_renderer`).
+
+    Attributes:
+        kind: ``"fence:<language>"``, ``"blockquote:alert"`` or ``"tool:<name>"``.
+        render: Called as ``render(ctx, block)``; returns ``None`` (default drawing), a ``str`` or a list of lines.
+    """
+
+    kind: str
+    render: Callable[[Any, dict], Any]
+
+
+RENDERER_KIND = re.compile(r"fence:[a-z0-9_+-]+|blockquote:alert|tool:[A-Za-z0-9_.-]+")
+"""The forms of :meth:`Registry.register_renderer`'s ``kind``; always ``fullmatch``."""
+
+@dataclass
 class StatusSpec:
     """A segment an extension adds to the terminal UI's status line (see :meth:`Registry.register_status`).
 
     Attributes:
         name: Unique name; registering the same name again replaces it.
         render: Called as ``render(ctx)`` with the :class:`~minimal.core.context.Context`; returns
-            a ``str``, a ``textual.content.Content`` or ``None`` (no segment this time).
+            ``None`` (no segment this time), a ``str``, a ``(text, style)`` tuple or a list of those
+            pieces (the terminal UI also accepts a ``textual.content.Content``).
         side: ``"left"`` (after the git branch) or ``"right"`` (before the model).
     """
 
@@ -256,11 +338,14 @@ class FrontendSpec:
         name: Unique name; registering the same name again replaces it.
         run: Called as ``run(host)`` with the :class:`~minimal.core.host.Host`; returns when the user quits.
         description: One line for ``minimal --help`` and the error that lists the frontends.
+        toolkit: The UI toolkit it draws with (``"textual"``), or ``""`` for none; extensions whose
+            ``__frontend__`` names a toolkit load only when the running frontend uses it.
     """
 
     name: str
     run: Callable[[Any], None]
     description: str = ""
+    toolkit: str = ""
 
 
 class Registry:
@@ -278,6 +363,8 @@ class Registry:
         themes: Colour themes for the terminal UI, by name.
         logo: Pixel art for the welcome header, or ``None`` for the built-in wordmark.
         frontends: User interfaces, by name (``tui`` and ``console`` are built in).
+        panels: Styled-text panels any frontend can draw, by name.
+        renderers: Transcript block renderers, by kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``).
     """
 
     def __init__(self) -> None:
@@ -291,6 +378,8 @@ class Registry:
         self.themes: dict[str, ThemeSpec] = {}
         self.logo: LogoSpec | None = None
         self.frontends: dict[str, FrontendSpec] = {}
+        self.panels: dict[str, PanelSpec] = {}
+        self.renderers: dict[str, RendererSpec] = {}
         self._handlers: dict[str, list[EventHandler]] = {}
         self._disposers: list[Callable[[], Any]] = []
 
@@ -311,6 +400,8 @@ class Registry:
         self.themes.clear()
         self.logo = None
         self.frontends.clear()
+        self.panels.clear()
+        self.renderers.clear()
         self._handlers.clear()
         self._disposers.clear()
 
@@ -364,18 +455,24 @@ class Registry:
             raise ValueError("register_builtin_command: run is required")
         self.builtin_commands[name] = Command(run, description, terminal, builtin=True)
 
-    def register_frontend(self, name: str, run: Callable[[Any], None], description: str = "") -> None:
+    def register_frontend(
+        self, name: str, run: Callable[[Any], None], description: str = "", toolkit: str = ""
+    ) -> None:
         """Add a user interface, run as ``run(host)`` when ``--ui name`` (or the ``ui`` setting) picks it.
 
         ``run`` installs its :class:`~minimal.core.app.Frontend` with ``host.attach(frontend)`` and
         drives minimal through the :class:`~minimal.core.host.Host` until the user quits.
+        ``toolkit`` names the UI toolkit it draws with (``"textual"``); extensions with a
+        matching ``__frontend__`` load only under it.
 
         Raises:
-            ValueError: if ``name`` is empty or ``run`` is not callable.
+            ValueError: if ``name`` is empty, ``run`` is not callable or ``toolkit`` is not a string.
         """
         if not name or not callable(run):
             raise ValueError("register_frontend: name and run are required")
-        self.frontends[name] = FrontendSpec(name, run, description)
+        if not isinstance(toolkit, str):
+            raise ValueError("register_frontend: toolkit must be a string")
+        self.frontends[name] = FrontendSpec(name, run, description, toolkit)
 
     def register_widget(
         self, name: str, create: Callable[[Any], Any], area: str = "sidebar"
@@ -395,6 +492,9 @@ class Registry:
         after each tool result is shown (``{"kind": "tool_result", "call": dict,
         "result": dict}``, where ``result`` is the ``tool_result`` block).
 
+        The extension must set ``__frontend__ = "textual"``: the widget is a Textual widget. A
+        :meth:`register_panel` draws in any frontend.
+
         Raises:
             ValueError: if ``name`` is empty, ``create`` is not callable or ``area`` is unknown.
         """
@@ -411,8 +511,10 @@ class Registry:
     ) -> None:
         """Add a segment to the terminal UI's status line, replacing any segment with the same name.
 
-        ``render(ctx)`` receives the :class:`~minimal.core.context.Context` and returns a ``str``,
-        a ``textual.content.Content`` or ``None`` to show nothing this time. It is
+        ``render(ctx)`` receives the :class:`~minimal.core.context.Context` and returns ``None`` to
+        show nothing this time, a ``str``, a ``(text, style)`` tuple or a list of ``str`` and
+        ``(text, style)`` pieces; ``style`` is space-separated names from :data:`STYLES`
+        (``"bold muted"``). The terminal UI also accepts a ``textual.content.Content``. It is
         called whenever the status line is redrawn, so keep it cheap. ``side`` is
         ``"left"`` (after the git branch) or ``"right"`` (before the model).
 
@@ -424,6 +526,72 @@ class Registry:
         if side not in STATUS_SIDES:
             raise ValueError("register_status: side must be left or right")
         self.status[name] = StatusSpec(name, render, side)
+
+    def register_panel(
+        self,
+        name: str,
+        render: Callable[[Any], Any],
+        area: str = "sidebar",
+        live: Callable[[Any, dict], Any] | None = None,
+        interval: float = 0.0,
+    ) -> None:
+        """Add a panel of styled text lines that any frontend can draw, replacing any panel with the same name.
+
+        ``render(ctx)`` receives the :class:`~minimal.core.context.Context` and returns ``None`` to hide
+        the panel, a ``str`` (one line per ``"\\n"``) or a list of lines; each line is a ``str``, a
+        ``(text, style)`` tuple or a list of those pieces. ``style`` is space-separated names from
+        :data:`STYLES` (``"bold muted"``); ``""`` is the default style. It is called after mount, after
+        every turn, slash command and reload, after each ``live`` event and every ``interval`` seconds,
+        on the UI thread: keep it cheap and never block.
+
+        ``live(ctx, event)`` is called on the UI thread with ``{"kind": "start", "turn": bool}`` when a
+        turn or command starts, ``{"kind": "tool_call", "call": dict}`` after a tool call is shown,
+        ``{"kind": "tool_result", "call": dict, "result": dict}`` after its result is shown and
+        ``{"kind": "end"}`` after every turn or command and after every (re)mount; the panel is redrawn after each.
+        ``interval`` > 0 also redraws it every ``interval`` seconds. A panel that raises is
+        hidden and reported once.
+
+        Raises:
+            ValueError: if ``name`` is empty, ``render`` is not callable, ``area`` is unknown,
+                ``live`` is not callable or ``interval`` is not a number >= 0.
+        """
+        if not name or not callable(render):
+            raise ValueError("register_panel: name and render are required")
+        if area not in WIDGET_AREAS:
+            raise ValueError("register_panel: area must be one of top, bottom, sidebar")
+        if live is not None and not callable(live):
+            raise ValueError("register_panel: live must be callable")
+        if isinstance(interval, bool) or not isinstance(interval, (int, float)) or interval < 0:
+            raise ValueError("register_panel: interval must be a number of seconds >= 0")
+        self.panels[name] = PanelSpec(name, render, area, live, float(interval))
+
+    def register_renderer(self, kind: str, render: Callable[[Any, dict], Any]) -> None:
+        """Draw a kind of transcript block yourself, replacing any renderer of the same kind.
+
+        ``kind`` is ``"fence:<language>"`` (a Markdown code fence, such as ``fence:mermaid``),
+        ``"blockquote:alert"`` (a GitHub alert such as ``> [!NOTE]``) or ``"tool:<name>"`` (the body of a
+        call to that tool). ``render(ctx, block)`` returns ``None`` to keep the default drawing, a
+        ``str`` or a list of lines (as for :meth:`register_panel`). ``block`` is:
+
+        - ``fence:<language>``: ``{"kind", "language", "source", "closed", "width"}``; while the
+          fence still streams, ``source`` holds only its complete lines.
+        - ``blockquote:alert``: ``{"kind", "alert", "text", "width"}`` with ``alert`` one of ``note``,
+          ``tip``, ``important``, ``warning``, ``caution`` and ``text`` the first paragraph after the marker.
+        - ``tool:<name>``: ``{"kind", "call", "result"}``; ``result`` is ``None`` when the call is shown
+          and the ``tool_result`` block when it finishes (called again).
+
+        A renderer that raises is reported once and the default drawing is used.
+
+        Raises:
+            ValueError: if ``kind`` is not one of those forms or ``render`` is not callable.
+        """
+        if not isinstance(kind, str) or not RENDERER_KIND.fullmatch(kind):
+            raise ValueError(
+                f"register_renderer: unknown kind {kind!r}; use 'fence:<language>', 'blockquote:alert' or 'tool:<name>'"
+            )
+        if not callable(render):
+            raise ValueError("register_renderer: render is required")
+        self.renderers[kind] = RendererSpec(kind, render)
 
     def register_theme(
         self, name: str, *, dark: bool, background: str, foreground: str, accent: str, **colors: str

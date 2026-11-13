@@ -46,7 +46,7 @@ Use Claude through an API key or a Pro/Max subscription, Gemini through the free
 <tr><td><b>Self-extending, hot-reloaded</b></td><td>The model knows the extension API. It writes an extension, calls <code>reload_extensions</code>, and the new tools are offered on its very next request — in the middle of a turn, without a restart. Load errors go back to the model so it can fix them.</td></tr>
 <tr><td><b>Git-based marketplace</b></td><td>Browse, install, update, remove and publish extensions from any git repository with <code>/ext</code>. Publishing opens a pull request; the default branch is never pushed to.</td></tr>
 <tr><td><b>Safe by default</b></td><td>Asks before <code>write</code>, <code>edit</code>, <code>bash</code>, <code>reload_extensions</code>, <code>ext_install</code> and <code>ext_publish</code>. Permission rules in settings pre-approve or forbid calls; hooks can veto any tool call or rewrite any result. A project's own extensions run only after <code>/trust</code>, edits never overwrite a file that changed since the model read it, and saved keys are stored with mode <code>0600</code>.</td></tr>
-<tr><td><b>Small and readable</b></td><td>Five runtime dependencies. Every module has a docstring describing its role — start at <code>src/minimal/__init__.py</code>.</td></tr>
+<tr><td><b>Small and readable</b></td><td>Four runtime dependencies, plus Textual for the terminal UI (the <code>tui</code> extra). Every module has a docstring describing its role — start at <code>src/minimal/__init__.py</code>.</td></tr>
 </table>
 
 ---
@@ -60,18 +60,20 @@ Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
 The package is published on PyPI as `mnml-agent`; the command it installs is `minimal`.
 
 ```bash
-uv tool install mnml-agent
+uv tool install "mnml-agent[tui]"
 minimal
 ```
+
+`[tui]` adds [Textual](https://textual.textualize.io/), which the terminal UI needs. Without it only `minimal --ui console` is available.
 
 ### Run from source
 
 ```bash
 git clone https://github.com/RafaSG13/Minimal.git
 cd Minimal
-uv sync
+uv sync --extra tui
 uv run minimal          # first run: setup, then the terminal UI
-uv tool install .       # optional: install the `minimal` command globally
+uv tool install ".[tui]"  # optional: install the `minimal` command globally
 ```
 
 On the first start, setup asks (arrow keys) for the default provider, its credentials (a browser login for `claude`; for an API-key provider, the key from the environment or a new one) and the model, then saves the choice in `~/.minimal/settings.json`. It runs again whenever the saved provider can no longer start (for example after `minimal --logout`), and on demand with `minimal --setup` or `/setup`. Without a terminal (a pipe, CI) there is no setup: save a choice first or pass `--provider`.
@@ -278,7 +280,7 @@ src/minimal/         packages from the bottom up; each imports only from the one
   extensions/
     registry.py      internal Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
     facade.py        Extension: what an extension's register(minimal) receives (decorators, declare_settings)
-    metadata.py      reads docstring, __version__ and __api__ without running the code; API version checks
+    metadata.py      reads docstring, __version__, __api__ and __frontend__ without running the code; API version checks
     loader.py        finds extension files and package folders, imports them and calls their register(minimal)
     audit.py         static scan of extension source for /trust: what a file can do
     marketplace.py   git-based marketplaces: list, search, install, publish, `minimal ext check` (~/.minimal/marketplace cache)
@@ -303,8 +305,9 @@ src/minimal/         packages from the bottom up; each imports only from the one
     frontends.py     the built-in frontends: tui and the console REPL
     setup.py         onboarding wizard: provider, login or API key, model
     tui/
-      app.py         MinimalTui: transcript, prompt, status line, widget areas; run_tui
-      widgets.py     tool-call blocks and the welcome header
+      app.py         MinimalTui: transcript, prompt, status line, widget and panel areas; run_tui
+      widgets.py     tool-call blocks, extension panels, styled-text helpers and the welcome header
+      markdown.py    the transcript's Markdown: fences and alert quotes drawn by extension renderers
       screens.py     dialogs: confirmation and pickers
       frontend.py    TuiFrontend: how turns in worker threads reach the UI
       theme.py       built-in theme, extension themes for Textual; /theme lives in frontend.py
@@ -332,7 +335,7 @@ Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or f
 ## Development
 
 ```bash
-uv sync
+uv sync --extra tui
 uv run ruff check
 uv run mypy
 uv run coverage run -m unittest discover -s tests && uv run coverage report

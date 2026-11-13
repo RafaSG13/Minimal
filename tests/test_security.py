@@ -1,4 +1,5 @@
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -435,6 +436,7 @@ class GitTest(ToolTest):
             marketplace.sync("https://example.invalid/market.git")
         self.assertLess(time.monotonic() - start, 5)
 
+    @unittest.skipUnless(importlib.util.find_spec("textual"), "needs the tui extra")
     def test_repository_config_cannot_make_git_run_a_command(self):
         from minimal.ui.tui.app import git_status
 

@@ -34,12 +34,17 @@ from minimal.extensions.facade import (
 from minimal.extensions.registry import (
     EVENTS,
     STATUS_SIDES,
+    STYLES,
     THEME_COLORS,
     WIDGET_AREAS,
     FrontendSpec,
     LogoSpec,
+    PanelSpec,
+    RendererSpec,
     Tool,
     TurnInterrupted,
+    styled_line,
+    styled_lines,
 )
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage, result_text
 from minimal.tools.search import glob_regex
@@ -48,12 +53,13 @@ from minimal import glyphs
 from minimal import glyphs as theme
 
 __all__ = [
-    "API_VERSION", "EVENTS", "STATUS_SIDES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
+    "API_VERSION", "EVENTS", "STATUS_SIDES", "STYLES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
     "AfterResponseEvent", "BeforeRequestEvent", "ConsoleFrontend", "Context", "ExitRepl", "Extension", "Frontend",
-    "FrontendSpec", "Host", "HostStatus", "LogoSpec", "Provider",
-    "ProviderErrorEvent", "ProviderSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent", "ShutdownEvent", "Tool",
+    "FrontendSpec", "Host", "HostStatus", "LogoSpec", "PanelSpec", "Provider",
+    "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
+    "ShutdownEvent", "Tool",
     "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",
-    "glob_regex", "glyphs", "result_text", "theme",
+    "glob_regex", "glyphs", "result_text", "styled_line", "styled_lines", "theme",
 ]  # fmt: skip
 # logo_content is importable too, but loaded lazily (__getattr__): a star import must not pull in Textual.
 

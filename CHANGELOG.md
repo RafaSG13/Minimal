@@ -14,9 +14,22 @@
   minimal with (`submit`, `run_command`, `interrupt`, `complete`, `status`, the widgets, status segments, themes and logo
   extensions registered, …), and shows minimal through a `Frontend` it attaches (`ConsoleFrontend` is a ready-made
   one). `Host`, `HostStatus`, `Frontend`, `ConsoleFrontend`, `FrontendSpec`, `ExitRepl` and `glyphs` are in `minimal.api`.
+- Extension API 1.3: `minimal.register_panel(name, render, area, live, interval)` adds styled text lines that any
+  frontend can draw (styles are space-separated names from `minimal.api.STYLES`, e.g. `"bold muted"`); `live(ctx, event)`
+  gets the turn and tool events plus a new `end` event, and `interval` redraws it on a timer.
+  `minimal.register_renderer(kind, render)` draws Markdown fences (`fence:mermaid`), GitHub alerts (`blockquote:alert`)
+  and tool-call bodies (`tool:edit`) in the terminal UI. `register_frontend(..., toolkit=)` names a frontend's UI
+  toolkit. `PanelSpec`, `RendererSpec`, `STYLES`, `styled_line` and `styled_lines` are in `minimal.api`.
 
 ### Changed
 
+- Textual is now the `tui` extra: install with `uv tool install "mnml-agent[tui]"` (`pip install "mnml-agent[tui]"`).
+  Without it only `--ui console` runs, and `--ui tui` explains how to install it.
+- Extensions that need Textual declare `__frontend__ = "textual"`. Under a frontend with another toolkit (`console`) they
+  are skipped, not failed (`Skipped:` in the reload summary and at startup); `/ext` marks them `textual only`; and
+  `minimal ext check` fails an item that imports `textual` or `rich` without it. Such extensions load after the others.
+- A status segment's `render(ctx)` may return styled text (a string, a `(text, style)` tuple or a list of them); the
+  terminal UI still accepts a `textual.content.Content`. `extensions/example.py` uses a panel instead of a widget.
 - `edit` and `write` refuse a file that changed on disk since the model last read, wrote or edited it in this session
   (the user, a formatter or a `bash` command modified it), and ask the model to read it again.
 - `read` shows bytes that are not UTF-8 as U+FFFD, with a note, instead of failing; a binary file (a NUL byte in its

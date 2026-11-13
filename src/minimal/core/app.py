@@ -85,11 +85,21 @@ SELF_EXTEND_PROMPT = (
     "folder for the extension's own files, outside the repository; settings = minimal.declare_settings({{...defaults}}) "
     "declares settings the user sets under extensions.settings.<id> in ~/.minimal/settings.json (id is the name, or "
     "category/name in a subfolder). minimal.register_widget(name, create, area) adds a visual "
-    'component to the terminal UI: create(ctx) returns a textual Widget for area "top", "bottom" or "sidebar", '
+    'component to the terminal UI: create(ctx) returns a textual Widget (the extension must set __frontend__ = '
+    '"textual") for area "top", "bottom" or "sidebar", '
     "styled with its DEFAULT_CSS, and an optional refresh_state(ctx) method is called after every turn; "
     "an optional refresh_live(ctx, event) method is called live during a turn (event kind 'start', 'tool_call' or "
-    "'tool_result'); minimal.register_status(name, render, side='right') adds a status-line segment: render(ctx) "
-    "returns text or None; "
+    "'tool_result'); "
+    "minimal.register_panel(name, render, area='sidebar', live=None, interval=0) adds a panel any frontend can draw "
+    "(prefer it to register_widget): render(ctx) returns None to hide it, a str, or a list of lines, each a str or a "
+    "list of str and (text, style) pieces, where style is space-separated names from minimal.api.STYLES such as "
+    "'bold muted'; live(ctx, event) gets event kind 'start', 'tool_call', 'tool_result' or 'end', and interval > 0 "
+    "redraws every interval seconds. "
+    "minimal.register_status(name, render, side='right') adds a status-line segment: render(ctx) "
+    "returns None, a str or a list of str and (text, style) pieces. "
+    "minimal.register_renderer(kind, render) draws 'fence:<language>' code blocks, 'blockquote:alert' GitHub alerts "
+    "or 'tool:<name>' tool-call bodies: render(ctx, block) returns lines like a panel, or None for the default "
+    "drawing. "
     "minimal.register_theme(name, dark=..., background=..., foreground=..., accent=..., **more #rrggbb colours) "
     "adds a colour theme the user picks with /theme. "
     "minimal.register_logo(art, colors, align='center') replaces the default wordmark in the welcome header with "
@@ -325,6 +335,8 @@ class App:
         queued: User messages queued by extensions (``ctx.queue_user_message``), sent when the UI is idle.
         extensions: Extensions loaded by the last reload.
         extension_errors: Failures of the last reload, setting errors included.
+        extension_skipped: Extensions the last reload did not load because they need another UI toolkit.
+        ui: Name of the frontend that runs: ``--ui``, else the ``ui`` setting, else ``tui``.
         settings: The settings read by the last reload, with project trust applied.
         setting_errors: Problems found in the settings files by the last reload.
         untrusted: What the last reload did not apply because the user has not
@@ -344,6 +356,7 @@ class App:
         frontend: Frontend | None = None,
         register_commands: Callable[[Registry], None] | None = None,
         register_frontends: Callable[[Registry], None] | None = None,
+        ui: str | None = None,
     ) -> None:
         self.registry = registry
         self.session = session
@@ -352,11 +365,14 @@ class App:
         self.trust_project = trust_project
         self.extra_extensions = list(extra_extensions)
         self.frontend: Frontend = frontend or ConsoleFrontend()
+        self._ui_option = ui
+        self.ui: str = ui or config.DEFAULT_UI
         self.provider: Provider | None = None
         self.provider_name = ""
         self.model = ""
         self.extensions: list[Path] = []
         self.extension_errors: list[str] = []
+        self.extension_skipped: list[str] = []
         self.untrusted: ProjectSnapshot | None = None
         self.cancelled = threading.Event()
         self.settings = config.Settings()
@@ -418,6 +434,7 @@ class App:
             snapshot, trusted = None, False
             read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
         self.settings = config.Settings(tuple(layers), trusted)
+        self.ui = self._ui_option or self.settings.ui or config.DEFAULT_UI
         self.permissions = Permissions(self.settings)
         self.setting_errors = setting_errors
         self.registry.dispose()
@@ -427,11 +444,15 @@ class App:
         register_marketplace_tools(self.registry)
         self._register_builtins()
         project = snapshot.sources if snapshot is not None and trusted else ()
-        loaded, errors = load_extensions(self.registry, self.cwd, self.settings, self.extra_extensions, project=project)
+        skipped: list[str] = []
+        loaded, errors = load_extensions(
+            self.registry, self.cwd, self.settings, self.extra_extensions, project=project, ui=self.ui, skipped=skipped
+        )
         if read_error:
             errors.append(read_error)
         errors.extend(setting_errors)
         self.extensions, self.extension_errors = loaded, errors
+        self.extension_skipped = skipped
         self.untrusted = snapshot if snapshot is not None and not trusted else None
         self.frontend.reloaded()
         return loaded, errors

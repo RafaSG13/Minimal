@@ -207,7 +207,7 @@ def _trust(args: str, ctx: Context) -> None:
     if app.is_trusted(project):
         print(f"The project extensions and settings in {project.directory.parent} are already trusted.")
         if app.untrusted is not None:  # trusted elsewhere since the last reload
-            print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+            print(reload_summary(*app.reload_extensions(), app.untrusted_notice(), app.extension_skipped))
         return
     print(audit.format_report(project))
     if not app.frontend.ask(
@@ -216,7 +216,7 @@ def _trust(args: str, ctx: Context) -> None:
         print("Not trusted: the project extensions and settings stay unapplied.")
         return
     config.save_trusted(project.key, project.digest)
-    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+    print(reload_summary(*app.reload_extensions(), app.untrusted_notice(), app.extension_skipped))
 
 
 _SCALARS = ("provider", "model", "theme", "max_tokens", "prompt.base", "prompt.files")
@@ -332,6 +332,8 @@ def _entry_label(entry: marketplace.Entry) -> str:
         label += f" · installed ({', '.join(entry.installed)})"
         if entry.modified:
             label += " · local changes"
+    if entry.listing.frontend:
+        label += f" · {entry.listing.frontend} only"
     if not entry.listing.compatible:
         label += f" · not for this minimal (API {entry.listing.api})"
     return label
@@ -437,7 +439,7 @@ def _ext_picker(app: App) -> None:
     for e in to_remove:
         for s in e.installed:
             print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd, category)}")
-    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+    print(reload_summary(*app.reload_extensions(), app.untrusted_notice(), app.extension_skipped))
 
 
 def register_builtin_commands(registry: Registry) -> None:

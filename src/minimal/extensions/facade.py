@@ -253,12 +253,30 @@ class Extension:
         """Add a status-line segment drawn by ``render(ctx)``; see :meth:`Registry.register_status`."""
         self._registry.register_status(name, render, side)
 
-    def register_frontend(self, name: str, run: Callable[[Any], None], description: str = "") -> None:
+    def register_panel(
+        self,
+        name: str,
+        render: Callable[[Any], Any],
+        area: str = "sidebar",
+        live: Callable[[Any, dict], Any] | None = None,
+        interval: float = 0.0,
+    ) -> None:
+        """Add a panel of styled text lines any frontend can draw; see :meth:`Registry.register_panel`. API 1.3."""
+        self._registry.register_panel(name, render, area, live, interval)
+
+    def register_renderer(self, kind: str, render: Callable[[Any, dict], Any]) -> None:
+        """Draw a transcript block kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``) with ``render(ctx, block)``; see :meth:`Registry.register_renderer`. API 1.3."""
+        self._registry.register_renderer(kind, render)
+
+    def register_frontend(
+        self, name: str, run: Callable[[Any], None], description: str = "", toolkit: str = ""
+    ) -> None:
         """Add a user interface run as ``run(host)`` (``--ui name``); see :meth:`Registry.register_frontend`.
 
-        ``host`` is a :class:`~minimal.core.host.Host`. API 1.2.
+        ``host`` is a :class:`~minimal.core.host.Host`. ``toolkit`` names the UI toolkit it draws with
+        (``"textual"``). API 1.2; ``toolkit`` API 1.3.
         """
-        self._registry.register_frontend(name, run, description)
+        self._registry.register_frontend(name, run, description, toolkit)
 
     def register_theme(
         self, name: str, *, dark: bool, background: str, foreground: str, accent: str, **colors: str

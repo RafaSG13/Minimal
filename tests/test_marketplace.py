@@ -1,5 +1,6 @@
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -716,6 +717,21 @@ class CheckTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(line.startswith("FAIL "), line)
         self.assertIn("does_not_exist", line)
+
+    def test_check_fails_textual_import_without_frontend(self):
+        body = '"""Widget."""\n__version__ = "1.0"\n__api__ = "1"\n{}\nfrom textual.widgets import Static\n\n\ndef register(minimal):\n    pass\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "widgets", "w.py")
+            path.parent.mkdir()
+            path.write_text(body.format(""))
+            lines, ok = marketplace.check([path])
+            self.assertEqual(
+                (lines, ok), (['FAIL widgets/w: imports textual without __frontend__ = "textual"'], False)
+            )
+            path.write_text(body.format('__frontend__ = "textual"'))
+            [line], ok = marketplace.check([path])
+        self.assertTrue(ok, line)
+        self.assertTrue(line.startswith("ok   widgets/w" if importlib.util.find_spec("textual") else "WARN widgets/w"), line)
 
     def test_import_error_naming_a_missing_module_warns(self):
         with tempfile.TemporaryDirectory() as tmp:
