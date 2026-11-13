@@ -253,6 +253,13 @@ class Extension:
         """Add a status-line segment drawn by ``render(ctx)``; see :meth:`Registry.register_status`."""
         self._registry.register_status(name, render, side)
 
+    def register_frontend(self, name: str, run: Callable[[Any], None], description: str = "") -> None:
+        """Add a user interface run as ``run(host)`` (``--ui name``); see :meth:`Registry.register_frontend`.
+
+        ``host`` is a :class:`~minimal.core.host.Host`. API 1.2.
+        """
+        self._registry.register_frontend(name, run, description)
+
     def register_theme(
         self, name: str, *, dark: bool, background: str, foreground: str, accent: str, **colors: str
     ) -> None:

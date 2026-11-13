@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from minimal import config
+from minimal import API_VERSION, config
 from minimal.core import session as session_mod
 from minimal.core.app import App
 from minimal.core.session import Session
@@ -239,7 +239,7 @@ class ExtensionApiTest(unittest.TestCase):
         return errors[0]
 
     def test_extension_for_another_api_major_is_not_loaded(self):
-        self.assertIn("written for minimal API 9, this minimal has API 1.1", self.load_errors('"9"'))
+        self.assertIn(f"written for minimal API 9, this minimal has API {API_VERSION}", self.load_errors('"9"'))
 
     def test_extension_without_api_is_not_loaded(self):
         error = self.load_errors(None)
@@ -247,7 +247,7 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertIn('add __api__ = "1"', error)
 
     def test_extension_needing_a_newer_minor_api_is_not_loaded(self):
-        self.assertIn("needs minimal API 1.9, this minimal has API 1.1", self.load_errors('"1.9"'))
+        self.assertIn(f"needs minimal API 1.9, this minimal has API {API_VERSION}", self.load_errors('"1.9"'))
 
     def test_extension_with_a_malformed_api_is_not_loaded(self):
         self.assertIn("invalid __api__ 'x'", self.load_errors('"x"'))

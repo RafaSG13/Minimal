@@ -82,6 +82,7 @@ On the first start, setup asks (arrow keys) for the default provider, its creden
 
 ```bash
 minimal                          # interactive terminal UI
+minimal --ui console             # plain line-by-line console instead (Ctrl-C interrupts a turn, Ctrl-D quits)
 minimal -c                       # resume the last session of this directory
 minimal -s <id>                  # open (or create) a specific session
 minimal -e extensions/example.py # load an extension file or folder (repeatable)
@@ -94,6 +95,8 @@ minimal ext check [--install-deps] <path>...   # validate extension files, packa
 ```
 
 If an `AGENTS.md` exists in the current directory, it is added to the system prompt (`prompt.files` in [settings](#settings) changes which files). minimal needs a terminal, and a turn can only be started from inside its interface: there is no one-shot `minimal -p "prompt"` mode that runs the agent straight from the shell.
+
+**Frontends.** The interface is a frontend: `tui` (the default) or `console`, a plain REPL without colours, widgets or themes. `--ui <name>` or the `ui` setting picks one, and an extension can add another with `register_frontend` (see [docs/extensions.md](docs/extensions.md#frontends)).
 
 **Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
 
@@ -123,7 +126,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | `/model [number\|name]`      | List models, or change model                                               |
 | `/provider [name [model]]`   | List providers, or switch for this session and keep the conversation       |
 | `/tools`                     | List the tools                                                             |
-| `/theme [name]`              | Pick the colour theme; the choice is saved in `~/.minimal/settings.json`   |
+| `/theme [name]`              | Pick the colour theme; the choice is saved in `~/.minimal/settings.json` (terminal UI only) |
 | `/reload`                    | Reload extensions and settings from disk                                   |
 | `/settings`                  | Show the settings files and each effective setting with where it comes from |
 | `/trust`                     | Scan this project's extensions and trust-gated settings, then choose whether to trust and apply them |
@@ -237,8 +240,9 @@ The model has the `ext_search`, `ext_install` and `ext_publish` tools (each take
 ```mermaid
 flowchart LR
   cli[cli.main] --> app[App]
-  cli --> tui[MinimalTui] --> commands[App.run_command]
-  tui --> turn[App.run_turn]
+  cli --> frontend["frontend: tui, console, or an extension's (--ui)"] --> host[Host]
+  host --> commands[App.run_command]
+  host --> turn[App.run_turn]
   turn --> agent[agent.run_agent]
   agent --> provider{Provider}
   provider --> anthropic[(Anthropic API)]
@@ -253,7 +257,7 @@ flowchart LR
 
 **One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply; `before_request` handlers may change what one request sends (a summary instead of a long history, say), and a failed request goes to `provider_error` handlers, which may retry it or switch provider. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), permission rules (a deny fails the call, an allow skips the question), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If a turn fails or is interrupted before the model replied, it is dropped from the history; after that, it is kept, with the finished tool results, an error for each call not finished and a closing `[turn interrupted: …]` note. A reply cut off by the output token limit never runs its tool calls: each gets an error asking for smaller steps. The session file is appended to after every turn.
 
-**Frontends.** What the user sees goes through a `Frontend` (`core/app.py`): the terminal UI, or `ConsoleFrontend` (plain stdout and `input()`) for commands that need the real terminal. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
+**Frontends.** A frontend drives minimal through a `Host` (`core/host.py`): send a message, run a command, interrupt, read the status and what extensions add to the interface; it shows minimal through a `Frontend` (`core/app.py`) that it attaches to the host. The terminal UI and the `console` REPL (`ui/frontends.py`) are registered like any extension's frontend, so `--ui` picks one and an extension can replace them by name; `import minimal.api` loads no UI toolkit. In the terminal UI, turns and slash commands run in a worker thread; streamed text, tool calls, tool results and confirmation dialogs are handed to the UI thread, and anything printed appears in the transcript.
 
 **History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
 
@@ -263,6 +267,7 @@ flowchart LR
 ```
 src/minimal/         packages from the bottom up; each imports only from the ones above it
   config.py          layered settings (settings.json global/project/local), API keys, trust records
+  glyphs.py          the symbols every frontend draws with (minimal.api.theme)
   providers/
     base.py          Provider interface, Reply, Usage, canonical message format
     anthropic.py     Claude via the Anthropic Messages API (API key)
@@ -288,21 +293,23 @@ src/minimal/         packages from the bottom up; each imports only from the one
   core/
     agent.py         agent loop (model → tools → model …)
     app.py           App: runtime state, settings, provider switching, system prompt, one user turn, extension reload, Frontend
+    host.py          Host: what a frontend drives minimal with
     context.py       Context and UI: the ctx extensions receive
     permissions.py   permission rules: allow/deny matching for tool calls
     session.py       JSONL sessions (~/.minimal/sessions)
     prompt.md        packaged base prompt
   ui/
     commands.py      slash commands (/help, /provider, /reload, /settings, /trust, /ext, …)
+    frontends.py     the built-in frontends: tui and the console REPL
     setup.py         onboarding wizard: provider, login or API key, model
     tui/
       app.py         MinimalTui: transcript, prompt, status line, widget areas; run_tui
       widgets.py     tool-call blocks and the welcome header
       screens.py     dialogs: confirmation and pickers
       frontend.py    TuiFrontend: how turns in worker threads reach the UI
-      theme.py       built-in theme, extension themes for Textual, UI glyphs
+      theme.py       built-in theme, extension themes for Textual; /theme lives in frontend.py
   cli.py             option parsing, entry point, `minimal ext check`
-  api.py             the only module extensions import from: Extension, Context, event types, theme, …
+  api.py             the only module extensions import from: Extension, Context, Host, event types, glyphs, …
 extensions/
   example.py         example extension (tool, command, guardrail with a setting, prompt note, sidebar widget)
 tests/               unittest suite (see Development)
@@ -346,6 +353,7 @@ CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` 
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_tui.py`         | The headless terminal UI: streaming, interruption, session replay, dialogs, tool-call states, command output, widgets, header |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
+| `test_frontends.py`   | Frontends: the console REPL, `--ui` with an extension's frontend, frontend commands, `minimal.api` without Textual |
 | `test_bundled_extensions.py` | Marketplace items through `App`: web search, subagent, compaction (also in the middle of a turn), retries, scope fence. Loads them from `../minimal-marketplace` or `$MARKETPLACE_CHECKOUT`; skipped without a checkout |
 
 ---

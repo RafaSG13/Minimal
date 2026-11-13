@@ -1,4 +1,4 @@
-"""TuiFrontend: how a turn running in a worker thread reaches the Textual UI."""
+"""TuiFrontend: how a turn running in a worker thread reaches the Textual UI; and the UI's own ``/theme``."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from textual.content import Content
 from textual.screen import ModalScreen
 
 from minimal.core.app import ConsoleFrontend
+from minimal.extensions.registry import CommandRun
 from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, TextScreen
 
 if TYPE_CHECKING:
@@ -58,7 +59,8 @@ class TuiFrontend:
     def reloaded(self) -> None:
         self._on_ui(self.tui.extensions_reloaded)
 
-    def themes(self) -> tuple[list[str], str | None]:
+    def themes(self) -> tuple[list[str], str]:
+        """The colour themes on offer and the current one (the TUI's own: they are not part of the Frontend protocol)."""
         return list(self.tui.available_themes), self.tui.theme
 
     def set_theme(self, name: str) -> None:
@@ -130,3 +132,23 @@ class TuiFrontend:
         if self._in_terminal():
             return ConsoleFrontend().ask_text(title)
         return self._modal(TextScreen(title))
+
+
+def theme_command(frontend: TuiFrontend) -> CommandRun:
+    """The terminal UI's ``/theme [name]``: pick a colour theme in a list with samples, or switch to ``name``."""
+
+    def run(args: str, ctx: Any) -> None:
+        names, current = frontend.themes()
+        if not args and len(names) == 1:
+            print(f"Only the built-in {names[0]} theme is installed; get more from /ext → Themes.")
+            return
+        options = [(n, f"{n} (current)" if n == current else n) for n in names]
+        name = args or frontend.choose_theme("Theme · more in /ext → Themes", options)
+        if name is None:
+            return
+        if name not in names:
+            raise ValueError(f"no theme {name!r}; installed: {', '.join(names)} (more in /ext → Themes)")
+        frontend.set_theme(name)
+        print(f"Theme: {name}")
+
+    return run

@@ -8,6 +8,12 @@
   order, all or none), and returns the changed lines numbered like `read`. The terminal UI shows a diff for each.
 - `/title [text]` names the session. The title, and the session a new one was started from with `ctx.new_session`
   (`parent`, e.g. by `compact`), are kept in the session file's header and shown by `/sessions` and `/resume`.
+- Extension API 1.2: frontends. `--ui <name>` (or the `ui` setting) picks the interface: `tui`, the terminal UI and
+  still the default, or `console`, a plain line-by-line REPL (Ctrl-C interrupts a turn, Ctrl-D quits).
+  `minimal.register_frontend(name, run, description)` adds another; `run(host)` gets a `Host`, the API a frontend drives
+  minimal with (`submit`, `run_command`, `interrupt`, `complete`, `status`, the widgets, status segments, themes and logo
+  extensions registered, …), and shows minimal through a `Frontend` it attaches (`ConsoleFrontend` is a ready-made
+  one). `Host`, `HostStatus`, `Frontend`, `ConsoleFrontend`, `FrontendSpec`, `ExitRepl` and `glyphs` are in `minimal.api`.
 
 ### Changed
 
@@ -15,6 +21,11 @@
   (the user, a formatter or a `bash` command modified it), and ask the model to read it again.
 - `read` shows bytes that are not UTF-8 as U+FFFD, with a note, instead of failing; a binary file (a NUL byte in its
   first 8 KiB) is reported, not printed. `edit` on a file that is not UTF-8 fails with a clear message.
+- `import minimal.api` no longer imports Textual: `minimal.api.theme` is now the glyphs module (`minimal.glyphs`); the
+  built-in theme names it also had (`DEFAULT`, `MINIMAL`, `build`, `available`) and `logo_content` still work and load
+  the terminal UI on first use. `available` takes the extension themes by name (`host.themes`), not the registry.
+- `/theme` belongs to the terminal UI, which registers it; the `Frontend` protocol lost `themes`, `set_theme` and
+  `choose_theme`. The terminal UI drives minimal through the `Host` instead of the `App`'s internals.
 - CI runs `mypy` and measures test coverage (`coverage report` fails below 83%); `dev` gains `mypy` and `coverage`.
 
 ### Fixed

@@ -73,6 +73,7 @@ _TYPES = {
     "provider": (lambda v: isinstance(v, str), "a string"),
     "model": (lambda v: isinstance(v, str), "a string"),
     "theme": (lambda v: isinstance(v, str), "a string"),
+    "ui": (lambda v: isinstance(v, str), "a string"),
     "max_tokens": (
         _is_max_tokens,
         'a positive integer or an object mapping "provider" or "provider/model" to positive integers',
@@ -201,6 +202,11 @@ class Settings:
     @property
     def theme(self) -> str | None:
         return self.scalar("theme")[0]
+
+    @property
+    def ui(self) -> str | None:
+        """The frontend to run (``tui``, ``console`` or one an extension registers); ``--ui`` wins over it."""
+        return self.scalar("ui")[0]
 
     def max_tokens_for(self, provider: str, model: str) -> int | None:
         """The ``max_tokens`` setting for ``model`` of ``provider``: the integer, or the object's

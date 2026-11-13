@@ -248,8 +248,23 @@ class LogoSpec:
     align: str = "center"
 
 
+@dataclass
+class FrontendSpec:
+    """A user interface minimal can run in, chosen with ``--ui`` or the ``ui`` setting (see :meth:`Registry.register_frontend`).
+
+    Attributes:
+        name: Unique name; registering the same name again replaces it.
+        run: Called as ``run(host)`` with the :class:`~minimal.core.host.Host`; returns when the user quits.
+        description: One line for ``minimal --help`` and the error that lists the frontends.
+    """
+
+    name: str
+    run: Callable[[Any], None]
+    description: str = ""
+
+
 class Registry:
-    """Collects tools, commands, providers, prompt additions, event handlers, widgets, status segments, themes and the logo.
+    """Collects tools, commands, providers, prompt additions, event handlers, widgets, status segments, themes, the logo and frontends.
 
     Attributes:
         tools: Tools offered to the model, by name, in registration order.
@@ -262,6 +277,7 @@ class Registry:
         status: Status-line segments for the terminal UI, by name.
         themes: Colour themes for the terminal UI, by name.
         logo: Pixel art for the welcome header, or ``None`` for the built-in wordmark.
+        frontends: User interfaces, by name (``tui`` and ``console`` are built in).
     """
 
     def __init__(self) -> None:
@@ -274,6 +290,7 @@ class Registry:
         self.status: dict[str, StatusSpec] = {}
         self.themes: dict[str, ThemeSpec] = {}
         self.logo: LogoSpec | None = None
+        self.frontends: dict[str, FrontendSpec] = {}
         self._handlers: dict[str, list[EventHandler]] = {}
         self._disposers: list[Callable[[], Any]] = []
 
@@ -293,6 +310,7 @@ class Registry:
         self.status.clear()
         self.themes.clear()
         self.logo = None
+        self.frontends.clear()
         self._handlers.clear()
         self._disposers.clear()
 
@@ -345,6 +363,19 @@ class Registry:
         if not callable(run):
             raise ValueError("register_builtin_command: run is required")
         self.builtin_commands[name] = Command(run, description, terminal, builtin=True)
+
+    def register_frontend(self, name: str, run: Callable[[Any], None], description: str = "") -> None:
+        """Add a user interface, run as ``run(host)`` when ``--ui name`` (or the ``ui`` setting) picks it.
+
+        ``run`` installs its :class:`~minimal.core.app.Frontend` with ``host.attach(frontend)`` and
+        drives minimal through the :class:`~minimal.core.host.Host` until the user quits.
+
+        Raises:
+            ValueError: if ``name`` is empty or ``run`` is not callable.
+        """
+        if not name or not callable(run):
+            raise ValueError("register_frontend: name and run are required")
+        self.frontends[name] = FrontendSpec(name, run, description)
 
     def register_widget(
         self, name: str, create: Callable[[Any], Any], area: str = "sidebar"

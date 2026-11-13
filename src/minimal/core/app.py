@@ -34,7 +34,7 @@ from minimal.extensions.loader import (
     read_project_snapshot,
 )
 from minimal.extensions.marketplace import register_marketplace_tools
-from minimal.extensions.registry import Command, Registry, Tool
+from minimal.extensions.registry import Command, CommandRun, Registry, Tool
 from minimal.providers import register_builtin_providers
 from minimal.providers.base import Provider
 from minimal.tools.builtin import register_builtin_tools
@@ -179,9 +179,6 @@ class Frontend(Protocol):
     def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
         """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled."""
 
-    def choose_theme(self, title: str, options: list[tuple[str, str]]) -> str | None:
-        """Like :meth:`choose`, for colour themes; the frontend may decorate labels."""
-
     def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
         """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if cancelled."""
 
@@ -190,12 +187,6 @@ class Frontend(Protocol):
 
     def reloaded(self) -> None:
         """Extensions were reloaded (widgets may have changed)."""
-
-    def themes(self) -> tuple[list[str], str | None]:
-        """The colour themes on offer and the current one; ``([], None)`` if the frontend has none."""
-
-    def set_theme(self, name: str) -> None:
-        """Switch to colour theme ``name``, one of :meth:`themes`."""
 
     def widget(self, name: str) -> object | None:
         """The widget the frontend created for extension widget ``name``; ``None`` if it shows none."""
@@ -266,10 +257,6 @@ class ConsoleFrontend:
             return None
         return options[int(answer) - 1][0]
 
-    def choose_theme(self, title: str, options: list[tuple[str, str]]) -> str | None:
-        """Same as :meth:`choose`: a console cannot show the colours."""
-        return self.choose(title, options)
-
     def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
         """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input or EOF cancels."""
         print(f"\n{title}")
@@ -299,12 +286,6 @@ class ConsoleFrontend:
 
     def reloaded(self) -> None:
         pass
-
-    def themes(self) -> tuple[list[str], str | None]:
-        return [], None
-
-    def set_theme(self, name: str) -> None:
-        raise ValueError("colour themes only apply to the terminal UI")
 
     def widget(self, name: str) -> object | None:
         return None
@@ -340,6 +321,7 @@ class App:
         frontend: Where turns are shown and confirmations asked.
         register_commands: Registers the built-in slash commands into the registry
             (:attr:`~minimal.extensions.registry.Registry.builtin_commands`), now and on every reload.
+        register_frontends: Registers the built-in frontends (``tui``, ``console``), now and on every reload.
         queued: User messages queued by extensions (``ctx.queue_user_message``), sent when the UI is idle.
         extensions: Extensions loaded by the last reload.
         extension_errors: Failures of the last reload, setting errors included.
@@ -361,6 +343,7 @@ class App:
         extra_extensions: Iterable[str] = (),
         frontend: Frontend | None = None,
         register_commands: Callable[[Registry], None] | None = None,
+        register_frontends: Callable[[Registry], None] | None = None,
     ) -> None:
         self.registry = registry
         self.session = session
@@ -382,8 +365,23 @@ class App:
         self.context = Context(self)
         self.permissions = Permissions(self.settings)
         self._register_commands = register_commands
-        if register_commands is not None:
-            register_commands(self.registry)  # usable before the first reload
+        self._register_frontends = register_frontends
+        self._frontend_commands: dict[str, tuple[CommandRun, str, bool]] = {}
+        self._register_builtins()  # usable before the first reload
+
+    def _register_builtins(self) -> None:
+        """Register the built-in commands, the active frontend's commands and the built-in frontends."""
+        if self._register_commands is not None:
+            self._register_commands(self.registry)
+        for name, (run, description, terminal) in self._frontend_commands.items():
+            self.registry.register_builtin_command(name, run, description, terminal)
+        if self._register_frontends is not None:
+            self._register_frontends(self.registry)
+
+    def add_frontend_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
+        """Add a built-in command that only the active frontend has (the terminal UI's ``/theme``); kept across reloads."""
+        self._frontend_commands[name] = (run, description, terminal)
+        self.registry.register_builtin_command(name, run, description, terminal)
 
     def take_queued(self) -> str | None:
         """The oldest message queued with ``ctx.queue_user_message``, removed from the queue; ``None`` if none."""
@@ -394,7 +392,7 @@ class App:
         return self.trust_project or config.load_trusted().get(project.key) == project.digest
 
     def reload_extensions(self) -> tuple[list[Path], list[str]]:
-        """Rebuild the registry: built-ins (tools, providers, commands), marketplace tools, then every extension from disk.
+        """Rebuild the registry: built-ins (tools, providers, commands, frontends), marketplace tools, then every extension from disk.
 
         The registry is cleared in place, so a turn in progress sees the new
         tools on its next model request. The current provider instance keeps
@@ -427,8 +425,7 @@ class App:
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         register_marketplace_tools(self.registry)
-        if self._register_commands is not None:
-            self._register_commands(self.registry)
+        self._register_builtins()
         project = snapshot.sources if snapshot is not None and trusted else ()
         loaded, errors = load_extensions(self.registry, self.cwd, self.settings, self.extra_extensions, project=project)
         if read_error:
