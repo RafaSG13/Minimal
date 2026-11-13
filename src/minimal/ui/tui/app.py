@@ -37,9 +37,10 @@ from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 
 from minimal import config
-from minimal.core.app import App, ExitRepl
+from minimal.core.app import ExitRepl
+from minimal.core.host import Host
 from minimal.ui.tui import theme
-from minimal.ui.tui.frontend import TuiFrontend
+from minimal.ui.tui.frontend import TuiFrontend, theme_command
 from minimal.ui.tui.widgets import Header, ToolBlock
 
 REPLAY_LIMIT = 200
@@ -94,22 +95,16 @@ def _short_path(path: str) -> str:
 class CommandSuggester(Suggester):
     """Completes a slash command's name in the prompt (→ accepts), built-in and extension commands alike."""
 
-    def __init__(self, core: App) -> None:
+    def __init__(self, host: Host) -> None:
         super().__init__(use_cache=False, case_sensitive=True)  # extension commands change on reload
-        self.core = core
+        self.host = host
 
     async def get_suggestion(self, value: str) -> str | None:
-        if not value.startswith("/") or " " in value:
-            return None
-        typed = value[1:]
-        for name in sorted(self.core.commands()):
-            if name.startswith(typed) and name != typed:
-                return "/" + name
-        return None
+        return next((line for line in self.host.complete(value) if line != value), None)
 
 
 class MinimalTui(TextualApp):
-    """The terminal UI around a :class:`~minimal.core.app.App`."""
+    """The terminal UI, driven through a :class:`~minimal.core.host.Host`."""
 
     TITLE = "minimal"
 
@@ -164,9 +159,9 @@ class MinimalTui(TextualApp):
     #status-right { width: auto; color: $dim; padding: 0 1 0 2; }
     """
 
-    def __init__(self, core: App, theme_name: str | None = None) -> None:
+    def __init__(self, host: Host, theme_name: str | None = None) -> None:
         super().__init__()
-        self.core = core
+        self.host = host
         self.sync_themes(theme_name)
         self.ui_thread: int | None = None
         self.pending_modal: threading.Event | None = None
@@ -176,18 +171,23 @@ class MinimalTui(TextualApp):
         self.output_buffer: list[str] = []
         self.output_stderr = False
         self.ext_widgets: list[tuple[str, Widget]] = []
-        self.shown_session = core.session
+        self.shown_session = host.status().session_id
         self.busy_since = 0.0
         self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
         self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
         self.status_errors: set[str] = set()  # status segments whose error was already shown
+
+    @property
+    def cwd(self) -> str:
+        """The working directory (tool paths and git status are relative to it)."""
+        return self.host.status().cwd
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
             with Vertical(id="main"):
                 yield Vertical(id="top")
                 with VerticalScroll(id="transcript"):
-                    yield Header(self.core)
+                    yield Header(self.host)
                 yield Vertical(id="bottom")
                 yield Static(id="working")
                 with Horizontal(id="composer"):
@@ -195,7 +195,7 @@ class MinimalTui(TextualApp):
                     yield Input(
                         placeholder="Message, or / for commands",
                         id="prompt",
-                        suggester=CommandSuggester(self.core),
+                        suggester=CommandSuggester(self.host),
                     )
                 with Horizontal(id="statusline"):
                     yield Static(id="status-left")
@@ -205,19 +205,23 @@ class MinimalTui(TextualApp):
     async def on_mount(self) -> None:
         self.ui_thread = threading.get_ident()
         self.begin_capture_print(self, stdout=True, stderr=True)
-        self.core.frontend = TuiFrontend(self)
+        frontend = TuiFrontend(self)
+        self.host.attach(frontend)
+        self.host.register_command(
+            "theme", theme_command(frontend), "pick the colour theme, or switch: /theme <name>"
+        )
         self.spinner = self.set_interval(0.08, self.refresh_working, pause=True)
         await self.remount_widgets()
         pending = self.replay_history()
         if pending is not None:
             await pending
-        for e in self.core.extension_errors:
+        for e in self.host.extension_errors:
             self.show_error(f"[extension] could not load {e}")
-        if notice := self.core.untrusted_notice():
+        if notice := self.host.untrusted_notice():
             self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" {notice}"), classes="output"))
         self.refresh_status()
         self.query_one("#prompt", Input).focus()
-        self.core.begin()
+        self.host.begin()
 
     def on_unmount(self) -> None:
         if self.pending_modal is not None:  # release a worker waiting for an answer
@@ -245,7 +249,7 @@ class MinimalTui(TextualApp):
 
         Returns the mount awaitable, or ``None`` if there is nothing to draw.
         """
-        messages = self.core.messages
+        messages = self.host.messages
         hidden = max(0, len(messages) - REPLAY_LIMIT)
         widgets: list[Widget] = []
         if hidden:
@@ -261,7 +265,7 @@ class MinimalTui(TextualApp):
                 if kind == "text" and message["role"] == "assistant":
                     widgets.append(Markdown(block["text"], classes="assistant"))
                 elif kind == "tool_use":
-                    blocks[block["id"]] = ToolBlock(block, self.core.cwd)
+                    blocks[block["id"]] = ToolBlock(block, self.cwd)
                     widgets.append(blocks[block["id"]])
                 elif kind == "tool_result" and block["tool_use_id"] in blocks:
                     blocks[block["tool_use_id"]].finish(block)
@@ -301,7 +305,7 @@ class MinimalTui(TextualApp):
 
     def show_tool_call(self, call: dict) -> Any:
         self.assistant = None
-        block = ToolBlock(call, self.core.cwd)
+        block = ToolBlock(call, self.cwd)
         self.tool_blocks[call["id"]] = block
         mounted = self._add(block)
         self.refresh_live({"kind": "tool_call", "call": call})
@@ -329,7 +333,7 @@ class MinimalTui(TextualApp):
         Textual's own themes are dropped: they lack the UI's CSS variables.
         Switches to ``prefer`` if offered, and to the default if the current theme is gone.
         """
-        wanted = theme.available(self.core.registry)
+        wanted = theme.available(self.host.themes)
         for t in wanted.values():
             self.register_theme(t)
         if prefer in wanted:
@@ -353,15 +357,15 @@ class MinimalTui(TextualApp):
             await self.query_one(f"#{area}").remove_children()
         self.ext_widgets = []
         self.status_errors.clear()
-        for spec in list(self.core.registry.widgets.values()):
+        for spec in list(self.host.widgets.values()):
             try:
-                widget = spec.create(self.core.context)
+                widget = spec.create(self.host.ctx)
                 await self.query_one(f"#{spec.area}").mount(widget)
                 self.ext_widgets.append((spec.name, widget))
             except Exception as e:
                 self.show_error(f"[extension] widget {spec.name}: {e}")
         has_sidebar = any(
-            spec.area == "sidebar" for spec in self.core.registry.widgets.values()
+            spec.area == "sidebar" for spec in self.host.widgets.values()
         )
         self.query_one("#sidebar").set_class(has_sidebar, "-has-widgets")
         self.refresh_widgets()
@@ -379,11 +383,11 @@ class MinimalTui(TextualApp):
 
     def refresh_widgets(self) -> None:
         """Call ``refresh_state(ctx)`` on every extension widget that has it."""
-        self._call_widgets("refresh_state", self.core.context)
+        self._call_widgets("refresh_state", self.host.ctx)
 
     def refresh_live(self, event: dict) -> None:
         """Call ``refresh_live(ctx, event)`` on every extension widget that has it, then redraw the status line."""
-        self._call_widgets("refresh_live", self.core.context, event)
+        self._call_widgets("refresh_live", self.host.ctx, event)
         self._render_status()
 
     def action_toggle_sidebar(self) -> None:
@@ -400,7 +404,7 @@ class MinimalTui(TextualApp):
     @work(thread=True, exclusive=True, group="git", exit_on_error=False)
     def refresh_git(self) -> None:
         """Run ``git status`` in a worker thread (it can take up to a second) and show the result."""
-        git = git_status(self.core.cwd)
+        git = git_status(self.cwd)
         try:
             self.call_from_thread(self._set_git, git)
         except RuntimeError:  # the app closed meanwhile
@@ -414,11 +418,11 @@ class MinimalTui(TextualApp):
     def _status_segments(self, side: str) -> list[Content]:
         """The extension segments for ``side`` of the status line; a failing one is skipped and reported once."""
         segments = []
-        for spec in list(self.core.registry.status.values()):
+        for spec in list(self.host.status_segments.values()):
             if spec.side != side:
                 continue
             try:
-                value = spec.render(self.core.context)
+                value = spec.render(self.host.ctx)
             except Exception as e:
                 if spec.name not in self.status_errors:
                     self.status_errors.add(spec.name)
@@ -429,14 +433,14 @@ class MinimalTui(TextualApp):
         return segments
 
     def _render_status(self) -> None:
-        core = self.core
+        status = self.host.status()
         sep = (f" {theme.SEPARATOR} ", "$border-muted")
         parts: list[str | tuple[str, str] | Content] = [
             " ",
-            (f"{theme.MODEL} {core.model}", "$status-model"),
-            (f"{theme.DOT}{core.provider_name}", "$muted"),
+            (f"{theme.MODEL} {status.model}", "$status-model"),
+            (f"{theme.DOT}{status.provider}", "$muted"),
             sep,
-            (_short_path(core.cwd), "$status-path"),
+            (_short_path(status.cwd), "$status-path"),
         ]
         git = self.git
         if git is not None:
@@ -446,13 +450,13 @@ class MinimalTui(TextualApp):
         for segment in self._status_segments("left"):
             parts += [sep, segment]
         self.query_one("#status-left", Static).update(Content.assemble(*parts))
-        right = f"{len(core.extensions)} ext{theme.DOT}session {core.session.id}"
-        tokens = core.context_tokens
+        right = f"{status.extensions} ext{theme.DOT}session {status.session_id}"
+        tokens = status.context_tokens
         if tokens is not None:
             right = f"{tokens / 1000:.1f}k ctx{theme.DOT}{right}"
         untrusted = []
-        if core.untrusted is not None:
-            untrusted.append(Content.assemble((f"{theme.WARNING} {core.untrusted.count} untrusted", "$warning")))
+        if status.untrusted:
+            untrusted.append(Content.assemble((f"{theme.WARNING} {status.untrusted} untrusted", "$warning")))
         self.query_one("#status-right", Static).update(
             Content(theme.DOT).join([*self._status_segments("right"), *untrusted, Content(right)])
         )
@@ -472,7 +476,7 @@ class MinimalTui(TextualApp):
         elapsed = time.monotonic() - self.busy_since
         frame = theme.SPINNER[int(elapsed / 0.08) % len(theme.SPINNER)]
         parts: list[str | tuple[str, str]] = [(frame, "$accent"), " "]
-        if self.in_turn and self.core.cancelled.is_set():
+        if self.in_turn and self.host.interrupting:
             parts.append(("Interrupting…", "$muted"))
         else:
             parts += [("Working…", "$muted"), (f" {elapsed:.0f}s", "$dim")]
@@ -482,8 +486,8 @@ class MinimalTui(TextualApp):
 
     def action_interrupt(self) -> None:
         """Ask the turn in progress to stop (see :class:`~minimal.extensions.registry.TurnInterrupted`)."""
-        if self.in_turn and not self.core.cancelled.is_set():
-            self.core.cancelled.set()
+        if self.in_turn and not self.host.interrupting:
+            self.host.interrupt()
             self.refresh_working()
 
     # --- input ---------------------------------------------------------------
@@ -500,11 +504,11 @@ class MinimalTui(TextualApp):
         self.set_busy(True)
         self.refresh_live({"kind": "start", "turn": self.in_turn})
         if line.startswith("/"):
-            cmd = self.core.find_command(line[1:].partition(" ")[0])
+            cmd = self.host.command(line[1:].partition(" ")[0])
             if cmd is not None and cmd.terminal:
                 try:
                     with self.suspend(), _outside_event_loop():
-                        self.core.run_command(line)
+                        self.host.run_command(line)
                 except ExitRepl:
                     self.exit()
                     return
@@ -518,13 +522,13 @@ class MinimalTui(TextualApp):
 
     @work(thread=True, exclusive=True, group="agent")
     def run_turn_worker(self, line: str) -> None:
-        self.core.run_turn(line)
+        self.host.submit(line)
         self.call_from_thread(self.after_action)
 
     @work(thread=True, exclusive=True, group="agent")
     def run_command_worker(self, line: str) -> None:
         try:
-            self.core.run_command(line)
+            self.host.run_command(line)
         except ExitRepl:
             self.call_from_thread(self.exit)
             return
@@ -532,13 +536,13 @@ class MinimalTui(TextualApp):
 
     def after_action(self) -> None:
         """After a turn or command: follow a session switch, refresh the status and widgets, re-enable input."""
-        if self.core.session is not self.shown_session:
+        if self.host.status().session_id != self.shown_session:
             transcript = self.query_one("#transcript", VerticalScroll)
             transcript.remove_children()
             transcript.anchor(False)
-            transcript.mount(Header(self.core))
+            transcript.mount(Header(self.host))
             self.replay_history()
-            self.shown_session = self.core.session
+            self.shown_session = self.host.status().session_id
             self.assistant = None
         self.refresh_status()
         self.refresh_widgets()
@@ -551,13 +555,13 @@ class MinimalTui(TextualApp):
         """Send the next message an extension queued (``ctx.queue_user_message``), unless a turn or command is running."""
         if self.query_one("#prompt", Input).disabled:
             return  # after_action sends it
-        if (queued := self.core.take_queued()) is not None:
+        if (queued := self.host.next_queued()) is not None:
             self.submit(queued)
 
 
-def run_tui(core: App) -> None:
+def run_tui(host: Host) -> None:
     """Run the terminal UI until the user quits; remember the theme picked with /theme or ctrl+p in ~/.minimal/settings.json."""
-    tui = MinimalTui(core, core.settings.theme)
+    tui = MinimalTui(host, host.settings.theme)
     started = tui.theme
     tui.run()
     if tui.theme != started:

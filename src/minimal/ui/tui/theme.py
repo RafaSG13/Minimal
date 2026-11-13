@@ -15,10 +15,29 @@ everything.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from textual.color import Color
 from textual.theme import Theme
 
-from minimal.extensions.registry import Registry, ThemeSpec
+from minimal.extensions.registry import ThemeSpec
+from minimal.glyphs import (  # noqa: F401 (the UI modules use them as theme.<name>)
+    BRANCH,
+    CURSOR,
+    DOT,
+    ERROR,
+    FULL_BLOCK,
+    HEADER_NODE,
+    LOWER_HALF,
+    MODEL,
+    PROMPT,
+    RUNNING,
+    SEPARATOR,
+    SPINNER,
+    SUCCESS,
+    UPPER_HALF,
+    WARNING,
+)
 
 DEFAULT = "minimal"
 
@@ -151,24 +170,7 @@ MINIMAL = build(
 )
 
 
-def available(registry: Registry) -> dict[str, Theme]:
-    """The themes to offer: the built-in one first, then those extensions registered (except one named like it)."""
-    return {DEFAULT: MINIMAL, **{name: build(spec) for name, spec in registry.themes.items() if name != DEFAULT}}
+def available(themes: Mapping[str, ThemeSpec]) -> dict[str, Theme]:
+    """The themes to offer: the built-in one first, then ``themes`` (extension themes by name) except one named like it."""
+    return {DEFAULT: MINIMAL, **{name: build(spec) for name, spec in themes.items() if name != DEFAULT}}
 
-
-# Glyphs (omp's unicode symbol preset).
-SUCCESS = "✔"
-ERROR = "✘"
-WARNING = "⚠"
-RUNNING = "⟳"
-PROMPT = "❯"
-MODEL = "⬢"
-BRANCH = "⎇"
-SEPARATOR = "▕"
-DOT = " · "
-SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-UPPER_HALF = "▀"
-LOWER_HALF = "▄"
-FULL_BLOCK = "█"
-HEADER_NODE = "─●─"
-CURSOR = "▌"

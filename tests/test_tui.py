@@ -9,6 +9,7 @@ from textual.widgets import Input, Markdown, SelectionList, Static
 
 from minimal import config
 from minimal.core.app import App
+from minimal.core.host import Host
 from minimal.core.session import Session
 from minimal.extensions import loader
 from minimal.extensions.registry import LogoSpec, Registry
@@ -108,7 +109,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_turn_streams_and_widget_refreshes(self):
         self.use_replies(Reply(content=[{"type": "text", "text": "Hello **there**"}], stop_reason="end_turn"))
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "hi")
             await self.wait_until(pilot, self.idle(app))
@@ -128,7 +129,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.core.registry.on("turn_end", again)
         text = lambda t: Reply(content=[{"type": "text", "text": t}], stop_reason="end_turn")  # noqa: E731
         self.use_replies(text("one"), text("two"))
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "hi")
             await self.wait_until(pilot, lambda: len(self.core.messages) == 4 and self.idle(app)())
@@ -139,7 +140,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_notify_and_queue_while_idle(self):
         self.use_replies(Reply(content=[{"type": "text", "text": "ok"}], stop_reason="end_turn"))
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             with mock.patch.object(app, "notify") as notify:
                 self.core.context.notify("careful", "warning")
@@ -149,7 +150,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.core.messages[0], {"role": "user", "content": "from a timer"})
 
     async def test_context_widget_returns_the_mounted_extension_widget(self):
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         self.assertIsNone(self.core.context.widget("counter"))  # nothing is mounted yet
         async with app.run_test():
             widget = self.core.context.widget("counter")
@@ -159,7 +160,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_escape_interrupts_turn(self):
         provider = self.core.provider = BlockingFakeProvider()
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "hi")
             await self.wait_until(pilot, provider.started.is_set)
@@ -179,7 +180,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             release.wait(5)
             return ("feature", True)
 
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         status = lambda: str(app.query_one("#status-left", Static).render())  # noqa: E731
         with mock.patch("minimal.ui.tui.app.git_status", slow_git_status):
             async with app.run_test() as pilot:
@@ -204,7 +205,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                 "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1: hi", "is_error": False}],
             },
         ]
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test():
             self.assertEqual([str(s.render()) for s in app.query(".user").results(Static)], ["old question"])
             self.assertEqual([m.source for m in app.query(Markdown)], ["old answer"])
@@ -221,7 +222,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             ),
             Reply(content=[{"type": "text", "text": "done"}], stop_reason="end_turn"),
         )
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "read it")
             await self.wait_until(pilot, self.idle(app))
@@ -233,7 +234,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
         self.core.registry.register_status("cost", lambda ctx: "$1")
         self.core.registry.register_status("boom", boom, side="left")
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             self.assertIn("$1", str(app.query_one("#status-right", Static).render()))
             for _ in range(2):
@@ -262,7 +263,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                 "content": [{"type": "tool_result", "tool_use_id": "t1", "content": output, "is_error": False}],
             },
         ]
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test(size=(100, 50)) as pilot:
             block = app.query_one(ToolBlock)
             self.assertIn("12 earlier lines · click to expand", str(block.render()))
@@ -273,10 +274,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_command_suggester(self):
         self.core.registry.register_command("thanks", lambda args, app: None)
-        suggester = CommandSuggester(self.core)
+        suggester = CommandSuggester(Host(self.core))
         self.assertEqual(await suggester.get_suggestion("/th"), "/thanks")
-        self.assertEqual(await suggester.get_suggestion("/the"), "/theme")
-        self.assertIsNone(await suggester.get_suggestion("/theme x"))
+        self.assertEqual(await suggester.get_suggestion("/rel"), "/reload")
+        self.assertIsNone(await suggester.get_suggestion("/reload x"))
         self.assertIsNone(await suggester.get_suggestion("hi"))
 
     def use_write_replies(self):
@@ -290,7 +291,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirm_modal_allows_tool(self):
         self.use_write_replies()
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "write it")
             await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
@@ -310,7 +311,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             '__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "hi")\n'
         )
         self.core.reload_extensions()
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         status = lambda: str(app.query_one("#status-right", Static).render())  # noqa: E731
         async with app.run_test() as pilot:
             self.assertIn("1 untrusted", status())
@@ -326,7 +327,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_denied_tool_shows_error(self):
         self.use_write_replies()
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "write it")
             await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
@@ -338,7 +339,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.tmp / "out.txt").exists())
 
     async def test_command_output_captured(self):
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "/tools")
             await self.wait_until(pilot, self.idle(app))
@@ -352,7 +353,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
     async def test_checklist_dialog(self):
         options = [("a", "A", True), ("b", "B", False)]
         self.core.registry.register_command("pick", lambda args, ctx: print(ctx.ui.choose_many("Pick", options)))
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "/pick")
             await self.wait_until(pilot, lambda: isinstance(app.screen, ChecklistScreen))
@@ -364,7 +365,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_text_dialog_does_not_send_message(self):
         self.core.registry.register_command("name", lambda args, ctx: print(repr(ctx.ui.ask_text("Name"))))
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "/name")
             await self.wait_until(pilot, lambda: isinstance(app.screen, TextScreen))
@@ -376,7 +377,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_theme_command_switches_and_reload_falls_back(self):
         self.core.registry.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             self.assertEqual(app.theme, "minimal")
             await self.submit(pilot, "/theme")
@@ -398,7 +399,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#ff0000 on #00ff00", [str(span.style) for span in content.spans])
 
     async def test_default_header_is_wordmark(self):
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         with mock.patch("minimal.ui.tui.widgets._version", return_value="9.9"):
             async with app.run_test():
                 header = app.query_one("Header")
@@ -410,7 +411,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_logo_replaces_wordmark_until_reload(self):
         self.core.registry.register_logo(["aa"], {"a": "$accent"}, align="right")
-        app = MinimalTui(self.core)
+        app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             self.assertTrue(app.query_one("Header").has_class("-align-right"))
             self.assertEqual(len(app.query("Header .wordmark")), 0)

@@ -15,7 +15,7 @@ Extensions import only from :mod:`minimal.api`.
 
 __version__ = "0.4.0"
 
-API_VERSION = "1.1"
+API_VERSION = "1.2"
 """Version of :mod:`minimal.api`, separate from :data:`__version__`: ``MAJOR.MINOR``.
 
 A minor release only adds to the API; a major one changes or removes something. An extension

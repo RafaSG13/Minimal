@@ -12,6 +12,7 @@ from pathlib import Path
 
 from minimal import config
 from minimal.core.app import App
+from minimal.core.host import Host
 from minimal.core.session import TORN_NOTICE, Session, last_session, new_id, open_session
 from minimal.extensions import marketplace
 from minimal.extensions.registry import Registry
@@ -19,11 +20,12 @@ from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import setup
 from minimal.ui.commands import register_builtin_commands
+from minimal.ui.frontends import DEFAULT_UI, register_builtin_frontends
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
 Usage:
-  minimal [options]            interactive terminal UI (runs setup first if no provider is chosen yet)
+  minimal [options]            interactive interface (runs setup first if no provider is chosen yet)
   minimal --setup              choose the default provider, sign in or enter its key, choose the model
   minimal --login              sign in with a Claude Pro/Max subscription (browser)
   minimal --logout             forget the Claude login
@@ -39,12 +41,14 @@ Options:
                         (default $MINIMAL_PROVIDER, else the settings' provider)
   -m, --model <name>    model (default $MINIMAL_MODEL, else the settings' model, else the provider's default)
   -e, --ext <path>      load an extension file or folder (repeatable)
+  --ui <name>           frontend: tui (the terminal UI, default), console (plain line-by-line),
+                        or one added by an extension (default: the settings' ui)
   -y, --yes             do not ask for confirmation for write/edit/bash
   --trust-project       apply this project's extensions and trust-gated settings without /trust
   -h, --help            this help
 
 Settings:
-  ~/.minimal/settings.json         global: provider, model, theme, prompt, permissions, extensions, marketplaces
+  ~/.minimal/settings.json         global: provider, model, theme, ui, prompt, permissions, extensions, marketplaces
                                    (setup, /theme and /ext save there)
   .minimal/settings.json           this project's settings, shared with it
   .minimal/settings.local.json     this project's personal settings; both beat the global file
@@ -104,7 +108,7 @@ def main() -> None:
 
 
 def _run(session: Session, opts: argparse.Namespace) -> None:
-    """Build the App on ``session``, start the provider and run the terminal UI until it exits."""
+    """Build the App on ``session``, start the provider and run the chosen frontend until it exits."""
     if session.torn_at is not None:
         print(f"warning: {session.id}: {TORN_NOTICE}", file=sys.stderr)
     app = App(
@@ -115,8 +119,14 @@ def _run(session: Session, opts: argparse.Namespace) -> None:
         trust_project=opts.trust_project,
         extra_extensions=opts.ext,
         register_commands=register_builtin_commands,
+        register_frontends=register_builtin_frontends,
     )
     app.reload_extensions()
+    ui = opts.ui or app.settings.ui or DEFAULT_UI
+    frontend = app.registry.frontends.get(ui)
+    if frontend is None:
+        print(f"unknown frontend {ui!r}; available: {', '.join(sorted(app.registry.frontends))}", file=sys.stderr)
+        sys.exit(2)
     try:
         config.apply_keys()
         start_provider(app, opts)
@@ -129,10 +139,8 @@ def _run(session: Session, opts: argparse.Namespace) -> None:
         print(e, file=sys.stderr)
         sys.exit(1)
 
-    from minimal.ui.tui.app import run_tui
-
     try:
-        run_tui(app)
+        frontend.run(Host(app))
     finally:
         app.shutdown()
 
@@ -202,6 +210,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace | None:
     parser.add_argument("--provider")
     parser.add_argument("-m", "--model")
     parser.add_argument("-e", "--ext", action="append", default=[])
+    parser.add_argument("--ui")
     parser.add_argument("-y", "--yes", action="store_true")
     parser.add_argument("--trust-project", action="store_true")
     parser.add_argument("--setup", action="store_true")

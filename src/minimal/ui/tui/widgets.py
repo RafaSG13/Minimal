@@ -16,7 +16,7 @@ from textual.highlight import highlight
 from textual.widgets import Static
 
 import minimal
-from minimal.core.app import App
+from minimal.core.host import Host
 from minimal.extensions.registry import LOGO_ALIGN, LogoSpec
 from minimal.ui.tui import theme
 
@@ -332,10 +332,10 @@ def _wordmark() -> Content:
     return Content.assemble(*parts)
 
 
-def _header(core: App) -> Content:
+def _header(logo: LogoSpec | None) -> Content:
     """The header text under an extension logo: the version (the wordmark shows its own)."""
     parts: list[str | tuple[str, str]] = []
-    if core.registry.logo is not None and _version():
+    if logo is not None and _version():
         parts += [(f"v{_version()}", "$dim"), "\n"]
     return Content.assemble(*parts)
 
@@ -343,12 +343,12 @@ def _header(core: App) -> Content:
 class Header(Vertical):
     """The welcome block at the top of the transcript: the extension logo or the default wordmark, aligned as the logo asks (left without one), then the header text."""
 
-    def __init__(self, core: App) -> None:
+    def __init__(self, host: Host) -> None:
         super().__init__()
-        self.core = core
+        self.host = host
 
     def compose(self) -> ComposeResult:
-        logo = self.core.registry.logo
+        logo = self.host.logo
         align = logo.align if logo is not None else "left"
         for value in LOGO_ALIGN:
             self.set_class(value == align, f"-align-{value}")
@@ -356,4 +356,4 @@ class Header(Vertical):
             yield Static(logo_content(logo), classes="logo")
         else:
             yield Static(_wordmark(), classes="wordmark")
-        yield Static(_header(self.core), classes="info")
+        yield Static(_header(logo), classes="info")

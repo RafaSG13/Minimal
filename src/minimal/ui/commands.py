@@ -154,25 +154,6 @@ def _tools(args: str, ctx: Context) -> None:
     print(", ".join(ctx.tools))
 
 
-def _theme(args: str, ctx: Context) -> None:
-    app = _app(ctx)
-    names, current = app.frontend.themes()
-    if not names:
-        print("Colour themes only apply to the terminal UI.")
-        return
-    if not args and len(names) == 1:
-        print(f"Only the built-in {names[0]} theme is installed; get more from /ext → Themes.")
-        return
-    options = [(n, f"{n} (current)" if n == current else n) for n in names]
-    name = args or app.frontend.choose_theme("Theme · more in /ext → Themes", options)
-    if name is None:
-        return
-    if name not in names:
-        raise ValueError(f"no theme {name!r}; installed: {', '.join(names)} (more in /ext → Themes)")
-    app.frontend.set_theme(name)
-    print(f"Theme: {name}")
-
-
 def _login(args: str, ctx: Context) -> None:
     app = _app(ctx)
     try:
@@ -471,7 +452,6 @@ def register_builtin_commands(registry: Registry) -> None:
         ("model", _model, "list models, or change: /model [number|name]", False),
         ("provider", _provider, "list providers, or switch: /provider <name> [model]", False),
         ("tools", _tools, "list the tools", False),
-        ("theme", _theme, "pick the colour theme, or switch: /theme <name>", False),
         ("reload", _reload, "reload extensions from disk", False),
         ("settings", _settings, "show the settings files and the effective settings with where each comes from", False),
         ("trust", _trust, "review this project's extensions and choose whether to trust and load them", False),

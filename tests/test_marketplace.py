@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from minimal import cli, config
+from minimal import API_VERSION, cli, config
 from minimal.core.app import App
 from minimal.core.session import Session
 from minimal.extensions import loader, marketplace
@@ -259,7 +259,7 @@ class MarketplaceTest(unittest.TestCase):
         labels = {value: label for value, label, _ in options}
         self.assertIn("not for this minimal (API 9)", labels["future"])
         self.assertNotIn("not for this minimal", labels["hello"])
-        self.assertIn("Skipped future: written for minimal API 9, this minimal has API 1.1", out)
+        self.assertIn(f"Skipped future: written for minimal API 9, this minimal has API {API_VERSION}", out)
         self.assertTrue((self.global_dir / "hello.py").exists())
         self.assertFalse((self.global_dir / "future.py").exists())
 
@@ -486,8 +486,8 @@ class MarketplaceTest(unittest.TestCase):
         [listing] = [x for x in marketplace.search() if x.name == "future"]
         self.assertFalse(listing.compatible)
         self.assertEqual(listing.api, "9")
-        self.assertIn("written for minimal API 9, this minimal has API 1.1", listing.problem)
-        with self.assertRaisesRegex(ValueError, "future: written for minimal API 9, this minimal has API 1.1"):
+        self.assertIn(f"written for minimal API 9, this minimal has API {API_VERSION}", listing.problem)
+        with self.assertRaisesRegex(ValueError, f"future: written for minimal API 9, this minimal has API {API_VERSION}"):
             marketplace.install("future")
         self.assertFalse((self.global_dir / "future.py").exists())
 
@@ -701,7 +701,7 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                "FAIL extensions/future: written for minimal API 9, this minimal has API 1.1: install a version of it made for API 1",
+                f"FAIL extensions/future: written for minimal API 9, this minimal has API {API_VERSION}: install a version of it made for API 1",
                 "ok   extensions/hello 1.0",
                 "WARN extensions/needs: needs not_installed_anywhere",
                 "FAIL extensions/nodoc: add a module docstring; its first line is the marketplace description",

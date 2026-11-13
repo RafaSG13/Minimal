@@ -149,6 +149,7 @@ def backoff(event):
 | `register_status(name, render, side="right")`                       | A status-line segment ([Status segments](#status-segments))   |
 | `register_theme(name, *, dark, background, foreground, accent, **colors)` | A colour theme ([Themes](#themes))                      |
 | `register_logo(art, colors, align="center")`                        | Pixel art in the welcome header ([Header logo](#header-logo)) |
+| `register_frontend(name, run, description="")`                      | A user interface, picked with `--ui name` ([Frontends](#frontends)) |
 | `on_dispose(fn)`                                                    | `fn()` runs before a reload and when minimal exits (last registered first): stop the threads, timers and subprocesses the extension started. Returns `fn`, so it also works as a decorator |
 | `data_dir(scope="project")`                                         | Not a registration: a private folder (mode 0700) for the extension's own files, outside the repository, created if missing. `"project"` is `~/.minimal/data/projects/<hash of the working directory>/<id>`, `"global"` is `~/.minimal/data/global/<id>` |
 
@@ -246,7 +247,7 @@ minimal.register_widget("session", lambda ctx: SessionPanel(), area="sidebar")
 minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
 ```
 
-A theme needs `background`, `foreground` and `accent` (`#rrggbb`); the other colours (`THEME_COLORS`: `surface`, `muted`, `error`, `user_bg`, `diff_added`, …) are optional and derived when left out. The built-in theme is `minimal` (black and white) and cannot be replaced; `amber`, `dark` and `light` are in the marketplace's `themes/` (install them with `/ext` → Themes). Registered themes appear in `/theme` and `Ctrl+P` → Theme. If a reload removes the active theme, the UI goes back to `minimal`. The `theme` module in `minimal.api` holds the UI glyphs and the built-in theme.
+A theme needs `background`, `foreground` and `accent` (`#rrggbb`); the other colours (`THEME_COLORS`: `surface`, `muted`, `error`, `user_bg`, `diff_added`, …) are optional and derived when left out. The built-in theme is `minimal` (black and white) and cannot be replaced; `amber`, `dark` and `light` are in the marketplace's `themes/` (install them with `/ext` → Themes). Registered themes appear in `/theme` and `Ctrl+P` → Theme; both belong to the terminal UI, so other frontends ignore themes. If a reload removes the active theme, the UI goes back to `minimal`. `minimal.api.theme` (also `minimal.api.glyphs`) holds the glyphs (`theme.SUCCESS`, `theme.BRANCH`, …) and imports no UI toolkit; its old names for the built-in theme (`DEFAULT`, `MINIMAL`, `build`, `available`) still work and load the terminal UI when used.
 
 ## Header logo
 
@@ -265,6 +266,37 @@ uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.mini
 ```
 
 `-w` is the width in pixels (one terminal column each; images only shrink), `-c` the most colours to keep (default 16; pixel art with no more keeps its exact colours), `--nearest` resizes without smoothing. Without `-o` the extension is printed.
+
+## Frontends
+
+A frontend is the interface minimal runs in. `tui` (the terminal UI) is the default and `console` is a plain line-by-line REPL; `--ui <name>` or the `ui` setting picks one, and `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
+
+```python
+from minimal.api import ConsoleFrontend, ExitRepl
+
+__version__ = "1.0"
+__api__ = "1.2"
+
+
+def register(minimal):
+    def run(host):
+        host.attach(ConsoleFrontend())       # or your own Frontend
+        host.begin()                         # fires session_start
+        while (line := input("> ").strip()) != "quit":
+            if line.startswith("/"):
+                try:
+                    host.run_command(line)
+                except ExitRepl:
+                    return
+            else:
+                host.submit(line)            # runs the turn; returns when it ends
+
+    minimal.register_frontend("tiny", run, "a minimal REPL")
+```
+
+The `Host` is everything a frontend may use: `attach(frontend)`, `begin()`, `submit(text)` and `run_command(line)` (both block until the turn or command ends; call them from a worker thread if the frontend has an event loop), `interrupt()` and `interrupting`, `command(name)` (a `Command` with `terminal` set needs the real terminal), `commands()`, `complete(prefix)` (`"/re"` → `["/reload", "/resume"]`), `register_command(name, run, description, terminal=False)` for commands only this frontend has (the terminal UI adds `/theme` this way), `next_queued()` (messages extensions queued with `ctx.queue_user_message`: send them between turns), `status()` (a `HostStatus`: model, provider, cwd, session id, context tokens, extension and untrusted counts), `messages`, `settings`, `ctx`, `extension_errors`, `untrusted_notice()`, and what extensions add to the interface: `widgets`, `status_segments`, `themes` and `logo`.
+
+A `Frontend` shows minimal: `text(chunk)`, `tool_call(call)`, `tool_result(call, result)`, `turn_end(error)`, `ask(question)`, `choose(title, options)`, `choose_many(title, options)`, `ask_text(title)`, `notify(text, kind)`, `reloaded()`, `queued()` (an extension queued a message while idle) and `widget(name)`. `ConsoleFrontend` implements all of them with `print` and `input`; subclass it and override what you draw differently.
 
 ## Trust
 
@@ -314,19 +346,22 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | ----------------------------------------------------------- | ----------------------------------------------------------------- |
 | `__version__`, `API_VERSION`                                | minimal's version, and the version of this API ([API versions](#api-versions)) |
 | `Extension`, `Context`, `UI`, `Tool`                        | The objects described above                                       |
+| `Host`, `HostStatus`, `Frontend`, `ConsoleFrontend`, `FrontendSpec`, `ExitRepl` | Frontends ([Frontends](#frontends)); `ExitRepl` is raised by `/exit` |
 | `Provider`, `ProviderSpec`, `Reply`, `Usage`, `result_text` | Providers and replies; `result_text(content)` is a reply's text   |
 | `TurnInterrupted`                                           | Raised when the user interrupts                                   |
 | `USER_DENIED`                                               | The text of a tool result the user declined                       |
 | `ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`, `SessionStartEvent`, `SessionSwitchEvent`, `TurnStartEvent`, `BeforeRequestEvent`, `AfterResponseEvent`, `ShutdownEvent`, `ProviderErrorEvent` | Event payload types |
 | `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas, status sides and theme colours   |
-| `LogoSpec`, `logo_content`, `theme`                         | Logo rendering, UI glyphs and the built-in theme                  |
+| `LogoSpec`, `logo_content`, `theme`, `glyphs`               | Logo rendering (`logo_content` returns Textual content and loads the terminal UI on first use) and the UI glyphs |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.2`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
 API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response`, `shutdown` and `provider_error`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
+
+API 1.2 added frontends: `register_frontend`, `Host`, `HostStatus`, `Frontend`, `ConsoleFrontend`, `FrontendSpec` and `ExitRepl`, and `minimal.api.glyphs`. Importing `minimal.api` no longer imports Textual. An extension using any of them declares `__api__ = "1.2"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 
