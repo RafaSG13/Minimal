@@ -16,6 +16,7 @@ from minimal.extensions import loader
 from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply
 from minimal.ui.commands import register_builtin_commands
+from minimal.ui import frontends
 from minimal.ui.frontends import register_builtin_frontends, run_console
 
 
@@ -65,6 +66,17 @@ class FrontendTest(unittest.TestCase):
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "False")
 
+    def test_tui_without_textual_explains_the_extra(self):
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules):
+            for name in [m for m in sys.modules if m.split(".")[0] == "textual" or m.startswith("minimal.ui.tui")]:
+                del sys.modules[name]
+            sys.modules["textual"] = None  # type: ignore[assignment]  # makes `import textual` fail
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as stopped:
+                frontends._run_tui(self.host)
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn("mnml-agent[tui]", err.getvalue())
+
     def test_console_sends_messages_runs_commands_and_quits_on_eof(self):
         self.app.provider = FakeProvider([text_reply("first answer"), text_reply("queued answer")])
         lines = iter(["hello", "", "/title Parser work"])
@@ -87,6 +99,19 @@ class FrontendTest(unittest.TestCase):
         )
         self.assertEqual(self.app.messages[-1]["content"][0]["text"], "queued answer")
         self.assertNotIn("theme", self.host.commands())  # /theme belongs to the terminal UI
+
+    def test_console_reports_the_extensions_it_skipped(self):
+        (self.tmp / "extensions").mkdir()
+        (self.tmp / "extensions" / "pretty.py").write_text(
+            '"""Needs Textual."""\n__version__ = "1.0"\n__api__ = "1.3"\n__frontend__ = "textual"\n\n'
+            "def register(minimal):\n    raise AssertionError('must not load under console')\n"
+        )
+        (self.tmp / "settings.json").write_text('{"ui": "console"}')
+        self.assertEqual(self.app.reload_extensions()[1], [])
+        err = io.StringIO()
+        with mock.patch("builtins.input", side_effect=EOFError), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            run_console(self.host)
+        self.assertIn(f"[extension] skipped {self.tmp / 'extensions' / 'pretty.py'}: needs a textual frontend; console is not one", err.getvalue())
 
     def test_frontend_commands_survive_a_reload_and_complete(self):
         self.host.register_command("zap", lambda args, ctx: print("zapped"))

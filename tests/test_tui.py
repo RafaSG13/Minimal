@@ -1,11 +1,17 @@
+# ruff: noqa: E402  (the imports below need the tui extra; the skip comes first)
 import asyncio
+import importlib.util
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from textual.widgets import Input, Markdown, SelectionList, Static
+if importlib.util.find_spec("textual") is None:
+    raise unittest.SkipTest("needs the tui extra")
+
+from textual.widgets import Input, Label, Markdown, SelectionList, Static
+from textual.widgets._markdown import MarkdownParagraph
 
 from minimal import config
 from minimal.core.app import App
@@ -16,8 +22,9 @@ from minimal.extensions.registry import LogoSpec, Registry
 from minimal.providers.base import Reply
 from minimal.ui.commands import register_builtin_commands
 from minimal.ui.tui.app import CommandSuggester, MinimalTui, _outside_event_loop
+from minimal.ui.tui.markdown import RenderedFence, RenderedQuote
 from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, TextScreen
-from minimal.ui.tui.widgets import ToolBlock, _edit_diff, logo_content
+from minimal.ui.tui.widgets import PanelView, ToolBlock, _edit_diff, logo_content
 
 
 class StreamingFakeProvider:
@@ -242,6 +249,111 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                 await self.wait_until(pilot, self.idle(app))
             errors = [str(s.render()) for s in app.query(".error").results(Static)]
             self.assertEqual(len([e for e in errors if "status boom" in e]), 1, errors)
+
+    async def test_status_segments_accept_styled_pieces(self):
+        self.core.registry.register_status("s", lambda ctx: ["a", ("b", "warning")])
+        self.core.registry.register_status("bad", lambda ctx: [("x", "blink")], side="left")
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            self.assertIn("ab", str(app.query_one("#status-right", Static).render()))
+            await pilot.pause()
+            errors = [str(s.render()) for s in app.query(".error").results(Static)]
+            self.assertEqual(len([e for e in errors if "status bad: unknown style 'blink'" in e]), 1, errors)
+
+    async def test_panel_draws_styled_lines_and_hides_on_none(self):
+        registry = self.core.registry
+        registry.register_panel("p", lambda ctx: ["hello", [("bad", "error")]])
+        registry.register_panel("hidden", lambda ctx: None)
+        app = MinimalTui(Host(self.core))
+        async with app.run_test():
+            views = {v.spec.name: v for v in app.query(PanelView)}
+            self.assertEqual(str(views["p"].render()), "hello\nbad")
+            self.assertTrue(views["p"].display)
+            self.assertFalse(views["hidden"].display)
+            self.assertTrue(app.query_one("#sidebar").has_class("-has-widgets"))
+
+    async def test_panel_live_events_and_interval(self):
+        events, renders = [], []
+        self.core.registry.register_panel("p", lambda ctx: renders.append(1) or "x", live=lambda ctx, e: events.append(e["kind"]))
+        self.core.registry.register_panel("tick", lambda ctx: renders.append(2), interval=0.05, area="bottom")
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            self.assertEqual(events, ["end"])
+            renders.clear()
+            await pilot.pause(0.3)
+            self.assertGreater(renders.count(2), 2)
+            self.assertNotIn(1, renders)
+
+    async def test_failing_panel_is_hidden_and_reported_once(self):
+        def boom(ctx):
+            raise RuntimeError("no")
+
+        self.core.registry.register_panel("boom", boom, interval=0.05)
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            await pilot.pause(0.3)
+            self.assertFalse(app.query_one(PanelView).display)
+            errors = [str(s.render()) for s in app.query(".error").results(Static)]
+            self.assertEqual(len([e for e in errors if "panel boom: no" in e]), 1, errors)
+
+    def app_replying(self, text):
+        self.use_replies(Reply(content=[{"type": "text", "text": text}], stop_reason="end_turn"))
+        return MinimalTui(Host(self.core))
+
+    async def test_fence_renderer_draws_its_language_only(self):
+        self.core.registry.register_renderer("fence:demo", lambda ctx, b: [f"DREW {b['source'].strip()} {b['closed']}"])
+        app = self.app_replying("```demo\nx\n```\n\n```python\nprint(1)\n```")
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "hi")
+            await self.wait_until(pilot, self.idle(app))
+            texts = {f.language: str(f.query_one("#code-content", Label).render()) for f in app.query(RenderedFence)}
+        self.assertEqual(texts["demo"], "DREW x True")
+        self.assertEqual(texts["python"], "print(1)")
+
+    async def test_unclosed_fence_is_drawn_closed_after_the_turn(self):
+        self.core.registry.register_renderer("fence:demo", lambda ctx, b: [f"closed={b['closed']}"])
+        app = self.app_replying("```demo\nx")
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "hi")
+            await self.wait_until(pilot, self.idle(app))
+            fence = app.query_one(RenderedFence)
+            self.assertEqual(str(fence.query_one("#code-content", Label).render()), "closed=True")
+
+    async def test_alert_renderer_draws_the_marker_paragraph(self):
+        self.core.registry.register_renderer("blockquote:alert", lambda ctx, b: [b["alert"] + ":" + b["text"]])
+        app = self.app_replying("> [!NOTE] hi\n>\n> more")
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "hi")
+            await self.wait_until(pilot, self.idle(app))
+            alert = app.query_one(".alert", Static)
+            self.assertEqual(str(alert.render()), "note:hi")
+            self.assertTrue(app.query_one(RenderedQuote).has_class("-note"))
+            self.assertEqual([str(p.render()) for p in app.query_one(RenderedQuote).query(MarkdownParagraph)], ["more"])
+
+    async def test_tool_renderer_replaces_the_body_and_sees_the_result(self):
+        self.core.registry.register_renderer("tool:edit", lambda ctx, b: ["custom" if b["result"] is None else "done"])
+        call = {"type": "tool_use", "id": "t1", "name": "edit", "input": {"path": "a", "old_string": "x", "new_string": "y"}}
+        app = MinimalTui(Host(self.core))
+        async with app.run_test():
+            block = ToolBlock(call, str(self.tmp), app._tool_renderer(call))
+            self.assertEqual([line.plain for line in block.lines], ["custom"])
+            block.finish({"type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": False})
+            self.assertEqual([line.plain for line in block.lines], ["done"])
+            self.assertIsNone(app._tool_renderer({**call, "name": "bash"}))
+
+    async def test_failing_renderer_falls_back_and_is_reported_once(self):
+        def boom(ctx, block):
+            raise RuntimeError("no")
+
+        self.core.registry.register_renderer("fence:demo", boom)
+        app = self.app_replying("```demo\nx\n```")
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "hi")
+            await self.wait_until(pilot, self.idle(app))
+            await pilot.pause()
+            self.assertEqual(str(app.query_one(RenderedFence).query_one("#code-content", Label).render()), "x")
+            errors = [str(s.render()) for s in app.query(".error").results(Static)]
+        self.assertEqual(len([e for e in errors if "[extension] renderer fence:demo: no" in e]), 1, errors)
 
     def test_edit_diff_numbers_and_highlights_changes(self):
         lines = _edit_diff({"old_string": "a\nb = 1\nc", "new_string": "a\nb = 2\nc"}, 10)

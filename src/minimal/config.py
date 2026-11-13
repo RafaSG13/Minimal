@@ -172,6 +172,10 @@ def _validate(raw: dict, scope: str) -> tuple[dict, list[str]]:
     return data, problems
 
 
+DEFAULT_UI = "tui"
+"""The frontend used when neither ``--ui`` nor the ``ui`` setting names one."""
+
+
 @dataclass(frozen=True)
 class Settings:
     """The effective settings: ``layers`` merged, with project trust applied.

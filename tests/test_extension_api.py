@@ -12,10 +12,12 @@ from minimal.core import session as session_mod
 from minimal.core.app import App
 from minimal.core.session import Session
 from minimal.extensions import loader
+from minimal.extensions.loader import reload_summary
 from minimal.extensions.metadata import api_problem
 from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply, Usage
 from minimal.ui.commands import register_builtin_commands
+from minimal.ui.frontends import register_builtin_frontends
 
 
 class ScriptedProvider:
@@ -93,6 +95,30 @@ class ExtensionApiTest(unittest.TestCase):
         tool = self.app.registry.tools["shout"]
         self.assertEqual((tool.description, tool.run({}, self.app.context)), ("Say it loud.", "HI"))
         self.assertEqual(self.app.registry.commands["hello"].description, "Greet.")
+
+    def test_frontend_only_extension_is_skipped_on_another_frontend(self):
+        path = self.extension(
+            "tuionly.py",
+            '__frontend__ = "textual"\n\ndef register(minimal):\n    minimal.register_command("hi", lambda args, ctx: None)\n',
+            api='"1.3"',
+        )
+        for ui, skipped in (("console", [f"{path}: needs a textual frontend; console is not one"]), ("tui", [])):
+            with self.subTest(ui=ui):
+                app = App(
+                    registry=Registry(),
+                    session=Session("first", self.tmp / "first.jsonl"),
+                    cwd=str(self.tmp),
+                    auto_approve=True,
+                    register_commands=register_builtin_commands,
+                    register_frontends=register_builtin_frontends,
+                    ui=ui,
+                )
+                loaded, errors = app.reload_extensions()
+                self.assertEqual((errors, app.extension_skipped), ([], skipped))
+                self.assertEqual("hi" in app.registry.commands, ui == "tui")
+                summary = reload_summary(loaded, errors, None, app.extension_skipped)
+                self.assertEqual("\nSkipped: " in summary, ui == "console")
+                self.assertNotIn("Failed:", summary)
 
     def test_unknown_event_is_an_error(self):
         self.extension("bogus.py", 'def register(minimal):\n    minimal.on("bogus", print)\n')

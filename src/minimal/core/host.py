@@ -19,7 +19,16 @@ from typing import TYPE_CHECKING
 
 from minimal import config
 from minimal.core.context import Context
-from minimal.extensions.registry import Command, CommandRun, LogoSpec, StatusSpec, ThemeSpec, WidgetSpec
+from minimal.extensions.registry import (
+    Command,
+    CommandRun,
+    LogoSpec,
+    PanelSpec,
+    RendererSpec,
+    StatusSpec,
+    ThemeSpec,
+    WidgetSpec,
+)
 
 if TYPE_CHECKING:
     from minimal.core.app import App, Frontend
@@ -97,6 +106,11 @@ class Host:
         """Failures of the last reload (extensions that did not load, settings errors)."""
         return list(self._app.extension_errors)
 
+    @property
+    def extension_skipped(self) -> list[str]:
+        """Extensions the last reload did not load because they need another UI toolkit."""
+        return list(self._app.extension_skipped)
+
     def untrusted_notice(self) -> str | None:
         """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""
         return self._app.untrusted_notice()
@@ -112,6 +126,16 @@ class Host:
     def status_segments(self) -> Mapping[str, StatusSpec]:
         """Extension status-line segments by name (``register_status``)."""
         return types.MappingProxyType(self._app.registry.status)
+
+    @property
+    def panels(self) -> Mapping[str, PanelSpec]:
+        """Extension panels by name (``register_panel``)."""
+        return types.MappingProxyType(self._app.registry.panels)
+
+    @property
+    def renderers(self) -> Mapping[str, RendererSpec]:
+        """Extension block renderers by kind (``register_renderer``)."""
+        return types.MappingProxyType(self._app.registry.renderers)
 
     @property
     def themes(self) -> Mapping[str, ThemeSpec]:

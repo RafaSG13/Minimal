@@ -4,8 +4,8 @@ Layout, top to bottom: the ``top`` extension area, the transcript (a welcome
 header (the built-in wordmark or an extension's pixel-art logo), then user messages, assistant
 replies, tool calls and command output), the ``bottom`` extension area, the
 working indicator, the prompt and the status line (model, provider, directory,
-git branch). An optional ``sidebar`` on the right holds extension widgets (see
-:meth:`~minimal.extensions.registry.Registry.register_widget`). Colours come from the
+git branch). An optional ``sidebar`` on the right holds extension widgets and panels (see
+:meth:`~minimal.extensions.registry.Registry.register_widget` and ``register_panel``). Colours come from the
 active theme's CSS variables and glyphs from :mod:`minimal.ui.tui.theme`.
 
 Turns and slash commands run in a worker thread so the UI stays responsive;
@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -39,9 +40,11 @@ from textual.widgets import Input, Markdown, Static
 from minimal import config
 from minimal.core.app import ExitRepl
 from minimal.core.host import Host
+from minimal.extensions.registry import StyledLine, styled_line, styled_lines
 from minimal.ui.tui import theme
 from minimal.ui.tui.frontend import TuiFrontend, theme_command
-from minimal.ui.tui.widgets import Header, ToolBlock
+from minimal.ui.tui.markdown import RenderedFence, TranscriptMarkdown
+from minimal.ui.tui.widgets import Header, PanelView, ToolBlock, to_content
 
 REPLAY_LIMIT = 200
 """Most messages of a resumed session drawn in the transcript."""
@@ -176,6 +179,7 @@ class MinimalTui(TextualApp):
         self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
         self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
         self.status_errors: set[str] = set()  # status segments whose error was already shown
+        self.renderer_errors: set[str] = set()  # renderer kinds whose error was already shown
 
     @property
     def cwd(self) -> str:
@@ -217,6 +221,8 @@ class MinimalTui(TextualApp):
             await pending
         for e in self.host.extension_errors:
             self.show_error(f"[extension] could not load {e}")
+        for s in self.host.extension_skipped:
+            self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" [extension] skipped {s}"), classes="output"))
         if notice := self.host.untrusted_notice():
             self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" {notice}"), classes="output"))
         self.refresh_status()
@@ -263,9 +269,9 @@ class MinimalTui(TextualApp):
             for block in content:
                 kind = block.get("type")
                 if kind == "text" and message["role"] == "assistant":
-                    widgets.append(Markdown(block["text"], classes="assistant"))
+                    widgets.append(TranscriptMarkdown(block["text"], classes="assistant"))
                 elif kind == "tool_use":
-                    blocks[block["id"]] = ToolBlock(block, self.cwd)
+                    blocks[block["id"]] = ToolBlock(block, self.cwd, self._tool_renderer(block))
                     widgets.append(blocks[block["id"]])
                 elif kind == "tool_result" and block["tool_use_id"] in blocks:
                     blocks[block["tool_use_id"]].finish(block)
@@ -298,14 +304,14 @@ class MinimalTui(TextualApp):
     async def append_text(self, chunk: str) -> None:
         # Mount first: Markdown resets its source on mount, which would drop an earlier append.
         if self.assistant is None:
-            self.assistant = Markdown("", classes="assistant")
+            self.assistant = TranscriptMarkdown("", classes="assistant")
             await self._add(self.assistant)
         await self.assistant.append(chunk)
         self.call_after_refresh(self._follow)
 
     def show_tool_call(self, call: dict) -> Any:
         self.assistant = None
-        block = ToolBlock(call, self.cwd)
+        block = ToolBlock(call, self.cwd, self._tool_renderer(call))
         self.tool_blocks[call["id"]] = block
         mounted = self._add(block)
         self.refresh_live({"kind": "tool_call", "call": call})
@@ -352,11 +358,12 @@ class MinimalTui(TextualApp):
             await header.recompose()
 
     async def remount_widgets(self) -> None:
-        """Replace every extension widget with fresh ones from the registry."""
+        """Replace every extension widget and panel with fresh ones from the registry."""
         for area in ("top", "bottom", "sidebar"):
             await self.query_one(f"#{area}").remove_children()
         self.ext_widgets = []
         self.status_errors.clear()
+        self.renderer_errors.clear()
         for spec in list(self.host.widgets.values()):
             try:
                 widget = spec.create(self.host.ctx)
@@ -364,11 +371,40 @@ class MinimalTui(TextualApp):
                 self.ext_widgets.append((spec.name, widget))
             except Exception as e:
                 self.show_error(f"[extension] widget {spec.name}: {e}")
-        has_sidebar = any(
-            spec.area == "sidebar" for spec in self.host.widgets.values()
+        panels = list(self.host.panels.values())
+        for panel in panels:
+            view = PanelView(panel, self.host.ctx, self.show_error)
+            await self.query_one(f"#{panel.area}").mount(view)
+            self.ext_widgets.append((panel.name, view))
+        has_sidebar = any(spec.area == "sidebar" for spec in self.host.widgets.values()) or any(
+            panel.area == "sidebar" for panel in panels
         )
         self.query_one("#sidebar").set_class(has_sidebar, "-has-widgets")
         self.refresh_widgets()
+
+    def render_block(self, kind: str, block: dict) -> list[StyledLine] | None:
+        """The lines an extension's renderer of ``kind`` draws for ``block``; ``None`` for the default drawing.
+
+        A renderer that raises is reported once per kind (until the next reload).
+        """
+        spec = self.host.renderers.get(kind)
+        if spec is None:
+            return None
+        try:
+            return styled_lines(spec.render(self.host.ctx, block))
+        except Exception as e:
+            if kind not in self.renderer_errors:
+                self.renderer_errors.add(kind)
+                # Later: this may run while another widget composes, when mounting is not allowed.
+                self.call_later(self.show_error, f"[extension] renderer {kind}: {e}")
+            return None
+
+    def _tool_renderer(self, call: dict) -> Callable[[dict | None], list[StyledLine] | None] | None:
+        """The ``tool:<name>`` renderer for ``call`` as a function of its result (``None`` while pending), if any."""
+        kind = f"tool:{call['name']}"
+        if kind not in self.host.renderers:
+            return None
+        return lambda result: self.render_block(kind, {"kind": kind, "call": call, "result": result})
 
     def _call_widgets(self, method: str, *args: Any) -> None:
         """Call ``method(*args)`` on every extension widget that has it, showing any error."""
@@ -429,7 +465,12 @@ class MinimalTui(TextualApp):
                     self.show_error(f"[extension] status {spec.name}: {e}")
                 continue
             if value is not None:
-                segments.append(value if isinstance(value, Content) else Content(str(value)))
+                try:
+                    segments.append(value if isinstance(value, Content) else to_content(styled_line(value)))
+                except ValueError as e:
+                    if spec.name not in self.status_errors:
+                        self.status_errors.add(spec.name)
+                        self.show_error(f"[extension] status {spec.name}: {e}")
         return segments
 
     def _render_status(self) -> None:
@@ -545,6 +586,8 @@ class MinimalTui(TextualApp):
             self.shown_session = self.host.status().session_id
             self.assistant = None
         self.refresh_status()
+        for fence in self.query(RenderedFence):  # a reply that left a fence open: draw it closed
+            fence.finish()
         self.refresh_widgets()
         self.in_turn = False
         self.set_busy(False)

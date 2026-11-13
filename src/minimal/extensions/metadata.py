@@ -5,13 +5,17 @@
 - ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`);
 - ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional; :data:`DEPENDENCY_RE`).
   ``/ext`` offers to install the missing ones into minimal's Python.
+- ``__frontend__ = "textual"``: the UI toolkit it needs (optional). It loads only under a frontend using that
+  toolkit; without it, the extension must not import ``textual`` or ``rich``.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 import minimal
 
@@ -28,6 +32,8 @@ class Metadata:
     """Whether a top-level ``def register`` exists."""
     dependencies: tuple[str, ...] = ()
     """Top-level ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
+    frontend: str = ""
+    """Top-level ``__frontend__``: the UI toolkit it needs (``"textual"``); ``""`` if any."""
 
 
 DEPENDENCY_RE = re.compile(
@@ -78,7 +84,7 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
             dependencies = _dependencies(node.value, filename)
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             for name in names:
-                if name in ("__version__", "__api__"):
+                if name in ("__version__", "__api__", "__frontend__"):
                     strings[name] = node.value.value
     docstring = ast.get_docstring(tree) or ""
     return Metadata(
@@ -87,7 +93,31 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
         api=strings.get("__api__", ""),
         has_register=any(isinstance(n, ast.FunctionDef) and n.name == "register" for n in tree.body),
         dependencies=dependencies,
+        frontend=strings.get("__frontend__", ""),
     )
+
+
+UI_TOOLKIT_MODULES = ("textual", "rich")
+"""Top-level modules of UI toolkits; an extension importing one needs ``__frontend__``."""
+
+
+def toolkit_imports(files: Iterable[tuple[Path, bytes]]) -> list[str]:
+    """Sorted top-level names from UI_TOOLKIT_MODULES imported anywhere (any depth) in ``files``; unparsable files are skipped."""
+    found: set[str] = set()
+    for path, source in files:
+        try:
+            tree = ast.parse(source, filename=str(path))
+        except (SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name.partition(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module.partition(".")[0]]
+            else:
+                continue
+            found.update(name for name in names if name in UI_TOOLKIT_MODULES)
+    return sorted(found)
 
 
 _API = re.compile(r"(\d+)(?:\.(\d+))?")

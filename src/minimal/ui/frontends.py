@@ -2,7 +2,7 @@
 
 Both are registered like an extension's frontend (:meth:`~minimal.extensions.registry.Registry.register_frontend`),
 so ``--ui`` or the ``ui`` setting picks one, and an extension can register another or replace
-these by name. Textual is only imported when the ``tui`` frontend starts.
+these by name. The ``tui`` frontend needs the ``tui`` extra (Textual), imported only when it starts.
 """
 
 from __future__ import annotations
@@ -17,18 +17,28 @@ from minimal.core.app import ConsoleFrontend, ExitRepl
 from minimal.core.host import Host
 from minimal.extensions.registry import Registry
 
-DEFAULT_UI = "tui"
-"""The frontend used when neither ``--ui`` nor the ``ui`` setting names one."""
+TUI_MISSING = (
+    'the tui frontend needs Textual: install minimal with uv tool install "mnml-agent[tui]", '
+    "or run minimal --ui console"
+)
 
 
 def register_builtin_frontends(registry: Registry) -> None:
     """Register ``tui`` and ``console``."""
-    registry.register_frontend("tui", _run_tui, "the terminal UI: transcript, widgets, themes (default)")
+    registry.register_frontend(
+        "tui", _run_tui, "the terminal UI: transcript, widgets, themes (default)", toolkit="textual"
+    )
     registry.register_frontend("console", run_console, "a plain console: one line per message, no colours or widgets")
 
 
 def _run_tui(host: Host) -> None:
-    from minimal.ui.tui.app import run_tui
+    try:
+        from minimal.ui.tui.app import run_tui
+    except ModuleNotFoundError as e:
+        if (e.name or "").partition(".")[0] != "textual":
+            raise
+        print(TUI_MISSING, file=sys.stderr)
+        sys.exit(2)
 
     run_tui(host)
 
@@ -49,6 +59,8 @@ def run_console(host: Host) -> None:
     print("Type a message, or /help. Ctrl-C interrupts a turn, Ctrl-D quits.")
     for error in host.extension_errors:
         print(f"[extension] could not load {error}", file=sys.stderr)
+    for skipped in host.extension_skipped:
+        print(f"[extension] skipped {skipped}", file=sys.stderr)
     if notice := host.untrusted_notice():
         print(f"{glyphs.WARNING} {notice}", file=sys.stderr)
     host.begin()

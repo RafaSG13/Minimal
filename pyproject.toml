@@ -23,8 +23,10 @@ dependencies = [
     "google-genai>=2.34.0",
     "openai>=3.49.0",
     "questionary>=2",
-    "textual>=8.2",
 ]
+
+[project.optional-dependencies]
+tui = ["textual>=8.2"]
 
 [project.urls]
 Homepage = "https://github.com/RafaSG13/Minimal"

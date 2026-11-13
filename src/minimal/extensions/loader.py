@@ -329,9 +329,19 @@ def load_source(
 
 
 def load_sources(
-    registry: Registry, sources: Iterable[tuple[ExtensionSource, str]], settings: config.Settings, cwd: str
+    registry: Registry,
+    sources: Iterable[tuple[ExtensionSource, str]],
+    settings: config.Settings,
+    cwd: str,
+    ui: str | None = None,
+    skipped: list[str] | None = None,
 ) -> tuple[list[Path], list[str]]:
     """Load each ``(source, scope)`` in order into ``registry``.
+
+    Extensions declaring ``__frontend__`` load last, once every frontend is registered. When ``ui``
+    names a registered frontend whose toolkit differs from that ``__frontend__``, the extension is not
+    loaded and ``"<path>: needs a <toolkit> frontend; <ui> is not one"`` is appended to ``skipped``.
+    With ``ui`` ``None`` or unregistered nothing is skipped.
 
     Returns:
         ``(loaded, errors)``: the paths that loaded, and one ``"<path>: <ErrorType>: <message>"``
@@ -340,12 +350,34 @@ def load_sources(
     """
     loaded: list[Path] = []
     errors: list[str] = []
+    immediate: list[tuple[ExtensionSource, str]] = []
+    deferred: list[tuple[ExtensionSource, str, str]] = []
     for source, scope in sources:
+        try:
+            frontend = read_metadata(source.entry, str(source.entry_path)).frontend
+        except ValueError:  # load_source reports it
+            frontend = ""
+        if frontend:
+            deferred.append((source, scope, frontend))
+        else:
+            immediate.append((source, scope))
+
+    def load(source: ExtensionSource, scope: str) -> None:
         try:
             load_source(source, registry, settings, scope, errors, cwd)
             loaded.append(source.path)
         except Exception as e:
             errors.append(f"{source.path}: {type(e).__name__}: {e}")
+
+    for source, scope in immediate:
+        load(source, scope)
+    spec = registry.frontends.get(ui) if ui else None
+    for source, scope, frontend in deferred:
+        if spec is not None and frontend != spec.toolkit:
+            if skipped is not None:
+                skipped.append(f"{source.path}: needs a {frontend} frontend; {ui} is not one")
+            continue
+        load(source, scope)
     return loaded, errors
 
 
@@ -355,6 +387,8 @@ def load_extensions(
     settings: config.Settings,
     extra: Iterable[str | Path] = (),
     project: Iterable[ExtensionSource] = (),
+    ui: str | None = None,
+    skipped: list[str] | None = None,
 ) -> tuple[list[Path], list[str]]:
     """Load every extension found and let it register into ``registry``.
 
@@ -369,7 +403,8 @@ def load_extensions(
 
     Returns:
         ``(loaded, errors)`` as from :func:`load_sources`, plus ``"<path>: not found"``
-        for a missing ``extra`` entry and one error per ``x.py``/``x/`` clash.
+        for a missing ``extra`` entry and one error per ``x.py``/``x/`` clash. ``ui`` and ``skipped``
+        are passed to :func:`load_sources`.
     """
     errors: list[str] = []
     sources: list[tuple[ExtensionSource, str]] = []
@@ -401,19 +436,23 @@ def load_extensions(
                 sources += [(s, "cli") for s in read_extensions([p])]
             except OSError as e:
                 errors.append(f"{p}: {type(e).__name__}: {e}")
-    loaded, load_errors = load_sources(registry, sources, settings, cwd)
+    loaded, load_errors = load_sources(registry, sources, settings, cwd, ui, skipped)
     return loaded, errors + load_errors
 
 
-def reload_summary(loaded: list[Path], errors: list[str], notice: str | None) -> str:
+def reload_summary(
+    loaded: list[Path], errors: list[str], notice: str | None, skipped: Iterable[str] = ()
+) -> str:
     """Describe the result of :meth:`~minimal.core.app.App.reload_extensions` for the user or the model.
 
+    ``skipped`` is :attr:`~minimal.core.app.App.extension_skipped`, added as ``Skipped:`` lines (not failures).
     ``notice`` is :meth:`~minimal.core.app.App.untrusted_notice`, added as a ``Not loaded:`` line when set.
     """
     summary = f"Loaded {len(loaded)} extension(s)"
     if loaded:
         summary += ": " + ", ".join(p.name for p in loaded)
     summary += "".join(f"\nFailed: {e}" for e in errors)
+    summary += "".join(f"\nSkipped: {s}" for s in skipped)
     if notice:
         summary += f"\nNot loaded: {notice}"
     return summary

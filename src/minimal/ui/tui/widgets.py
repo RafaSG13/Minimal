@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,14 @@ from textual.widgets import Static
 
 import minimal
 from minimal.core.host import Host
-from minimal.extensions.registry import LOGO_ALIGN, LogoSpec
+from minimal.extensions.registry import (
+    LOGO_ALIGN,
+    STYLE_MODIFIERS,
+    LogoSpec,
+    PanelSpec,
+    StyledLine,
+    styled_lines,
+)
 from minimal.ui.tui import theme
 
 PREVIEW_LINES = 8
@@ -38,6 +46,26 @@ TAGLINE = "bare by default. yours by config."
 
 def _version() -> str:
     return minimal.__version__
+
+
+# --- styled text ---------------------------------------------------------------
+
+
+def tui_style(style: str) -> str:
+    """A :data:`~minimal.extensions.registry.STYLES` string as Textual markup style: ``"bold muted"`` → ``"bold $muted"``."""
+    return " ".join(
+        token if token in STYLE_MODIFIERS else "$" + token.replace("_", "-") for token in style.split()
+    )
+
+
+def to_content(line: StyledLine) -> Content:
+    """One line of ``(text, style)`` pieces as Textual :class:`~textual.content.Content`."""
+    return Content.assemble(*((text, tui_style(style)) if style else text for text, style in line))
+
+
+def lines_content(lines: list[StyledLine]) -> Content:
+    """Lines joined with newlines."""
+    return Content("\n").join(to_content(line) for line in lines)
 
 
 # --- tool calls ----------------------------------------------------------------
@@ -191,16 +219,25 @@ class ToolBlock(Static):
     A click expands a body longer than :data:`PREVIEW_LINES`, and collapses it again.
     """
 
-    def __init__(self, call: dict, cwd: str | None = None) -> None:
+    def __init__(
+        self,
+        call: dict,
+        cwd: str | None = None,
+        render: Callable[[dict | None], list[StyledLine] | None] | None = None,
+    ) -> None:
         super().__init__(classes="tool -pending")
         self.call = call
+        self.renderer = render  # an extension's tool renderer: render(result or None) -> lines, or None for the default
         self.icon = Content.styled(theme.RUNNING, "$warning")
         self.lines: list[Content] = []  # the body, at most EXPANDED_LINES
         self.total = 0  # body lines before the cap
         self.tail = False  # the end of the body matters most (bash output)
         self.expanded = False
         name, inp = call["name"], call["input"]
-        if name == "edit":
+        custom = render(None) if render else None
+        if custom is not None:
+            self._set_lines([to_content(line) for line in custom], len)
+        elif name == "edit":
             # One replacement (old_string/new_string) or several (edits): a diff for each.
             replacements = inp["edits"] if isinstance(inp.get("edits"), list) else [inp]
             diff: list[Content] = []
@@ -236,14 +273,20 @@ class ToolBlock(Static):
         )
         output = output.strip("\n")
         name = self.call["name"]
+        custom = self.renderer(result) if self.renderer else None
         if result["is_error"]:
             self.icon = Content.styled(theme.ERROR, "$error")
-            lines = output.expandtabs(4).splitlines()
-            self._set_lines([Content.styled(line, "$error") for line in lines], len)
+            if custom is not None:
+                self._set_lines([to_content(line) for line in custom], len)
+            else:
+                lines = output.expandtabs(4).splitlines()
+                self._set_lines([Content.styled(line, "$error") for line in lines], len)
             self.set_classes("tool -error")
         else:
             self.icon = Content.styled(theme.SUCCESS, "$success")
-            if name == "read" and output:
+            if custom is not None:
+                self._set_lines([to_content(line) for line in custom], len)
+            elif name == "read" and output:
                 lines = output.split("\n")
                 self._set_lines(_numbered(lines[:EXPANDED_LINES], self._path()), len(lines))
             elif name not in ("edit", "write") and output:
@@ -286,6 +329,68 @@ class ToolBlock(Static):
         text = Content.assemble(self.icon, " ", _tool_title(self.call))
         body = self._body()
         return Content.assemble(text, "\n", body) if body is not None else text
+
+
+# --- extension panels ----------------------------------------------------------
+
+
+class PanelView(Static):
+    """An extension panel (:meth:`~minimal.extensions.registry.Registry.register_panel`): styled lines, hidden while it returns none.
+
+    A panel whose ``render`` or ``live`` raises is hidden for the rest of the mount and reported once.
+    """
+
+    DEFAULT_CSS = """
+    PanelView { height: auto; padding: 0 1; }
+    #sidebar PanelView { margin-bottom: 1; }
+    """
+
+    def __init__(self, spec: PanelSpec, ctx: Any, report: Callable[[str], Any]) -> None:
+        super().__init__()
+        self.spec = spec
+        self.ctx = ctx
+        self.report = report
+        self.failed = False
+
+    def on_mount(self) -> None:
+        self.display = False
+        if self.spec.interval:
+            self.set_interval(self.spec.interval, self.redraw)
+
+    def refresh_state(self, ctx: Any) -> None:
+        self._live({"kind": "end"})
+        self.redraw()
+
+    def refresh_live(self, ctx: Any, event: dict) -> None:
+        self._live(event)
+        self.redraw()
+
+    def _live(self, event: dict) -> None:
+        if self.spec.live is None or self.failed:
+            return
+        try:
+            self.spec.live(self.ctx, event)
+        except Exception as e:
+            self._fail(e)
+
+    def redraw(self) -> None:
+        if self.failed:
+            return
+        try:
+            lines = styled_lines(self.spec.render(self.ctx))
+        except Exception as e:
+            self._fail(e)
+            return
+        if not lines:
+            self.display = False
+            return
+        self.update(lines_content(lines))
+        self.display = True
+
+    def _fail(self, error: Exception) -> None:
+        self.failed = True
+        self.display = False
+        self.report(f"[extension] panel {self.spec.name}: {error}")
 
 
 # --- chrome --------------------------------------------------------------------

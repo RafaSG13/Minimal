@@ -64,7 +64,7 @@ from typing import Any
 import minimal
 from minimal import config
 from minimal.extensions import audit, loader
-from minimal.extensions.metadata import DEPENDENCY_RE, api_problem, read_metadata
+from minimal.extensions.metadata import DEPENDENCY_RE, api_problem, read_metadata, toolkit_imports
 from minimal.extensions.registry import Registry
 
 DEFAULT_URL = "https://github.com/RafaSG13/minimal-marketplace.git"
@@ -93,6 +93,8 @@ class Listing:
     """Why this minimal cannot run it (:func:`~minimal.extensions.metadata.api_problem`); ``None`` if it can."""
     dependencies: tuple[str, ...] = ()
     """Its ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
+    frontend: str = ""
+    """Its ``__frontend__``."""
 
     @property
     def compatible(self) -> bool:
@@ -290,6 +292,7 @@ def describe(path: Path, name: str | None = None) -> Listing:
         meta.api,
         problem,
         meta.dependencies,
+        meta.frontend,
     )
 
 
@@ -1105,6 +1108,9 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
     registry = make_registry()
     try:
         source = loader.read_extensions([path])[0]
+        found = [] if listing.frontend else toolkit_imports(source.files)
+        if found:
+            return f'FAIL {label}: imports {", ".join(found)} without __frontend__ = "textual"'
         loader.load_source(source, registry, config.Settings(), "cli", errors, os.getcwd())
     except ImportError as e:
         # ImportError(name=...) for a module missing here, e.g. a hint raised by the extension itself.

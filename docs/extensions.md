@@ -53,8 +53,11 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__version__`  | `"1.0"`: a string, required by the marketplace; shown as `minimal.version`                                 |
 | `__api__`      | `"1"`: the [API version](#api-versions) it is written for, required. `"1"` runs on any 1.x; `"1.2"` needs 1.2 or a later 1.x |
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
+| `__frontend__` | `"textual"`: optional; the UI toolkit it needs ([Frontends](#frontends)). Without it the extension loads under every frontend |
 
 An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "1"`), and neither is one written for another major version (`written for minimal API 0, this minimal has API 1.1`) or a newer minor (`needs minimal API 1.3, this minimal has API 1.1: upgrade minimal`).
+
+`__frontend__ = "textual"` names the UI toolkit the extension needs (not a frontend). Under a frontend with another toolkit, such as `console`, it is skipped; `/ext` marks it `textual only`. Declare it when the extension imports `textual` or `rich`, e.g. for `register_widget`; `minimal ext check` fails an item that imports them without it.
 
 ## `minimal`: the `Extension`
 
@@ -147,9 +150,11 @@ def backoff(event):
 | `register_provider(name, create, default_model, env_keys=(), description="")` | A model integration: `create()` returns a `Provider` (see the README's "Adding a provider") |
 | `register_widget(name, create, area="sidebar")`                     | A terminal UI widget ([Widgets](#widgets))                    |
 | `register_status(name, render, side="right")`                       | A status-line segment ([Status segments](#status-segments))   |
+| `register_panel(name, render, area="sidebar", live=None, interval=0)` | Styled text any frontend draws ([Panels](#panels))          |
+| `register_renderer(kind, render)`                                   | Draws a code fence, an alert or a tool call yourself ([Renderers](#renderers)) |
 | `register_theme(name, *, dark, background, foreground, accent, **colors)` | A colour theme ([Themes](#themes))                      |
 | `register_logo(art, colors, align="center")`                        | Pixel art in the welcome header ([Header logo](#header-logo)) |
-| `register_frontend(name, run, description="")`                      | A user interface, picked with `--ui name` ([Frontends](#frontends)) |
+| `register_frontend(name, run, description="", toolkit="")`          | A user interface, picked with `--ui name` ([Frontends](#frontends)) |
 | `on_dispose(fn)`                                                    | `fn()` runs before a reload and when minimal exits (last registered first): stop the threads, timers and subprocesses the extension started. Returns `fn`, so it also works as a decorator |
 | `data_dir(scope="project")`                                         | Not a registration: a private folder (mode 0700) for the extension's own files, outside the repository, created if missing. `"project"` is `~/.minimal/data/projects/<hash of the working directory>/<id>`, `"global"` is `~/.minimal/data/global/<id>` |
 
@@ -221,6 +226,19 @@ def fold(args, ctx):
         print(f"Continued from {old}")
 ```
 
+## Panels
+
+```python
+def render(ctx):
+    if not ctx.messages:
+        return None  # hidden
+    return [[("session ", "muted"), (ctx.model, "bold accent")], f"{len(ctx.messages)} messages"]
+
+minimal.register_panel("session", render, area="sidebar")
+```
+
+`register_panel(name, render, area="sidebar", live=None, interval=0)` adds styled text any frontend can draw, in `area` (`WIDGET_AREAS`). `render(ctx)` returns `None` to hide the panel, a string (one line per `\n`) or a list of lines; a line is a string, a `(text, style)` tuple or a list of those pieces. A style is space-separated names from `STYLES`: colours `foreground`, `accent`, `secondary`, `success`, `warning`, `error`, `muted`, `dim`, `diff_added`, `diff_removed` and the modifiers `bold`, `italic`, `underline`, `reverse` (`"bold muted"`); `""` is the default; any other name is an error. `render` runs on the UI thread after mount, after every turn, command and reload, after each `live` event and every `interval` seconds (`> 0`), so keep it cheap and never block: start a thread for slow work and return what it last found. `live(ctx, event)` receives `{"kind": "start", "turn": bool}`, `{"kind": "tool_call", "call": dict}`, `{"kind": "tool_result", "call": dict, "result": dict}` and `{"kind": "end"}` (after every turn or command and after every mount). A panel that raises is hidden and reported once.
+
 ## Widgets
 
 ```python
@@ -237,9 +255,32 @@ minimal.register_widget("session", lambda ctx: SessionPanel(), area="sidebar")
 
 `register_widget(name, create, area)` places the widget built by `create(ctx)` in `area`, one of `WIDGET_AREAS`: `"top"`, `"bottom"` or `"sidebar"`. A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `ui/tui/theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. If it has a `refresh_live(ctx, event)` method, the UI calls it while a turn runs: when a turn or command starts (`{"kind": "start", "turn": bool}`), after each tool call is shown (`{"kind": "tool_call", "call": …}`) and after each result (`{"kind": "tool_result", "call": …, "result": …}`; the result is not in `ctx.messages` until every call of that reply has finished). The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
 
+A widget is a Textual widget, so its extension must declare `__frontend__ = "textual"` (see [Frontends](#frontends)). To only show text, use a [panel](#panels): it works in every frontend.
+
 ## Status segments
 
-`register_status(name, render, side)` adds a segment to the status line, `side` being one of `STATUS_SIDES`: `left` after the git branch or `right` before the context size. `render(ctx)` returns text, a `textual.content.Content` or `None` for no segment; it runs on every redraw, so keep it cheap. A segment that raises is skipped and reported once.
+`register_status(name, render, side)` adds a segment to the status line, `side` being one of `STATUS_SIDES`: `left` after the git branch or `right` before the context size. `render(ctx)` returns `None` for no segment, a string, a `(text, style)` tuple or a list of strings and `(text, style)` pieces (style names: [Panels](#panels)); the terminal UI also accepts a `textual.content.Content`. It runs on every redraw, so keep it cheap. A segment that raises, or returns an unknown style, is skipped and reported once.
+
+## Renderers
+
+```python
+def render_fence(ctx, block):
+    if block["closed"]:
+        return [[("┌ ", "muted"), (block["language"], "bold")], *block["source"].splitlines()]
+    return None  # still streaming: draw the default
+
+minimal.register_renderer("fence:mermaid", render_fence)
+```
+
+`register_renderer(kind, render)` draws one kind of transcript block yourself; registering a kind again replaces it. `render(ctx, block)` returns `None` to keep the default drawing, a string, or lines as for panels. A renderer that raises is reported once and the default is drawn. Kinds and their `block`:
+
+| Kind                | `block`                                                                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fence:<language>`  | `{"kind", "language", "source", "closed", "width"}`: a Markdown code fence of that language (lowercase, first word of the info string). While it streams, `source` holds its complete lines and `closed` is false; a reply that ends with the fence open draws it once more as closed |
+| `blockquote:alert`  | `{"kind", "alert", "text", "width"}`: a GitHub alert (`> [!NOTE]`); `alert` is `note`, `tip`, `important`, `warning` or `caution`, `text` the first paragraph after the marker. The quote's other paragraphs are drawn normally below the lines |
+| `tool:<name>`       | `{"kind", "call", "result"}`: the body of a call to that tool. Called with `result` `None` when the call is shown and again with the `tool_result` block when it finishes |
+
+Only the terminal UI draws renderers; `width` is the columns available.
 
 ## Themes
 
@@ -270,6 +311,8 @@ uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.mini
 ## Frontends
 
 A frontend is the interface minimal runs in. `tui` (the terminal UI) is the default and `console` is a plain line-by-line REPL; `--ui <name>` or the `ui` setting picks one, and `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
+
+A frontend names the UI toolkit it draws with: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, `console` none). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose toolkit is `"textual"`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load everywhere, so they must not import `textual` or `rich`: `minimal ext check` fails one that does.
 
 ```python
 from minimal.api import ConsoleFrontend, ExitRepl
@@ -357,11 +400,13 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.2`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.3`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
 API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response`, `shutdown` and `provider_error`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
 API 1.2 added frontends: `register_frontend`, `Host`, `HostStatus`, `Frontend`, `ConsoleFrontend`, `FrontendSpec` and `ExitRepl`, and `minimal.api.glyphs`. Importing `minimal.api` no longer imports Textual. An extension using any of them declares `__api__ = "1.2"`.
+
+API 1.3 added `register_panel` and `register_renderer` (and `PanelSpec`, `RendererSpec`, `STYLES`, `styled_line`, `styled_lines` in `minimal.api`), the `end` live event, styled-text status segments, and `register_frontend(..., toolkit="")`. An extension using any of them declares `__api__ = "1.3"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

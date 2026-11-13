@@ -196,7 +196,7 @@ class Context:
 
     def reload(self) -> str:
         """Reload every extension from disk; return the summary (loaded, failed, not trusted)."""
-        return reload_summary(*self._app.reload_extensions(), self._app.untrusted_notice())
+        return reload_summary(*self._app.reload_extensions(), self._app.untrusted_notice(), self._app.extension_skipped)
 
     def commands(self) -> dict[str, str]:
         """Every slash command name (without ``/``) and its description: built-in and extension commands,

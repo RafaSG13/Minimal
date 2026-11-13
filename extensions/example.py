@@ -1,4 +1,4 @@
-"""Example extension: a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
+"""Example extension: a tool, a command, a guardrail with a setting, a prompt note and a sidebar panel.
 
 Copy it to ~/.minimal/extensions/ or ./.minimal/extensions/ to always load it,
 or load it on demand with:  minimal --ext extensions/example.py
@@ -10,19 +10,8 @@ Its guardrail patterns are a setting: replace them in settings.json with
 import re
 from datetime import datetime
 
-from textual.widgets import Static
-
-__version__ = "1.0"
-__api__ = "1"
-
-
-class SessionPanel(Static):
-    """Sidebar panel showing the session size, provider and model."""
-
-    DEFAULT_CSS = "SessionPanel { padding: 0 1; }"
-
-    def refresh_state(self, ctx):
-        self.update(f"{len(ctx.messages)} messages\n{ctx.provider_name} · {ctx.model}")
+__version__ = "1.1"
+__api__ = "1.3"
 
 
 def register(minimal):
@@ -49,5 +38,5 @@ def register(minimal):
     # 4) An extra note in the system prompt.
     minimal.append_system_prompt("Always reply in the same language the user writes in.")
 
-    # 5) A visual component: a sidebar panel, refreshed after every turn.
-    minimal.register_widget("session", lambda ctx: SessionPanel(markup=False), area="sidebar")
+    # 5) A visual component any frontend can draw: a sidebar panel, redrawn after every turn.
+    minimal.register_panel("session", lambda ctx: f"{len(ctx.messages)} messages\n{ctx.provider_name} · {ctx.model}")

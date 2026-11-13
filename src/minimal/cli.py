@@ -20,7 +20,7 @@ from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import setup
 from minimal.ui.commands import register_builtin_commands
-from minimal.ui.frontends import DEFAULT_UI, register_builtin_frontends
+from minimal.ui.frontends import register_builtin_frontends
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
@@ -120,9 +120,10 @@ def _run(session: Session, opts: argparse.Namespace) -> None:
         extra_extensions=opts.ext,
         register_commands=register_builtin_commands,
         register_frontends=register_builtin_frontends,
+        ui=opts.ui,
     )
     app.reload_extensions()
-    ui = opts.ui or app.settings.ui or DEFAULT_UI
+    ui = app.ui
     frontend = app.registry.frontends.get(ui)
     if frontend is None:
         print(f"unknown frontend {ui!r}; available: {', '.join(sorted(app.registry.frontends))}", file=sys.stderr)

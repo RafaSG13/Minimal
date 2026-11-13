@@ -21,7 +21,7 @@ jobs:
           path: marketplace
           persist-credentials: false
       - name: The default marketplace's items still load on this minimal
-        run: uv run minimal ext check --install-deps marketplace
+        run: uv run --extra tui minimal ext check --install-deps marketplace
       - uses: actions/upload-artifact@v4
         with:
           name: dist
