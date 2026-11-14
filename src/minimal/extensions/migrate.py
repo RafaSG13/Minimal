@@ -92,8 +92,8 @@ def _copy(src: Path, dest: Path) -> bool:
 def migrate_global(available: Callable[[], Iterable[str]]) -> str | None:
     """Move the old flat layout of ``~/.minimal/extensions`` into per-frontend folders; the notice to show, or ``None`` if there was nothing to move.
 
-    ``available`` returns the folders of the frontends available here (``console``, ``textual`` if installed, ``go``
-    if installed); it is only called when there is something to move. Failures while moving one item leave it in place
+    ``available`` returns the folders of the frontends available here (``console``, ``textual`` if installed);
+    it is only called when there is something to move. Failures while moving one item leave it in place
     and are part of the notice.
     """
     base = loader.GLOBAL_EXTENSIONS_DIR
@@ -175,5 +175,5 @@ def project_notice(cwd: str) -> str | None:
         return None
     return (
         f"{base} holds extensions directly ({', '.join(names)}); minimal now loads only {base}/<frontend>/ "
-        "(console, textual or go, the running frontend's), so these are not loaded. Move them there to use them again."
+        "(console or textual, the running frontend's), so these are not loaded. Move them there to use them again."
     )

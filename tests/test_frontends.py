@@ -47,7 +47,6 @@ class FrontendTest(unittest.TestCase):
             mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
             mock.patch.object(config, "TRUST_FILE", self.tmp / "trusted.json"),
             mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions"),
-            mock.patch.object(frontends, "shutil", SimpleNamespace(which=lambda binary: None)),  # no minimal-go
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -241,25 +240,6 @@ class FrontendTest(unittest.TestCase):
         self.assertEqual(stopped.exception.code, 2)
         self.assertIn("unknown frontend 'tui'; available: console; install minimal-textual: https://github.com/RafaSG13/minimal-marketplace/tree/main/textual", err.getvalue())
 
-    def go_on_the_path(self, present=True):
-        which = lambda binary: f"/usr/bin/{binary}" if present and binary == "minimal-go" else None  # noqa: E731
-        patcher = mock.patch.object(frontends, "shutil", SimpleNamespace(which=which))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_the_go_binary_on_the_path_registers_the_go_frontend_with_its_own_folder(self):
-        self.go_on_the_path()
-        registry = Registry()
-        register_builtin_frontends(registry)
-        self.assertEqual(sorted(registry.frontends), ["console", "go"])
-        self.assertEqual(registry.frontends["go"].toolkit, "go")
-        self.assertEqual([loader.frontend_folder(registry, ui) for ui in ("console", "go", None)], ["console", "go", "console"])
-        self.go_on_the_path(present=False)
-        gone = Registry()
-        register_builtin_frontends(gone)
-        self.assertEqual(sorted(gone.frontends), ["console"])
-        self.assertEqual(loader.frontend_folder(gone, "go"), "go")  # served without its binary: still its own folder
-
     def test_the_folder_of_a_frontend_is_its_toolkit_else_its_name(self):
         registry = Registry()
         registry.register_frontend("tui", print, toolkit="textual")
@@ -311,7 +291,7 @@ class ResolveUiTest(unittest.TestCase):
         return ui, shown[0] if shown else None
 
     def test_the_option_beats_the_setting_which_beats_what_is_installed(self):
-        self.installed("tui", "go")
+        self.installed("tui", "other")
         config.SETTINGS_FILE.write_text('{"ui": "tui"}')
         self.assertEqual(self.resolve("console"), ("console", None))
         self.assertEqual(self.resolve(), ("tui", None))  # no menu: the setting decides
@@ -321,52 +301,16 @@ class ResolveUiTest(unittest.TestCase):
         self.assertEqual(self.resolve(), ("console", None))
 
     def test_one_installed_frontend_is_used_without_asking(self):
-        self.installed("go")
-        self.assertEqual(self.resolve(), ("go", None))
+        self.installed("other")
+        self.assertEqual(self.resolve(), ("other", None))
         self.assertFalse(config.SETTINGS_FILE.exists())
 
     def test_several_installed_frontends_ask_once_and_save_the_choice(self):
-        self.installed("tui", "go")
-        ui, options = self.resolve(choice="go")
-        self.assertEqual((ui, list(options)), ("go", ["console", "tui", "go"]))
-        self.assertEqual(json.loads(config.SETTINGS_FILE.read_text()), {"ui": "go"})
-        self.assertEqual(self.resolve(), ("go", None))  # saved: not asked again
-
-    def test_passthrough_drops_the_ui_option_and_setup_only(self):
-        self.assertEqual(
-            cli.passthrough_args(["--ui", "go", "-c", "--ui=go", "--setup", "-m", "x", "--provider", "p"]),
-            ["-c", "-m", "x", "--provider", "p"],
-        )
-
-    def run_main(self, *args):
-        """``cli.main()`` with ``minimal-go`` replacing the process (``exec_external`` recorded, ending the run like an exec does); returns what happened."""
-        started = []
-
-        def exec_external(name, rest):
-            started.append((name, rest))
-            raise SystemExit(0)
-
-        self.addCleanup(os.chdir, os.getcwd())
-        os.chdir(self.tmp / "work")
-        with (
-            mock.patch.object(sys, "argv", ["minimal", *args]),
-            mock.patch.object(cli.setup, "can_run", return_value=True),
-            mock.patch.object(cli, "exec_external", exec_external),
-            mock.patch.object(cli, "ensure_provider", lambda opts: started.append(("provider", opts.setup))),
-            mock.patch.object(cli, "open_session", side_effect=AssertionError("the session must not be opened before exec")),
-            contextlib.redirect_stdout(io.StringIO()),
-            self.assertRaises(SystemExit),
-        ):
-            cli.main()
-        return started
-
-    def test_an_external_frontend_is_started_with_minimals_args_before_the_session_exists(self):
-        self.installed("go")
-        self.assertEqual(
-            self.run_main("--ui", "go", "-c", "--setup", "--provider", "openai"),
-            [("provider", True), ("go", ["-c", "--provider", "openai"])],
-        )
-        self.assertEqual(self.run_main("-y"), [("provider", False), ("go", ["-y"])])  # the only one installed
+        self.installed("tui", "other")
+        ui, options = self.resolve(choice="other")
+        self.assertEqual((ui, list(options)), ("other", ["console", "tui", "other"]))
+        self.assertEqual(json.loads(config.SETTINGS_FILE.read_text()), {"ui": "other"})
+        self.assertEqual(self.resolve(), ("other", None))  # saved: not asked again
 
 
 if __name__ == "__main__":

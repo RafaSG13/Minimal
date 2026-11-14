@@ -15,7 +15,7 @@ Search order (each folder in sorted order, names starting with ``_`` or ``.`` sk
 2. ``<cwd>/.minimal/extensions/<folder>/`` (from a snapshot the user trusted)
 3. every ``--ext`` path (a file, a package folder, or a folder of extensions)
 
-``<folder>`` is the running frontend's (:func:`frontend_folder`): ``console``, ``textual``, ``go``. Only that
+``<folder>`` is the running frontend's (:func:`frontend_folder`): ``console``, ``textual``. Only that
 folder loads, so each frontend has its own extensions, themes, tools and widgets.
 
 Within each folder, its own extensions load first, then those of its ``themes/``,
@@ -60,8 +60,8 @@ def frontend_folder(registry: Registry, ui: str | None) -> str:
     """The folder of frontend ``ui``: its ``toolkit`` if it has one, else its name.
 
     It is the marketplace folder and the install folder (``~/.minimal/extensions/<folder>/``) of that frontend,
-    and the ``__frontend__`` its extensions may declare. ``ui`` not being registered (``go`` served without its
-    binary on the ``PATH``) means its own name; ``None`` means :data:`DEFAULT_FOLDER`.
+    and the ``__frontend__`` its extensions may declare. ``ui`` not being registered means its own name; ``None``
+    means :data:`DEFAULT_FOLDER`.
     """
     if not ui:
         return DEFAULT_FOLDER

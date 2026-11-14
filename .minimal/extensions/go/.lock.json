@@ -1,0 +1,16 @@
+{
+  "widgets/context_gauge": {
+    "marketplace": "https://github.com/RafaSG13/minimal-marketplace.git",
+    "commit": "61359b51930267e3ce2cc05d193db848c17d9697",
+    "version": "1.4",
+    "api": "2",
+    "sha256": "8b50b06c1f42b78f58a16bf937837dae88ab1ccd3e50ea78c9a22b1e8e9d5231"
+  },
+  "widgets/session_outline": {
+    "marketplace": "https://github.com/RafaSG13/minimal-marketplace.git",
+    "commit": "61359b51930267e3ce2cc05d193db848c17d9697",
+    "version": "1.0",
+    "api": "2",
+    "sha256": "16debdf2e9ec6abf3c79f3826ea69c9ce4a4ec8873a44570f7c3b06cc14059ef"
+  }
+}

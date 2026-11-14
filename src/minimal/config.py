@@ -209,7 +209,7 @@ class Settings:
 
     @property
     def ui(self) -> str | None:
-        """The frontend to run (``console``, ``tui``, ``go`` or one a package or extension registers); ``--ui`` wins over it."""
+        """The frontend to run (``console``, ``tui`` or one a package or extension registers); ``--ui`` wins over it."""
         return self.scalar("ui")[0]
 
     def max_tokens_for(self, provider: str, model: str) -> int | None:
