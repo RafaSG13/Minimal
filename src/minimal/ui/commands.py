@@ -332,8 +332,6 @@ def _entry_label(entry: marketplace.Entry) -> str:
         label += f" · installed ({', '.join(entry.installed)})"
         if entry.modified:
             label += " · local changes"
-    if entry.listing.frontend:
-        label += f" · {entry.listing.frontend} only"
     if not entry.listing.compatible:
         label += f" · not for this minimal (API {entry.listing.api})"
     return label

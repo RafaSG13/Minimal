@@ -65,7 +65,7 @@ class ExtensionApiTest(unittest.TestCase):
             register_commands=register_builtin_commands,
         )
 
-    def extension(self, name, body, folder=None, api='"1"'):
+    def extension(self, name, body, folder=None, api='"2"'):
         """Write ``body`` as ``folder/name`` after an ``__api__ = <api>`` line (``api=None``: no such line)."""
         path = (folder or self.global_dir) / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,8 +100,13 @@ class ExtensionApiTest(unittest.TestCase):
         path = self.extension(
             "tuionly.py",
             '__frontend__ = "textual"\n\ndef register(minimal):\n    minimal.register_command("hi", lambda args, ctx: None)\n',
-            api='"1.3"',
+            api='"2"',
         )
+
+        def register_frontends(registry):
+            register_builtin_frontends(registry)
+            registry.register_frontend("tui", print, "a Textual frontend", toolkit="textual")
+
         for ui, skipped in (("console", [f"{path}: needs a textual frontend; console is not one"]), ("tui", [])):
             with self.subTest(ui=ui):
                 app = App(
@@ -110,7 +115,7 @@ class ExtensionApiTest(unittest.TestCase):
                     cwd=str(self.tmp),
                     auto_approve=True,
                     register_commands=register_builtin_commands,
-                    register_frontends=register_builtin_frontends,
+                    register_frontends=register_frontends,
                     ui=ui,
                 )
                 loaded, errors = app.reload_extensions()
@@ -270,27 +275,28 @@ class ExtensionApiTest(unittest.TestCase):
     def test_extension_without_api_is_not_loaded(self):
         error = self.load_errors(None)
         self.assertIn("declares no __api__", error)
-        self.assertIn('add __api__ = "1"', error)
+        self.assertIn('add __api__ = "2"', error)
 
     def test_extension_needing_a_newer_minor_api_is_not_loaded(self):
-        self.assertIn(f"needs minimal API 1.9, this minimal has API {API_VERSION}", self.load_errors('"1.9"'))
+        self.assertIn(f"needs minimal API 2.9, this minimal has API {API_VERSION}", self.load_errors('"2.9"'))
 
     def test_extension_with_a_malformed_api_is_not_loaded(self):
         self.assertIn("invalid __api__ 'x'", self.load_errors('"x"'))
 
     def test_extension_with_an_api_loads(self):
-        for api in ('"1"', '"1.0"'):
+        for api in ('"2"', '"2.0"'):
             with self.subTest(api=api):
                 self.extension("ok.py", 'def register(minimal):\n    minimal.register_tool("ok", print)\n', api=api)
                 self.assertEqual(self.app.reload_extensions(), ([self.global_dir / "ok.py"], []))
 
     def test_api_problem_boundaries(self):
-        self.assertIsNone(api_problem("1"))
-        self.assertIsNone(api_problem("1.0"))
+        self.assertIsNone(api_problem("2", "2.0"))
+        self.assertIsNone(api_problem("2.0", "2.0"))
         self.assertIn("needs minimal API 1.1", api_problem("1.1", "1.0"))
         self.assertIsNone(api_problem("1.1", "1.2"))
         self.assertIsNone(api_problem("1.2", "1.2"))
         self.assertIn("written for minimal API 2, this minimal has API 1.5", api_problem("2", "1.5"))
+        self.assertIn("written for minimal API 1.3, this minimal has API 2.0", api_problem("1.3", "2.0"))
         self.assertIn("made for API 1", api_problem("0", "1.5"))
         self.assertIn("declares no __api__", api_problem(""))
         for bad in ("x", "1.2.3", ">=1", "1."):

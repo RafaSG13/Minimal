@@ -362,7 +362,7 @@ class Registry:
         status: Status-line segments for the terminal UI, by name.
         themes: Colour themes for the terminal UI, by name.
         logo: Pixel art for the welcome header, or ``None`` for the built-in wordmark.
-        frontends: User interfaces, by name (``tui`` and ``console`` are built in).
+        frontends: User interfaces, by name (``console`` is built in; ``tui`` comes from the minimal-textual package).
         panels: Styled-text panels any frontend can draw, by name.
         renderers: Transcript block renderers, by kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``).
     """
@@ -636,7 +636,7 @@ class Registry:
         ``" "`` and ``"."`` are transparent. Two pixel rows make one terminal
         row (drawn with half blocks), so pixels are roughly square. ``colors``
         maps every other character to ``#rrggbb`` or a theme variable
-        (``$accent``, ``$foreground``, ``$muted``, … see :mod:`minimal.ui.tui.theme`),
+        (``$accent``, ``$foreground``, ``$muted``, … see ``minimal_textual.theme``),
         so the art can follow ``/theme``. Lines wider than the terminal are clipped.
         ``align`` places the logo and the header text under it: ``"left"``,
         ``"center"`` (default) or ``"right"``.

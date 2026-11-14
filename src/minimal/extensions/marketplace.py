@@ -1,10 +1,15 @@
 """The extension marketplace: a git repository of shareable extensions.
 
-Layout of the repository: one folder per category (:data:`~minimal.extensions.loader.CATEGORIES`):
-``extensions/`` (general), ``themes/`` (colour themes), ``tools/`` (tools for the
-model) and ``widgets/`` (terminal UI components), each holding ``<name>.py`` files
-or ``<name>/`` package folders (with an ``__init__.py``). Installing mirrors the
-category: ``themes/ocean.py`` goes to ``~/.minimal/extensions/themes/ocean.py``.
+Layout of the repository: items live in ``shared/<category>/`` (they work under any
+frontend) and in ``frontends/<frontend>/<category>/`` (they set ``__frontend__ = "<frontend>"``
+and need that frontend's toolkit). ``<category>`` is one of
+:data:`~minimal.extensions.loader.CATEGORIES`: ``extensions`` (general), ``themes`` (colour
+themes), ``tools`` (tools for the model) and ``widgets`` (terminal UI components), each holding
+``<name>.py`` files or ``<name>/`` package folders (with an ``__init__.py``). Everything else in
+the repository (``frontends/<frontend>/src``, ``tests``, a Go module...) is not an item.
+Installing mirrors the category only: ``shared/themes/ocean.py`` goes to
+``~/.minimal/extensions/themes/ocean.py``, wherever the item lived, so a name may exist once
+per category in the whole repository (:func:`_find_release` refuses a clash).
 There is no index; each extension carries its own metadata
 (:mod:`~minimal.extensions.metadata`), so concurrent publishes never conflict:
 
@@ -55,6 +60,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -73,6 +79,10 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
 """Valid extension names (always ``fullmatch``): no path separators, no leading ``_``."""
 GIT_TIMEOUT = 120
 """Seconds a ``git`` or ``gh`` command may take before it is given up (a dead network must not hang ``/ext``)."""
+SHARED_DIR = "shared"
+"""Marketplace folder of the items that work under any frontend."""
+FRONTENDS_DIR = "frontends"
+"""Marketplace folder holding one ``<frontend>/`` folder per frontend with items of its own."""
 _COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc")
 
 
@@ -95,6 +105,8 @@ class Listing:
     """Its ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
     frontend: str = ""
     """Its ``__frontend__``."""
+    frontend_dir: str = ""
+    """The frontend folder it lives in (``frontends/<frontend_dir>/``); ``""`` for ``shared/`` or outside a marketplace layout."""
 
     @property
     def compatible(self) -> bool:
@@ -120,7 +132,7 @@ class Release:
 
     @property
     def relpath(self) -> str:
-        """The item's path inside the repository: ``<category>/<name>.py`` or ``<category>/<name>``."""
+        """The item's path inside the repository: ``<shared|frontends/<frontend>>/<category>/<name>.py`` or ``…/<name>``."""
         return self.listing.path.relative_to(self.root).as_posix()
 
 
@@ -238,11 +250,24 @@ def _category_of(path: Path) -> str:
     return path.parent.name if path.parent.name in loader.CATEGORIES else "extensions"
 
 
+def _layout(path: Path) -> str | None:
+    """Where the item ``path`` sits in a marketplace layout: ``""`` in ``shared/<category>/``, the frontend's name in ``frontends/<frontend>/<category>/``, ``None`` anywhere else."""
+    if path.parent.name not in loader.CATEGORIES:
+        return None
+    home = path.parent.parent
+    if home.name == SHARED_DIR:
+        return ""
+    if home.parent.name == FRONTENDS_DIR:
+        return home.name
+    return None
+
+
 def describe(path: Path, name: str | None = None) -> Listing:
     """Read an extension's metadata without running it.
 
     Its category is the name of its folder when that is a category
-    (``themes/ocean.py`` is a theme), else ``extensions``.
+    (``themes/ocean.py`` is a theme), else ``extensions``; its :attr:`Listing.frontend_dir` is
+    the ``<frontend>`` of ``frontends/<frontend>/<category>/`` it sits in, else ``""``.
 
     Args:
         path: The extension file or package folder.
@@ -293,12 +318,15 @@ def describe(path: Path, name: str | None = None) -> Listing:
         problem,
         meta.dependencies,
         meta.frontend,
+        _layout(path) or "",
     )
 
 
 def format_listing(listing: Listing) -> str:
-    """One line: ``name version — description``."""
+    """One line: ``name version (<frontend> only) — description``; the frontend part only for an item of a frontend's folder (or declaring ``__frontend__``)."""
     head = f"{listing.name} {listing.version}" if listing.version else listing.name
+    if listing.frontend_dir or listing.frontend:
+        head += f" ({listing.frontend_dir or listing.frontend} only)"
     return f"{head} — {listing.description}"
 
 
@@ -342,14 +370,47 @@ def sync(url: str | None = None) -> Path:
     return target
 
 
+def _item_folders(root: Path, category: str) -> list[Path]:
+    """The folders of marketplace clone ``root`` that may hold ``category`` items: ``shared/<category>/``, then ``frontends/<frontend>/<category>/`` for each frontend by name."""
+    folders = [root / SHARED_DIR / category]
+    frontends = root / FRONTENDS_DIR
+    if frontends.is_dir():
+        folders += [
+            p / category
+            for p in sorted(frontends.iterdir())
+            if p.is_dir() and not p.name.startswith((".", "_"))
+        ]
+    return folders
+
+
+def _entries(root: Path, category: str) -> tuple[list[Path], list[Path]]:
+    """``(entries, shadowed)`` of ``category`` in every :func:`_item_folders` of ``root`` (:func:`~minimal.extensions.loader.category_entries`); ``entries`` by name."""
+    entries: list[Path] = []
+    shadowed: list[Path] = []
+    for folder in _item_folders(root, category):
+        found, hidden = loader.category_entries(folder, category)
+        entries += found
+        shadowed += hidden
+    return sorted(entries, key=lambda p: p.name), shadowed
+
+
+def _clashing(paths: Iterable[Path]) -> dict[str, list[Path]]:
+    """The items of ``paths`` sharing a name, by name: installed, they would land in the same place."""
+    by_name: dict[str, list[Path]] = {}
+    for path in paths:
+        by_name.setdefault(path.stem if path.suffix == ".py" else path.name, []).append(path)
+    return {name: found for name, found in by_name.items() if len(found) > 1}
+
+
 def releases(
     query: str = "", url: str | None = None, category: str | None = None
 ) -> list[Release]:
     """The offered version (:class:`Release`) of each extension whose name or description contains ``query`` (case-insensitive); all if empty.
 
     Listed by category in :data:`~minimal.extensions.loader.CATEGORIES` order, then by
-    name; only ``category``'s if given. Extensions whose HEAD has invalid metadata are skipped.
-    The description is the offered version's.
+    name; only ``category``'s if given. Items come from ``shared/<category>/`` and every
+    ``frontends/<frontend>/<category>/``; a name in several of them is listed once per folder.
+    Extensions whose HEAD has invalid metadata are skipped. The description is the offered version's.
 
     Raises:
         ValueError: if ``category`` is not one of :data:`~minimal.extensions.loader.CATEGORIES`.
@@ -364,7 +425,7 @@ def releases(
     needle = query.lower()
     found = []
     for folder in [category] if category else loader.CATEGORIES:
-        for path in loader.category_entries(root / folder, folder)[0]:
+        for path in _entries(root, folder)[0]:
             try:
                 release = _resolve(root, url, path)
             except ValueError:
@@ -598,10 +659,19 @@ def catalog(url: str, cwd: str) -> list[Entry]:
     """Every extension in marketplace ``url`` (as offered, :func:`releases`) with its installed copies (global and ``cwd``'s project).
 
     A copy is outdated when its lock entry from ``url`` names another commit than the offered one;
-    without such an entry its files are compared with the offered version's.
+    without such an entry its files are compared with the offered version's. A name that is in
+    several folders of one category is left out (a note goes to stderr): its copies would install to the same place.
     """
     entries = []
-    for release in releases("", url):
+    offered = releases("", url)
+    count = Counter((r.listing.category, r.listing.name) for r in offered)
+    for release in offered:
+        if count[release.listing.category, release.listing.name] > 1:
+            print(
+                f"[marketplace] skipped {release.relpath}: the name is also in another folder of {url}",
+                file=sys.stderr,
+            )
+            continue
         listing = release.listing
         installed, outdated, modified, version = [], [], [], ""
         wanted = None
@@ -642,19 +712,20 @@ def _target_dir(scope: str, cwd: str, category: str = "extensions") -> Path:
 
 
 def _find(root: Path, name: str, category: str | None) -> list[Path]:
-    """``name``'s file or package folder in each category (or only ``category``) of marketplace clone ``root``."""
+    """``name``'s file or package folder in each :func:`_item_folders` of each category (or only ``category``) of marketplace clone ``root``."""
     found = []
-    for folder in [category] if category else loader.CATEGORIES:
-        path = next(
-            (
-                p
-                for p in (root / folder / f"{name}.py", root / folder / name)
-                if _is_extension(p)
-            ),
-            None,
-        )
-        if path is not None:
-            found.append(path)
+    for kind in [category] if category else loader.CATEGORIES:
+        for folder in _item_folders(root, kind):
+            path = next(
+                (
+                    p
+                    for p in (folder / f"{name}.py", folder / name)
+                    if _is_extension(p)
+                ),
+                None,
+            )
+            if path is not None:
+                found.append(path)
     return found
 
 
@@ -662,7 +733,8 @@ def _find_release(name: str, url: str | None, category: str | None) -> Release:
     """The offered version (:func:`_resolve`) of ``name`` in the marketplace at ``url`` (default: :func:`marketplace_url`).
 
     Raises:
-        ValueError: if the name or category is invalid, or the name is not in the marketplace or is in several categories.
+        ValueError: if the name or category is invalid, or the name is not in the marketplace, or is in
+            several categories or in several folders (``shared/``, ``frontends/<frontend>/``) of its category.
     """
     if category:
         loader.category_dir(
@@ -675,8 +747,15 @@ def _find_release(name: str, url: str | None, category: str | None) -> Release:
     if not found:
         raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
     if len(found) > 1:
+        categories = list(dict.fromkeys(_category_of(p) for p in found))
+        if len(categories) > 1:
+            raise ValueError(
+                f"{name} is in several categories ({', '.join(categories)}); pick one"
+            )
         raise ValueError(
-            f"{name} is in several categories ({', '.join(p.parent.name for p in found)}); pick one"
+            f"{name} is in several folders of the marketplace "
+            f"({', '.join(p.relative_to(root).as_posix() for p in found)}); "
+            "it would install to the same place, so the marketplace must keep only one"
         )
     return _resolve(root, url, found[0])
 
@@ -943,14 +1022,16 @@ def publish(
 
     Args:
         path: The extension file or package folder.
-        category: Marketplace folder (default: the extension's own folder if it is a
-            category, such as ``~/.minimal/extensions/themes``, else ``extensions``).
+        category: Marketplace category folder (default: the extension's own folder if it is a
+            category, such as ``~/.minimal/extensions/themes``, else ``extensions``). It goes
+            to ``frontends/<frontend>/<category>/`` if it sets ``__frontend__``, else to ``shared/<category>/``.
 
     Returns:
         What happened, for the user.
 
     Raises:
-        ValueError: if the extension is missing, invalid, or already published unchanged, or the category is unknown.
+        ValueError: if the extension is missing, invalid, or already published unchanged, the category is unknown,
+            its ``__frontend__`` is not a valid name, or the marketplace already has the name in another folder of the category.
         RuntimeError: if a git command fails (for example, no push access).
     """
     path = Path(path).resolve()
@@ -960,14 +1041,30 @@ def publish(
     category = category or listing.category
     loader.category_dir(Path(), category)  # validates it
     _check_package_name(path, listing.name, category)
+    if listing.frontend and not NAME_RE.fullmatch(listing.frontend):
+        raise ValueError(
+            f'{path}: invalid __frontend__ {listing.frontend!r}; use a frontend name such as "textual"'
+        )
     url = url or marketplace_url()
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         _git(
             "clone", "--quiet", "--", url, tmp
         )  # "--": a URL starting with "-" is not an option
-        folder = Path(tmp, category)
+        home = Path(FRONTENDS_DIR, listing.frontend) if listing.frontend else Path(SHARED_DIR)
+        folder = Path(tmp, home, category)
         dest = folder / (listing.name if path.is_dir() else f"{listing.name}.py")
         other = folder / (f"{listing.name}.py" if path.is_dir() else listing.name)
+        elsewhere = [
+            p.relative_to(tmp).as_posix()
+            for other_folder in _item_folders(Path(tmp), category)
+            if other_folder != folder
+            for p in (other_folder / f"{listing.name}.py", other_folder / listing.name)
+            if _is_extension(p)
+        ]
+        if elsewhere:
+            raise ValueError(
+                f"{listing.name} is already in {', '.join(elsewhere)}; a name may exist once per category in the marketplace"
+            )
         if (
             _is_extension(dest)
             and not _is_extension(other)
@@ -1037,10 +1134,15 @@ def check(
 ) -> tuple[list[str], bool]:
     """Validate extensions the way the marketplace and the loader see them, for ``minimal ext check``.
 
-    Each path is an extension file or package folder, or a marketplace root (a
-    folder holding any category folder), whose every extension is checked. Each
-    extension must describe itself (:func:`describe`), accept this minimal
-    (``__api__``) and load into a fresh registry from ``make_registry``.
+    Each path is an extension file or package folder, or a marketplace checkout (a folder
+    holding ``shared/`` or ``frontends/``), whose every item in ``shared/<category>/`` and
+    ``frontends/<frontend>/<category>/`` is checked (``frontends/<frontend>/src``, ``tests``
+    and the like are not items). Each extension must describe itself (:func:`describe`), accept
+    this minimal (``__api__``) and load into a fresh registry from ``make_registry``. An item in
+    ``frontends/<frontend>/`` must set ``__frontend__`` to that frontend, one in ``shared/`` must
+    not set it, and a name may exist once per category in a checkout. An item for
+    ``__frontend__ = "textual"`` is only checked statically (metadata, API, syntax) when
+    ``textual`` is not installed here.
 
     With ``install_deps``, the missing ``__dependencies__`` of every extension are installed
     first (:func:`install_dependencies`); if that fails, the error goes to stderr and nothing
@@ -1048,7 +1150,9 @@ def check(
 
     Returns:
         ``(lines, ok)``: ``ok   category/name version``, ``WARN category/name: needs <module>``
-        when it imports a module that is not installed here, or ``FAIL category/name: problem``;
+        when it imports a module that is not installed here, or ``FAIL category/name: problem``
+        (``<frontend>/category/name`` for an item of ``frontends/<frontend>/``); ``ok`` lines of
+        statically checked items end with ``(static checks only: textual is not installed)``;
         ``ok`` is false if any line is ``FAIL`` or installing the dependencies failed.
     """
     items = _check_items(paths)
@@ -1072,6 +1176,12 @@ def check(
     return lines, not any(line.startswith("FAIL") for line in lines)
 
 
+def _label(path: Path) -> str:
+    """How ``check`` names the item ``path``: ``category/name``, with a ``<frontend>/`` prefix for one in ``frontends/<frontend>/``."""
+    home = _layout(path)
+    return f"{home + '/' if home else ''}{_category_of(path)}/{path.name if path.is_dir() else path.stem}"
+
+
 def _check_items(paths: list[Path]) -> list[Path | str]:
     """What :func:`check` looks at, in order: each extension's path, or a ``FAIL`` line for a problem found while listing them."""
     items: list[Path | str] = []
@@ -1079,16 +1189,22 @@ def _check_items(paths: list[Path]) -> list[Path | str]:
         path = path.resolve()
         if not path.exists():
             items.append(f"FAIL {path}: not found")
-        elif (
-            path.is_dir()
-            and not (path / "__init__.py").is_file()
-            and any((path / c).is_dir() for c in loader.CATEGORIES)
-        ):
+        elif path.is_dir() and not (path / "__init__.py").is_file():
+            if not any((path / d).is_dir() for d in (SHARED_DIR, FRONTENDS_DIR)):
+                items.append(
+                    f"FAIL {path}: not an extension, and not a marketplace checkout (no {SHARED_DIR}/ or {FRONTENDS_DIR}/ folder)"
+                )
+                continue
             for category in loader.CATEGORIES:
-                entries, shadowed = loader.category_entries(path / category, category)
+                entries, shadowed = _entries(path, category)
                 items += [
-                    f"FAIL {category}/{p.name}: both {p.name}.py and {p.name}/ exist; remove one"
+                    f"FAIL {_label(p)}: both {p.name}.py and {p.name}/ exist; remove one"
                     for p in shadowed
+                ]
+                items += [
+                    f"FAIL {category}/{name}: in several folders ({', '.join(p.relative_to(path).as_posix() for p in found)}); "
+                    "it would install to the same place, so keep only one"
+                    for name, found in _clashing(entries).items()
                 ]
                 items += entries
         else:
@@ -1097,13 +1213,22 @@ def _check_items(paths: list[Path]) -> list[Path | str]:
 
 
 def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
-    label = f"{_category_of(path)}/{path.name if path.is_dir() else path.stem}"
+    label = _label(path)
     try:
         listing = describe(path)
     except ValueError as e:
         return f"FAIL {label}: {str(e).removeprefix(f'{path}: ')}"
     if not listing.compatible:
         return f"FAIL {label}: {listing.problem}"
+    home = _layout(path)
+    if home and listing.frontend != home:
+        declared = f"it sets {listing.frontend!r}" if listing.frontend else "it does not set it"
+        return f'FAIL {label}: it is in {FRONTENDS_DIR}/{home}/, so it must set __frontend__ = "{home}" ({declared})'
+    if home == "" and listing.frontend:
+        return (
+            f"FAIL {label}: it is in {SHARED_DIR}/, so it must not set __frontend__ (it sets {listing.frontend!r}); "
+            f"move it to {FRONTENDS_DIR}/{listing.frontend}/"
+        )
     errors: list[str] = []
     registry = make_registry()
     try:
@@ -1111,6 +1236,10 @@ def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
         found = [] if listing.frontend else toolkit_imports(source.files)
         if found:
             return f'FAIL {label}: imports {", ".join(found)} without __frontend__ = "textual"'
+        if listing.frontend == "textual" and _missing("textual"):
+            for file, data in source.files:
+                compile(data, str(file), "exec")  # a syntax error raises
+            return f"ok   {label} {listing.version} (static checks only: textual is not installed)"
         loader.load_source(source, registry, config.Settings(), "cli", errors, os.getcwd())
     except ImportError as e:
         # ImportError(name=...) for a module missing here, e.g. a hint raised by the extension itself.
@@ -1232,7 +1361,9 @@ def register_marketplace_tools(registry: Registry) -> None:
         run=_ext_search,
         description=(
             "Search every configured minimal extension marketplace. Returns one line per extension: "
-            "category/name, version and description, prefixed by the marketplace when there are several. "
+            "category/name, version, \"(<frontend> only)\" if it works only under that frontend (an item in the "
+            "marketplace's frontends/<frontend>/ folder; the rest, in shared/, work under any), and description, "
+            "prefixed by the marketplace when there are several. "
             "Check it before writing a new extension; one may already exist."
         ),
         input_schema={
@@ -1251,7 +1382,9 @@ def register_marketplace_tools(registry: Registry) -> None:
         run=_ext_install,
         description=(
             "Install an extension from a marketplace into the global (default) or project extensions folder, "
-            "in the subfolder of its category: the newest version written for this minimal's API. It is not "
+            "in the subfolder of its category (the same wherever it lives in the marketplace: shared/ or a "
+            "frontend's folder): the newest version written for this minimal's API. A \"(<frontend> only)\" "
+            "extension loads only under that frontend. It is not "
             "active until you call reload_extensions. An installed copy with local changes is not overwritten "
             "unless force is true."
         ),
@@ -1291,7 +1424,8 @@ def register_marketplace_tools(registry: Registry) -> None:
             "Publish an extension file or package folder to a marketplace: pushes a new branch and opens a pull "
             "request. It must define register(minimal), start with a docstring (its first line is the description) "
             "and set __version__. It goes in the category of its folder (for example ~/.minimal/extensions/themes) "
-            "unless one is given."
+            "unless one is given; in the marketplace it is filed under shared/, or under frontends/<frontend>/ "
+            "if it sets __frontend__."
         ),
         input_schema={
             "type": "object",

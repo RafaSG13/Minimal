@@ -1,8 +1,14 @@
-"""The built-in frontends: ``tui`` (the Textual terminal UI) and ``console`` (a plain line-by-line REPL).
+"""The built-in ``console`` frontend (a plain line-by-line REPL) and the discovery of installed ones.
 
-Both are registered like an extension's frontend (:meth:`~minimal.extensions.registry.Registry.register_frontend`),
-so ``--ui`` or the ``ui`` setting picks one, and an extension can register another or replace
-these by name. The ``tui`` frontend needs the ``tui`` extra (Textual), imported only when it starts.
+A frontend is registered like an extension's (:meth:`~minimal.extensions.registry.Registry.register_frontend`),
+so ``--ui`` or the ``ui`` setting picks one, and an extension can register another or replace one by name.
+A package ships a frontend by declaring an entry point in the group :data:`ENTRY_POINT_GROUP`::
+
+    [project.entry-points."minimal.frontends"]
+    tui = "minimal_textual:register"
+
+``register`` is called as ``register(registry)`` with the :class:`~minimal.extensions.registry.Registry`
+on every reload and calls ``registry.register_frontend(name, run, description, toolkit=...)``.
 """
 
 from __future__ import annotations
@@ -10,6 +16,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable
+from importlib.metadata import entry_points
 
 import minimal
 from minimal import glyphs
@@ -17,30 +24,30 @@ from minimal.core.app import ConsoleFrontend, ExitRepl
 from minimal.core.host import Host
 from minimal.extensions.registry import Registry
 
-TUI_MISSING = (
-    'the tui frontend needs Textual: install minimal with uv tool install "mnml-agent[tui]", '
-    "or run minimal --ui console"
-)
+ENTRY_POINT_GROUP = "minimal.frontends"
+"""Entry-point group of installed packages that provide frontends."""
 
 
 def register_builtin_frontends(registry: Registry) -> None:
-    """Register ``tui`` and ``console``."""
-    registry.register_frontend(
-        "tui", _run_tui, "the terminal UI: transcript, widgets, themes (default)", toolkit="textual"
-    )
+    """Register ``console``."""
     registry.register_frontend("console", run_console, "a plain console: one line per message, no colours or widgets")
 
 
-def _run_tui(host: Host) -> None:
-    try:
-        from minimal.ui.tui.app import run_tui
-    except ModuleNotFoundError as e:
-        if (e.name or "").partition(".")[0] != "textual":
-            raise
-        print(TUI_MISSING, file=sys.stderr)
-        sys.exit(2)
+def register_installed_frontends(registry: Registry) -> list[str]:
+    """Let every ``minimal.frontends`` entry point register its frontends; return one error line per one that failed."""
+    errors = []
+    for entry in sorted(entry_points(group=ENTRY_POINT_GROUP), key=lambda e: e.name):
+        try:
+            entry.load()(registry)
+        except Exception as e:
+            errors.append(f"{ENTRY_POINT_GROUP} {entry.name} ({entry.value}): {type(e).__name__}: {e}")
+    return errors
 
-    run_tui(host)
+
+def register_frontends(registry: Registry) -> list[str]:
+    """Register ``console`` and then the installed frontends; the errors of the latter, as from :func:`register_installed_frontends`."""
+    register_builtin_frontends(registry)
+    return register_installed_frontends(registry)
 
 
 def run_console(host: Host) -> None:

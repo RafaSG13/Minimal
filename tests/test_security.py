@@ -1,5 +1,4 @@
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -24,7 +23,7 @@ from minimal.tools.builtin import register_builtin_tools
 from minimal.tools.common import clip
 from minimal.ui.commands import register_builtin_commands
 
-HELLO_EXT = '__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
+HELLO_EXT = '__api__ = "2"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
 
 class TempDirTest(unittest.TestCase):
@@ -435,24 +434,6 @@ class GitTest(ToolTest):
         ):
             marketplace.sync("https://example.invalid/market.git")
         self.assertLess(time.monotonic() - start, 5)
-
-    @unittest.skipUnless(importlib.util.find_spec("textual"), "needs the tui extra")
-    def test_repository_config_cannot_make_git_run_a_command(self):
-        from minimal.ui.tui.app import git_status
-
-        marker = self.tmp / "ran"
-        hook = self.tmp / "hook.sh"
-        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
-        hook.chmod(0o755)
-        subprocess.run(["git", "init", "--quiet"], cwd=self.cwd, check=True)
-        subprocess.run(
-            ["git", "config", "core.fsmonitor", str(hook)], cwd=self.cwd, check=True
-        )
-        (self.cwd / "a.py").write_text("x = 1\n")
-
-        self.assertEqual(self.call("glob", pattern="*.py")["content"], "a.py")
-        self.assertIsNotNone(git_status(str(self.cwd)))
-        self.assertFalse(marker.exists())
 
 
 class ConsoleOutputTest(unittest.TestCase):

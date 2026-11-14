@@ -6,8 +6,7 @@ needs from here::
 
     from minimal.api import USER_DENIED, TurnInterrupted, theme
 
-``theme`` holds the glyphs (:mod:`minimal.glyphs`). Importing this module does not import the
-terminal UI or Textual; :func:`logo_content`, which returns Textual content, loads it on first use.
+``theme`` holds the glyphs (:mod:`minimal.glyphs`). Importing this module does not import any UI toolkit.
 
 This module is versioned by :data:`API_VERSION`, which every extension declares with
 ``__api__`` (see :mod:`minimal.extensions.metadata`). Internal code never imports this module.
@@ -61,7 +60,6 @@ __all__ = [
     "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",
     "glob_regex", "glyphs", "result_text", "styled_line", "styled_lines", "theme",
 ]  # fmt: skip
-# logo_content is importable too, but loaded lazily (__getattr__): a star import must not pull in Textual.
 
 _SESSIONS = "ctx.sessions(), ctx.read_session() and ctx.new_session()"
 REMOVED: dict[str, tuple[str, str]] = {
@@ -76,16 +74,16 @@ REMOVED: dict[str, tuple[str, str]] = {
     "reload_summary": ("1.0", "ctx.reload()"),
     "run_agent": ("1.0", "ctx.run_agent()"),
     "tool_specs": ("1.0", "ctx.tools"),
+    "logo_content": ("2.0", "minimal_textual.logo_content (the minimal-textual package)"),
+    **{f"theme.{name}": ("2.0", f"minimal_textual.theme.{name} (the minimal-textual package)") for name in ("DEFAULT", "MINIMAL", "build", "available")},
 }
-"""Names this module no longer has: ``name -> (API version that removed it, what to use instead)``."""
+"""Names this module no longer has: ``name -> (API version that removed it, what to use instead)``.
+
+``theme.<name>`` is an attribute of :data:`theme` (:mod:`minimal.glyphs`)."""
 
 
 def __getattr__(name: str) -> object:
-    """Load :func:`logo_content` from the terminal UI on first use; explain an import of a removed name."""
-    if name == "logo_content":
-        from minimal.ui.tui.widgets import logo_content
-
-        return logo_content
+    """Explain an import of a removed name."""
     if name in REMOVED:
         version, instead = REMOVED[name]
         raise ImportError(
