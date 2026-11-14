@@ -1,6 +1,6 @@
 """Example extension: a tool, a command, a guardrail with a setting, a prompt note and a sidebar panel.
 
-Copy it to ~/.minimal/extensions/ or ./.minimal/extensions/ to always load it,
+Copy it to ~/.minimal/extensions/console/ (or the folder of your frontend: textual, go) or ./.minimal/extensions/console/ to always load it,
 or load it on demand with:  minimal --ext extensions/example.py
 
 Its guardrail patterns are a setting: replace them in settings.json with

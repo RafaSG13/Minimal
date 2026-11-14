@@ -22,15 +22,19 @@ def register(minimal):
 
 ## Layout and where to save
 
-Extensions load from three places:
+Extensions load from three places, and each frontend has its own folder in the first two (`<frontend>` is `console`, `textual` or `go`: the running frontend's toolkit if it has one, else its name; `--ui tui` is `textual`):
 
-| Place                    | Scope     | Notes                                                              |
-| ------------------------ | --------- | ------------------------------------------------------------------ |
-| `~/.minimal/extensions/` | `global`  | Always loaded                                                      |
-| `./.minimal/extensions/` | `project` | Loaded only once the project is trusted (see [Trust](#trust))      |
-| `minimal -e <path>`      | `cli`     | A file or folder; repeatable; never skipped by `extensions.disabled` |
+| Place                               | Scope     | Notes                                                              |
+| ----------------------------------- | --------- | ------------------------------------------------------------------ |
+| `~/.minimal/extensions/<frontend>/` | `global`  | Always loaded under that frontend                                  |
+| `./.minimal/extensions/<frontend>/` | `project` | Loaded only once the project is trusted (see [Trust](#trust))      |
+| `minimal -e <path>`                 | `cli`     | A file or folder; repeatable; never skipped by `extensions.disabled` |
 
-Each folder's own entries load first, then those in its `themes/`, `tools/` and `widgets/` subfolders (where the marketplace installs those categories), alphabetically within a folder. Names starting with `_` or `.` are skipped.
+Only the running frontend's folder loads, so each frontend has its own extensions, themes, tools and widgets and its own `.lock.json`. The model's system prompt tells it which folders those are, so what it writes loads next time. Within a folder, its own entries load first, then those in its `themes/`, `tools/` and `widgets/` subfolders (where the marketplace installs those categories), alphabetically within a folder. Names starting with `_` or `.` are skipped.
+
+A frontend added by an extension (`register_frontend("plain", ...)`) has the folder `plain/` (or its toolkit's), so the extension that defines it must itself be in `plain/` or passed with `-e`.
+
+Extensions installed before frontends had folders sat directly in `~/.minimal/extensions/` (with `themes/`, `tools/`, `widgets/`). minimal moves them once, on the first start: an item without `__frontend__` is copied into the folder of every frontend available (`console`, `textual` if installed, `go` if installed), one with `__frontend__ = "X"` only into `X/`; each old copy is removed once its copies are identical, its `.lock.json` entry moves with it, and minimal prints what moved. A different file already in a destination is never overwritten: the old copy stays and is reported. A project's `.minimal/extensions/` is not moved (it belongs to the repository); minimal says which extensions in it are not loaded any more.
 
 An extension is either:
 
@@ -53,11 +57,11 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__version__`  | `"1.0"`: a string, required by the marketplace; shown as `minimal.version`                                 |
 | `__api__`      | `"2"`: the [API version](#api-versions) it is written for, required. `"2"` runs on any 2.x; `"2.1"` needs 2.1 or a later 2.x |
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
-| `__frontend__` | `"textual"`: optional; the UI toolkit it needs ([Frontends](#frontends)). Without it the extension loads under every frontend |
+| `__frontend__` | `"textual"`: optional; the frontend folder it belongs to (`console`, `textual`, `go`; [Frontends](#frontends)). An extension without it loads wherever it sits |
 
 An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "2"`), and neither is one written for another major version (`written for minimal API 1, this minimal has API 2.0`) or a newer minor (`needs minimal API 2.3, this minimal has API 2.0: upgrade minimal`).
 
-`__frontend__ = "textual"` names the UI toolkit the extension needs (not a frontend). Under a frontend with another toolkit, such as `console` or `minimal serve`, it is skipped; `/ext` marks it `textual only`. Declare it when the extension imports `textual` or `rich`, e.g. for `register_widget`; `minimal ext check` fails an item that imports them without it.
+`__frontend__ = "textual"` names the frontend folder the extension belongs to. It loads only under a frontend whose folder is that one; wherever else it is found (a project folder, `-e`, a copy in another frontend's folder), it is skipped, not failed, and the reload summary lists it as `Skipped:`. Declare it when the extension imports `textual` or `rich`, e.g. for `register_widget`; `minimal ext check` fails an item that imports them without it, and one in a marketplace folder other than the one it declares.
 
 ## `minimal`: the `Extension`
 
@@ -288,7 +292,7 @@ Only the terminal UI draws renderers; `width` is the columns available.
 minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
 ```
 
-A theme needs `background`, `foreground` and `accent` (`#rrggbb`); the other colours (`THEME_COLORS`: `surface`, `muted`, `error`, `user_bg`, `diff_added`, …) are optional and derived when left out. The built-in theme is `minimal` (black and white) and cannot be replaced; `amber`, `dark` and `light` are in the marketplace's `shared/themes/` (install them with `/ext` → Themes). Registered themes appear in `/theme` and `Ctrl+P` → Theme; both belong to the terminal UI, so other frontends ignore themes. If a reload removes the active theme, the UI goes back to `minimal`. `minimal.api.theme` (also `minimal.api.glyphs`) holds the glyphs (`theme.SUCCESS`, `theme.BRANCH`, …) and imports no UI toolkit; its old names for the built-in theme (`DEFAULT`, `MINIMAL`, `build`, `available`) were removed in API 2.0 and are in `minimal_textual.theme` now.
+A theme needs `background`, `foreground` and `accent` (`#rrggbb`); the other colours (`THEME_COLORS`: `surface`, `muted`, `error`, `user_bg`, `diff_added`, …) are optional and derived when left out. The built-in theme is `minimal` (black and white) and cannot be replaced; `amber`, `dark` and `light` are in the marketplace's `textual/themes/` (install them with `/ext` → Themes in the Textual UI). Registered themes appear in `/theme` and `Ctrl+P` → Theme; both belong to the terminal UI, so other frontends ignore themes. If a reload removes the active theme, the UI goes back to `minimal`. `minimal.api.theme` (also `minimal.api.glyphs`) holds the glyphs (`theme.SUCCESS`, `theme.BRANCH`, …) and imports no UI toolkit; its old names for the built-in theme (`DEFAULT`, `MINIMAL`, `build`, `available`) were removed in API 2.0 and are in `minimal_textual.theme` now.
 
 ## Header logo
 
@@ -303,14 +307,14 @@ Without a logo, the welcome header is a left-aligned wordmark, `─●─  m i n
 To make a logo from any image (pixel art or a picture), convert it with Pillow, which minimal does not depend on:
 
 ```bash
-uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.minimal/extensions/widgets/logo.py   # then /reload
+uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.minimal/extensions/textual/widgets/logo.py   # then /reload
 ```
 
 `-w` is the width in pixels (one terminal column each; images only shrink), `-c` the most colours to keep (default 16; pixel art with no more keeps its exact colours), `--nearest` resizes without smoothing. Without `-o` the extension is printed.
 
 ## Frontends
 
-A frontend is the interface minimal runs in. `console`, a plain line-by-line REPL, is built in; the `minimal-textual` package adds `tui` (the Textual terminal UI), the default when installed. `--ui <name>` or the `ui` setting picks one, and `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
+A frontend is the interface minimal runs in. `console`, a plain line-by-line REPL, is built in; the `minimal-textual` package adds `tui` (the Textual terminal UI), and a `minimal-go` program on the `PATH` adds `go` (the Go UI). `--ui <name>` or the `ui` setting picks one; with neither, `minimal` uses the only one installed, or shows a menu (the arrow-key chooser of setup) and saves the answer as `ui`. `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
 
 **Frontends from packages.** A Python package ships a frontend with an entry point in the group `minimal.frontends`, a function called as `register(registry)` that calls `registry.register_frontend(name, run, description, toolkit=...)` on the `Registry`:
 
@@ -319,11 +323,11 @@ A frontend is the interface minimal runs in. `console`, a plain line-by-line REP
 tui = "minimal_textual:register"
 ```
 
-minimal calls every entry point on each reload, after registering `console` (so one can replace it) and before loading extensions (so extensions can replace its frontends). One that fails to import or raises is reported with the extension errors, and the others still register. When neither `--ui` nor the `ui` setting names a frontend, minimal runs `tui` if one is registered, else `console`.
+minimal calls every entry point on each reload, after registering `console` and `go` (so one can replace them) and before loading extensions (so extensions can replace its frontends). One that fails to import or raises is reported with the extension errors, and the others still register. Which frontend runs is decided before the session is opened: `--ui`, else the `ui` setting, else the only one installed besides `console`, else a menu when there are several, else `console`.
 
-**Frontends in other languages.** `minimal serve` runs minimal with no interface and speaks JSON lines on stdin and stdout; a program in any language starts it and draws what it sends. Extensions with `__frontend__` are skipped under it, but panels, status segments and renderers run inside minimal and reach the frontend as styled lines. See [serve.md](serve.md) for every message.
+**Frontends in other languages.** `minimal serve --ui <name>` runs minimal with no interface and speaks JSON lines on stdin and stdout; a program in any language starts it and draws what it sends. `--ui` names the frontend being served (default `console`): its folder is the one whose extensions load (`go` for the Go UI), and extensions with a `__frontend__` of another folder are skipped. Panels, status segments and renderers run inside minimal and reach the frontend as styled lines. The Go UI is found as the binary `minimal-go` on the `PATH`: when it is the chosen frontend, `minimal` runs setup if no provider is chosen yet and then replaces itself with `minimal-go`, passing its own options on (without `--ui`); `minimal-go` starts `minimal serve --ui go ...`. See [serve.md](serve.md) for every message.
 
-A frontend names the UI toolkit it draws with: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, `console` and `minimal serve` none). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose toolkit is `"textual"`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load everywhere, so they must not import `textual` or `rich`: `minimal ext check` fails one that does.
+A frontend's folder (`loader.frontend_folder`) is the toolkit it draws with, else its name: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, so its folder is `textual/`; `console` has `console/`, and `go` registers itself with toolkit `"go"`). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose folder is `textual`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load wherever they sit, so one in a folder that is not `textual` must not import `textual` or `rich`: `minimal ext check` fails one that does.
 
 ```python
 from minimal.api import ConsoleFrontend, ExitRepl
@@ -354,7 +358,7 @@ A `Frontend` shows minimal: `text(chunk)`, `tool_call(call)`, `tool_result(call,
 
 ## Trust
 
-A project's `./.minimal/extensions/` is code from the repository, so minimal does not run it until you trust it. Untrusted, it is skipped without asking: the transcript says so and the status line shows `⚠ N untrusted`. `/trust` prints a static scan of each file (what it can do: run commands, use the network, read environment variables or credential files, write files, decode hidden data, hook tool calls…; a list of capabilities, not of intent), together with the project's trust-gated settings (`permissions.allow`, `extensions.disabled`, `extensions.settings`), and asks once. The answer is remembered for exactly the bytes that were scanned (`~/.minimal/trusted.json`); adding or editing a file, or a trust-gated setting, makes the project untrusted again, including files written by the model or installed by `/ext`. `--trust-project` applies them without `/trust`; `-y` does not.
+A project's `./.minimal/extensions/<frontend>/` is code from the repository, so minimal does not run it until you trust it. Untrusted, it is skipped without asking: the transcript says so and the status line shows `⚠ N untrusted`. `/trust` prints a static scan of each file (what it can do: run commands, use the network, read environment variables or credential files, write files, decode hidden data, hook tool calls…; a list of capabilities, not of intent), together with the project's trust-gated settings (`permissions.allow`, `extensions.disabled`, `extensions.settings`), and asks once. The answer is remembered for exactly the bytes that were scanned in that frontend's folder (`~/.minimal/trusted.json`), so a project is trusted separately for each frontend; adding or editing a file, or a trust-gated setting, makes the project untrusted again, including files written by the model or installed by `/ext`. `--trust-project` applies them without `/trust`; `-y` does not.
 
 ## Reloading
 
@@ -362,11 +366,11 @@ A project's `./.minimal/extensions/` is code from the repository, so minimal doe
 
 ## Publishing and `minimal ext check`
 
-A marketplace is a git repository. Items live in `shared/<category>/` (they work under any frontend and declare no `__frontend__`) or `frontends/<frontend>/<category>/` (written for one frontend, declaring `__frontend__ = "<frontend>"`), with the categories `extensions/`, `themes/`, `tools/` and `widgets/` holding extension files and package folders. Other folders (`frontends/textual/src`, `frontends/go`, …) are not items, and a name is used once per category across the repository. Installing ignores the folder it came from: `frontends/textual/widgets/x.py` goes to `~/.minimal/extensions/widgets/x.py`. Listings need a docstring, `__version__` and `__api__`; they show which frontend an item is for.
+A marketplace is a git repository with one top-level folder per frontend: `console/`, `textual/` and `go/` (the folder of a frontend, [above](#frontends)). Each holds the categories it has, `extensions/`, `themes/`, `tools/` and `widgets/`, with extension files and package folders; a top-level folder is a frontend folder if it holds at least one category folder. Other files and folders (`textual/src`, `textual/tests`, `go/cmd`, `go/go.mod`, …) are not items. An item that suits several frontends is copied into each folder, and the copies may diverge. `/ext`, `ext_search` and `ext_install` list and install only the running frontend's folder, into `~/.minimal/extensions/<frontend>/<category>/` (or the project's); a name is unique per folder and category. Publishing (`/ext publish`, `ext_publish`) files an item under `<frontend>/<category>/` of the running frontend, and refuses one whose `__frontend__` is another frontend. Listings need a docstring, `__version__` and `__api__`.
 
 **Versions are commits.** minimal keeps a clone of the marketplace and, for each item, looks at the commits that touched its path, newest first. It offers and installs the newest one whose `__api__` this minimal can run: HEAD's if it can, otherwise an older one (extracted with `git archive`, and labelled "latest for this minimal (newer needs API 2)"). So publishing a version for a new API major does not strand users of the old one, as long as the old version stays in the history; an item with no version for this minimal is shown but not installed.
 
-**The lockfile.** Each extensions folder (`~/.minimal/extensions/` and `./.minimal/extensions/`) has a `.lock.json` written by the marketplace on install and update and cleaned on uninstall. It is keyed by extension id (`name`, or `category/name`) and holds `marketplace`, `commit`, `version`, `api` and `sha256` (over each installed file's path and bytes) of the copy as installed. The loader skips dot-files, so it is never loaded. Updates compare commits, not bytes: an item is outdated when its locked commit is not the one on offer. A copy whose files no longer match `sha256` has local changes; `/ext` leaves its update unticked ("local changes will be overwritten") and `ext_install` refuses it unless called with `force: true`. A copy without a lock entry (installed by hand or by an older minimal) is compared byte by byte with the offered version and has no local-change protection.
+**The lockfile.** Each frontend's extensions folder (`~/.minimal/extensions/<frontend>/` and `./.minimal/extensions/<frontend>/`) has a `.lock.json` written by the marketplace on install and update and cleaned on uninstall. It is keyed by extension id (`name`, or `category/name`) and holds `marketplace`, `commit`, `version`, `api` and `sha256` (over each installed file's path and bytes) of the copy as installed. The loader skips dot-files, so it is never loaded. Updates compare commits, not bytes: an item is outdated when its locked commit is not the one on offer. A copy whose files no longer match `sha256` has local changes; `/ext` leaves its update unticked ("local changes will be overwritten") and `ext_install` refuses it unless called with `force: true`. A copy without a lock entry (installed by hand or by an older minimal) is compared byte by byte with the offered version and has no local-change protection.
 
 ```
 /ext publish <path> [name]     push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
@@ -388,7 +392,7 @@ WARN extensions/mermaid: needs termaid
 FAIL widgets/broken: syntax error: '(' was never closed (broken.py, line 2)
 ```
 
-Items under `frontends/textual/` need Textual to load; where it is not installed, `ext check` runs their static checks only (metadata, API, syntax) and marks the line `(static checks only: textual is not installed)`. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+In a marketplace checkout `ext check` looks at every item of every frontend folder and prefixes each line with its folder (`textual/widgets/broken`); an item that sets `__frontend__ = X` but sits in another folder fails (`it sets __frontend__ = 'textual' but is in console/`), and so does one that imports `textual` or `rich` without `__frontend__ = "textual"`. Items that set `__frontend__ = "textual"` need Textual to load; where it is not installed, `ext check` runs their static checks only (metadata, API, syntax) and marks the line `(static checks only: textual is not installed)`. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
 
 Only the package name of a `__dependencies__` entry is checked when deciding what is missing, not its version range.
 

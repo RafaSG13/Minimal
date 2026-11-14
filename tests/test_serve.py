@@ -123,7 +123,7 @@ class ServeTest(unittest.TestCase):
             auto_approve=True,
             register_commands=register_builtin_commands,
             register_frontends=register_builtin_frontends,
-            ui=serve.TOOLKIT_UI,
+            ui="console",
         )
         self.app.reload_extensions()
         self.app.provider_name, self.app.model = "fake", "m"
@@ -458,9 +458,24 @@ class ServeProcessTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0)
         self.assertIn("minimal serve", done.stdout)
         self.assertIn("docs/serve.md", done.stdout)
-        done = self.serve("", "--ui", "console")  # an interface option: serve has none
+        done = self.serve("", "--setup")  # an interface option: serve has none
         self.assertEqual(done.returncode, 2)
-        self.assertIn("Unknown option: --ui", done.stderr)
+        self.assertIn("Unknown option: --setup", done.stderr)
+
+    def test_ui_picks_the_folder_that_loads(self):
+        for ui in ("console", "go"):
+            folder = self.tmp / ".minimal" / "extensions" / ui
+            folder.mkdir(parents=True)
+            (folder / "marker.py").write_text(f'__api__ = "2"\n\ndef register(minimal):\n    print("loaded the {ui} folder")\n')
+        for ui, other in (("console", "go"), ("go", "console")):
+            with self.subTest(ui=ui):
+                done = self.serve(
+                    json.dumps({"t": "quit"}) + "\n", "--provider", "scripted", "--trust-project", "--ui", ui, "-e", str(self.tmp / "ext.py")
+                )
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(json.loads(done.stdout.splitlines()[0])["errors"], [])
+                self.assertIn(f"loaded the {ui} folder", done.stderr)
+                self.assertNotIn(f"loaded the {other} folder", done.stderr)
 
     def test_extensions_needing_textual_are_skipped(self):
         (self.tmp / "ext3.py").write_text(
@@ -477,13 +492,14 @@ class ServeProcessTest(unittest.TestCase):
 
 
 class ParseArgsTest(unittest.TestCase):
-    def test_serve_takes_the_session_options_but_no_interface_ones(self):
+    def test_serve_takes_the_session_options_and_the_frontend_but_no_other_interface_ones(self):
         opts = cli.parse_args(["-c", "-s", "abc", "--provider", "p", "-m", "m", "-e", "x.py", "-y", "--trust-project"], True)
         self.assertEqual(
             (opts.cont, opts.session, opts.provider, opts.model, opts.ext, opts.yes, opts.trust_project, opts.ui),
-            (True, "abc", "p", "m", ["x.py"], True, True, None),
+            (True, "abc", "p", "m", ["x.py"], True, True, "console"),
         )
-        for flag in ("--ui", "--setup", "--login", "--logout"):
+        self.assertEqual(cli.parse_args(["--ui", "go"], True).ui, "go")
+        for flag in ("--setup", "--login", "--logout"):
             with self.subTest(flag=flag), mock.patch("builtins.print"), self.assertRaises(SystemExit):
                 cli.parse_args([flag], True)
 

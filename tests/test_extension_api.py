@@ -47,10 +47,11 @@ class ExtensionApiTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        self.global_dir = self.tmp / "home" / "extensions"
+        self.home_extensions = self.tmp / "home" / "extensions"
+        self.global_dir = self.home_extensions / "console"
         self.global_dir.mkdir(parents=True)
         for patcher in (
-            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.global_dir),
+            mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.home_extensions),
             mock.patch.object(config, "SETTINGS_FILE", self.tmp / "home" / "settings.json"),
             mock.patch.object(config, "TRUST_FILE", self.tmp / "home" / "trusted.json"),
             mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "home" / "sessions"),
@@ -100,8 +101,8 @@ class ExtensionApiTest(unittest.TestCase):
         path = self.extension(
             "tuionly.py",
             '__frontend__ = "textual"\n\ndef register(minimal):\n    minimal.register_command("hi", lambda args, ctx: None)\n',
-            api='"2"',
-        )
+            folder=self.tmp / "elsewhere",
+        ).resolve()
 
         def register_frontends(registry):
             register_builtin_frontends(registry)
@@ -114,6 +115,7 @@ class ExtensionApiTest(unittest.TestCase):
                     session=Session("first", self.tmp / "first.jsonl"),
                     cwd=str(self.tmp),
                     auto_approve=True,
+                    extra_extensions=[str(path)],
                     register_commands=register_builtin_commands,
                     register_frontends=register_frontends,
                     ui=ui,
@@ -124,6 +126,29 @@ class ExtensionApiTest(unittest.TestCase):
                 summary = reload_summary(loaded, errors, None, app.extension_skipped)
                 self.assertEqual("\nSkipped: " in summary, ui == "console")
                 self.assertNotIn("Failed:", summary)
+
+    def test_only_the_running_frontends_folder_loads(self):
+        body = 'def register(minimal):\n    minimal.register_command("{name}", lambda args, ctx: None)\n'
+        self.extension("mine.py", body.format(name="mine"))
+        self.extension("theirs.py", body.format(name="theirs"), folder=self.home_extensions / "textual")
+
+        def register_frontends(registry):
+            register_builtin_frontends(registry)
+            registry.register_frontend("tui", print, "a Textual frontend", toolkit="textual")
+
+        for ui, expected in (("console", {"mine"}), ("tui", {"theirs"})):
+            with self.subTest(ui=ui):
+                app = App(
+                    registry=Registry(),
+                    session=Session("first", self.tmp / "first.jsonl"),
+                    cwd=str(self.tmp),
+                    auto_approve=True,
+                    register_commands=register_builtin_commands,
+                    register_frontends=register_frontends,
+                    ui=ui,
+                )
+                self.assertEqual(app.reload_extensions()[1], [])
+                self.assertEqual({"mine", "theirs"} & set(app.registry.commands), expected)
 
     def test_unknown_event_is_an_error(self):
         self.extension("bogus.py", 'def register(minimal):\n    minimal.on("bogus", print)\n')

@@ -227,7 +227,7 @@ def format_install_report(sources: Iterable[ExtensionSource]) -> str:
 
 def format_report(project: ProjectSnapshot) -> str:
     """Plain-text scan of every file of ``project``, grouped by capability, then its trust-gated settings, for the user to review before trusting it."""
-    lines = [f"Project extensions and settings in {project.directory.parent}: not trusted yet.", _SCAN_NOTE, ""]
+    lines = [f"Project extensions and settings in {project.root}: not trusted yet.", _SCAN_NOTE, ""]
     for source in project.sources:
         for path, data in source.files:
             lines.extend(_file_report(path.relative_to(project.directory).as_posix(), data))
