@@ -1,6 +1,6 @@
 """Command-line entry point: parse options, build the :class:`~minimal.core.app.App`
-and open an interactive frontend (``console``, or one an installed package or extension adds), or
-serve one over JSON lines (``minimal serve``). A turn can only be started from inside a frontend:
+and open an interactive frontend (``console``, or one an installed package or extension adds). A turn can only
+be started from inside a frontend:
 there is no one-shot mode that runs the agent from the shell command line.
 """
 
@@ -20,16 +20,14 @@ from minimal.extensions.loader import frontend_folder
 from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
-from minimal.ui import serve, setup
+from minimal.ui import setup
 from minimal.ui.commands import register_builtin_commands
-from minimal.ui.frontends import register_builtin_frontends, register_frontends, scan_frontends
+from minimal.ui.frontends import register_frontends, scan_frontends
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
 Usage:
   minimal [options]            interactive interface in the chosen frontend (runs setup first if no provider is chosen yet)
-  minimal serve [options]      no interface: serves minimal to a frontend over JSON lines on stdin/stdout
-                               (see minimal serve --help and docs/serve.md)
   minimal --setup              choose the default provider, sign in or enter its key, choose the model
   minimal --login              sign in with a Claude Pro/Max subscription (browser)
   minimal --logout             forget the Claude login
@@ -73,39 +71,12 @@ Environment:
 Extensions are kept per frontend: ~/.minimal/extensions/<frontend>/ (console, textual) and
 .minimal/extensions/<frontend>/ in a project; only the running frontend's folder loads."""
 
-SERVE_HELP = """minimal serve — minimal without an interface, for a frontend that drives it over JSON lines
-
-Usage:
-  minimal serve [options]
-
-Reads one JSON message per line on stdin and writes one per line on stdout (nothing else is
-written there; anything extensions or commands print goes to stderr). Start it from the frontend
-program, in the project directory. Protocol: docs/serve.md. A provider must already be chosen
-(`minimal --setup`, or --provider); /setup and /login run on the controlling terminal.
-
-Options:
-  -c, --continue        resume the last session of this directory
-  -s, --session <id>    open (or create) a specific session
-  --provider <name>     model integration (default $MINIMAL_PROVIDER, else the settings' provider)
-  -m, --model <name>    model (default $MINIMAL_MODEL, else the settings' model, else the provider's default)
-  -e, --ext <path>      load an extension file or folder (repeatable)
-  --ui <name>           the frontend being served (default console): its folder under ~/.minimal/extensions/ and
-                        .minimal/extensions/ is the one loaded, and its marketplace folder the one /ext lists
-  -y, --yes             do not ask for confirmation for write/edit/bash
-  --trust-project       apply this project's extensions and trust-gated settings without /trust
-  -h, --help            this help
-
-Only the extensions of the served frontend's folder load (a __frontend__ = "textual" extension needs --ui tui).
-The settings and the environment are the same as for minimal (see minimal --help)."""
-
 
 def main() -> None:
     """Entry point of the ``minimal`` command."""
     if sys.argv[1:2] == ["ext"]:
         ext_cli(sys.argv[2:])
-    argv = sys.argv[1:]
-    serving = argv[:1] == ["serve"]
-    opts = parse_args(argv[1:] if serving else argv, serving)
+    opts = parse_args(sys.argv[1:])
     if opts is None:
         return
     if opts.login or opts.logout:
@@ -122,7 +93,7 @@ def main() -> None:
             sys.exit(1)
         return
 
-    if not serving and not setup.can_run():
+    if not setup.can_run():
         print(
             "minimal needs a terminal: start it there and type your prompt in the interface.",
             file=sys.stderr,
@@ -131,12 +102,11 @@ def main() -> None:
 
     cwd = os.getcwd()
     migrate_extensions(cwd)
-    if not serving:
-        try:
-            opts.ui = resolve_ui(opts.ui, cwd)
-        except KeyboardInterrupt:
-            print("\nCancelled.", file=sys.stderr)
-            sys.exit(130)
+    try:
+        opts.ui = resolve_ui(opts.ui, cwd)
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        sys.exit(130)
     try:
         session = open_session(opts.session or (last_session(cwd) if opts.cont else None) or new_id(), cwd)
         session.lock()
@@ -144,16 +114,15 @@ def main() -> None:
         print(e, file=sys.stderr)
         sys.exit(2)
     try:
-        _run(session, opts, serving)
+        _run(session, opts)
     finally:
         session.unlock()  # App.shutdown has released it, unless minimal stopped before the UI
 
 
-def _run(session: Session, opts: argparse.Namespace, serving: bool = False) -> None:
-    """Build the App on ``session``, start the provider and run the chosen frontend (or serve one) until it exits."""
+def _run(session: Session, opts: argparse.Namespace) -> None:
+    """Build the App on ``session``, start the provider and run the chosen frontend until it exits."""
     if session.torn_at is not None:
         print(f"warning: {session.id}: {TORN_NOTICE}", file=sys.stderr)
-    streams = serve.take_streams() if serving else None
     app = App(
         registry=Registry(),
         session=session,
@@ -162,13 +131,13 @@ def _run(session: Session, opts: argparse.Namespace, serving: bool = False) -> N
         trust_project=opts.trust_project,
         extra_extensions=opts.ext,
         register_commands=register_builtin_commands,
-        register_frontends=register_builtin_frontends if serving else register_frontends,
+        register_frontends=register_frontends,
         ui=opts.ui,
     )
     app.reload_extensions()
     ui = app.ui
     frontend = app.registry.frontends.get(ui)
-    if frontend is None and not serving:  # a served frontend is an external program: it need not be registered
+    if frontend is None:
         hint = "; install minimal-textual: https://github.com/RafaSG13/minimal-marketplace/tree/main/textual" if ui == "tui" else ""
         print(f"unknown frontend {ui!r}; available: {', '.join(sorted(app.registry.frontends))}{hint}", file=sys.stderr)
         sys.exit(2)
@@ -185,11 +154,7 @@ def _run(session: Session, opts: argparse.Namespace, serving: bool = False) -> N
         sys.exit(1)
 
     try:
-        if streams is None:
-            assert frontend is not None  # checked above for everything but serving
-            frontend.run(Host(app))
-        else:
-            serve.run(Host(app), *streams)
+        frontend.run(Host(app))
     finally:
         app.shutdown()
 
@@ -293,13 +258,13 @@ def start_provider(app: App, opts: argparse.Namespace) -> None:
     app.use_provider(name, model or saved_model)
 
 
-def parse_args(argv: list[str], serving: bool = False) -> argparse.Namespace | None:
-    """Parse command-line options; ``serving`` for those after ``minimal serve``, which has no interface options.
+def parse_args(argv: list[str]) -> argparse.Namespace | None:
+    """Parse command-line options.
 
     Returns ``None`` after printing the help for ``-h``. Exits with status 2
     after printing the help for unknown or malformed options.
     """
-    parser = argparse.ArgumentParser(prog="minimal serve" if serving else "minimal", add_help=False, allow_abbrev=False)
+    parser = argparse.ArgumentParser(prog="minimal", add_help=False, allow_abbrev=False)
     parser.add_argument("-c", "--continue", dest="cont", action="store_true")
     parser.add_argument("-s", "--session")
     parser.add_argument("--provider")
@@ -309,27 +274,22 @@ def parse_args(argv: list[str], serving: bool = False) -> argparse.Namespace | N
     parser.add_argument("--trust-project", action="store_true")
     parser.add_argument("-h", "--help", action="store_true")
     parser.add_argument("--ui")
-    parser.set_defaults(setup=False, login=False, logout=False)
-    if not serving:
-        parser.add_argument("--setup", action="store_true")
-        parser.add_argument("--login", action="store_true")
-        parser.add_argument("--logout", action="store_true")
-    help_text = SERVE_HELP if serving else HELP
+    parser.add_argument("--setup", action="store_true")
+    parser.add_argument("--login", action="store_true")
+    parser.add_argument("--logout", action="store_true")
 
     try:
         opts, unknown = parser.parse_known_args(argv)
     except SystemExit:  # malformed option, e.g. -s without a value
-        print(help_text)
+        print(HELP)
         sys.exit(2)
     if unknown:
         print(f"Unknown option: {unknown[0]}\n", file=sys.stderr)
-        print(help_text)
+        print(HELP)
         sys.exit(2)
     if opts.help:
-        print(help_text)
+        print(HELP)
         return None
-    if serving:
-        opts.ui = opts.ui or config.DEFAULT_UI
     return opts
 
 

@@ -9,9 +9,6 @@ A package ships a frontend by declaring an entry point in the group :data:`ENTRY
 
 ``register`` is called as ``register(registry)`` with the :class:`~minimal.extensions.registry.Registry`
 on every reload and calls ``registry.register_frontend(name, run, description, toolkit=...)``.
-
-A frontend in another language is not a package: it starts ``minimal serve`` and talks to it in JSON lines
-(see ``docs/serve.md``).
 """
 
 from __future__ import annotations

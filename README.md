@@ -60,7 +60,7 @@ Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
 The package is `mnml-agent`; the command it installs is `minimal`, and it is the only command you type. The core has the plain console and no UI toolkit; the other interface is installed next to it and `minimal` finds it: the Textual terminal UI is the Python package `minimal-textual` (it registers the `tui` frontend).
 
 > [!IMPORTANT]
-> The newest release on PyPI (0.4.0) predates this layout: it has no `minimal serve`, no `minimal-textual` support and extension API 1, so it cannot install anything from the current marketplace. Until 0.5 is published, install from git:
+> The newest release on PyPI (0.4.0) predates this layout: it has no `minimal-textual` support and extension API 1, so it cannot install anything from the current marketplace. Until 0.5 is published, install from git:
 
 ```bash
 uv tool install "mnml-agent @ git+https://github.com/RafaSG13/Minimal" \
@@ -112,7 +112,6 @@ On the first start, setup asks (arrow keys) for the default provider, its creden
 ```bash
 minimal                          # interactive interface: --ui, else the `ui` setting, else the installed one (a menu if several)
 minimal --ui console             # the plain line-by-line console (Ctrl-C interrupts a turn, Ctrl-D quits); tui picks the Textual UI
-minimal serve [options]          # no interface: serve minimal to a frontend over JSON lines (docs/serve.md)
 minimal -c                       # resume the last session of this directory
 minimal -s <id>                  # open (or create) a specific session
 minimal -e extensions/example.py # load an extension file or folder (repeatable)
@@ -126,7 +125,7 @@ minimal ext check [--install-deps] <path>...   # validate extension files, packa
 
 If an `AGENTS.md` exists in the current directory, it is added to the system prompt (`prompt.files` in [settings](#settings) changes which files). minimal needs a terminal, and a turn can only be started from inside its interface: there is no one-shot `minimal -p "prompt"` mode that runs the agent straight from the shell.
 
-**Frontends.** The interface is a frontend. minimal has `console` built in, a plain REPL without colours, widgets or themes; an installed package adds more through a `minimal.frontends` entry point (`minimal-textual` adds `tui`), and an extension can add one with `register_frontend` (see [docs/extensions.md](docs/extensions.md#frontends)). `--ui <name>` or the `ui` setting picks one; with neither, `minimal` uses the one installed, or asks which and saves the answer when there are several. A frontend in another language starts `minimal serve --ui <name>` and talks to it in JSON lines: [docs/serve.md](docs/serve.md) lists every message.
+**Frontends.** The interface is a frontend. minimal has `console` built in, a plain REPL without colours, widgets or themes; an installed package adds more through a `minimal.frontends` entry point (`minimal-textual` adds `tui`), and an extension can add one with `register_frontend` (see [docs/extensions.md](docs/extensions.md#frontends)). `--ui <name>` or the `ui` setting picks one; with neither, `minimal` uses the one installed, or asks which and saves the answer when there are several.
 
 **Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
 
@@ -271,7 +270,6 @@ The model has the `ext_search`, `ext_install` and `ext_publish` tools (each take
 flowchart LR
   cli[cli.main] --> app[App]
   cli --> frontend["frontend: console, tui (minimal-textual), or an extension's (--ui)"] --> host[Host]
-  cli --> serve["minimal serve: JSON lines"] --> host
   host --> commands[App.run_command]
   host --> turn[App.run_turn]
   turn --> agent[agent.run_agent]
@@ -288,7 +286,7 @@ flowchart LR
 
 **One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply; `before_request` handlers may change what one request sends (a summary instead of a long history, say), and a failed request goes to `provider_error` handlers, which may retry it or switch provider. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), permission rules (a deny fails the call, an allow skips the question), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If a turn fails or is interrupted before the model replied, it is dropped from the history; after that, it is kept, with the finished tool results, an error for each call not finished and a closing `[turn interrupted: …]` note. A reply cut off by the output token limit never runs its tool calls: each gets an error asking for smaller steps. The session file is appended to after every turn.
 
-**Frontends.** A frontend drives minimal through a `Host` (`core/host.py`): send a message, run a command, interrupt, read the status and what extensions add to the interface; it shows minimal through a `Frontend` (`core/app.py`) that it attaches to the host. The `console` REPL (`ui/frontends.py`) is built in; installed packages add frontends through the `minimal.frontends` entry-point group (`minimal-textual` registers `tui`), and all are registered like any extension's frontend, so `--ui` picks one and an extension can replace one by name; `import minimal.api` loads no UI toolkit. `cli.resolve_ui` picks the frontend before the session is locked (`--ui`, the `ui` setting, else what is installed, asking once when there are several). `minimal serve` (`ui/serve.py`, `ui/views.py`) is a frontend with no screen: it attaches a `Frontend` that writes every event as a JSON line to stdout, reads the user's actions from stdin, and runs the extensions' panels, status segments and renderers itself ([docs/serve.md](docs/serve.md)); `--ui <name>` tells it which frontend it serves, which decides the extension folder; a frontend in another language drives it as a child process. The folder of a frontend (`loader.frontend_folder`) is its toolkit, else its name; `extensions/migrate.py` moves the old flat install layout into those folders once.
+**Frontends.** A frontend drives minimal through a `Host` (`core/host.py`): send a message, run a command, interrupt, read the status and what extensions add to the interface; it shows minimal through a `Frontend` (`core/app.py`) that it attaches to the host. The `console` REPL (`ui/frontends.py`) is built in; installed packages add frontends through the `minimal.frontends` entry-point group (`minimal-textual` registers `tui`), and all are registered like any extension's frontend, so `--ui` picks one and an extension can replace one by name; `import minimal.api` loads no UI toolkit. `cli.resolve_ui` picks the frontend before the session is locked (`--ui`, the `ui` setting, else what is installed, asking once when there are several). The folder of a frontend (`loader.frontend_folder`) is its toolkit, else its name; `extensions/migrate.py` moves the old flat install layout into those folders once.
 
 **History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
 
@@ -333,8 +331,6 @@ src/minimal/         packages from the bottom up; each imports only from the one
   ui/
     commands.py      slash commands (/help, /provider, /reload, /settings, /trust, /ext, …)
     frontends.py     the console REPL and the discovery of installed frontends (entry points)
-    serve.py         `minimal serve`: the JSON-lines server a frontend in any language drives
-    views.py         panels, status segments and renderers as styled lines for serve
     setup.py         onboarding wizard: provider, login or API key, model
   cli.py             option parsing, entry point, `minimal ext check`
   api.py             the only module extensions import from: Extension, Context, Host, event types, glyphs, …
@@ -379,7 +375,6 @@ CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` 
 | `test_extension_api.py` | The `Extension` and `Context` facades: decorators, events, settings, sessions, commands, nested agents, package folders, `__api__`, disabling |
 | `test_security.py`    | Trust digests and the `/trust` scan                                                              |
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
-| `test_serve.py`       | `minimal serve`: hello, turns, questions, panels and renderers, terminal commands, and a child process whose stdout carries only protocol lines |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
 | `test_frontends.py`   | Frontends: the console REPL, entry-point discovery, which frontend `minimal` runs (`--ui`, the `ui` setting, the menu), `--ui` with an extension's frontend, frontend commands, `minimal.api` without Textual |
 | `test_migrate.py`     | The move of the old flat extension layout into per-frontend folders: nothing lost, locks carried over, a second run |

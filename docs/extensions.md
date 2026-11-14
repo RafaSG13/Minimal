@@ -325,8 +325,6 @@ tui = "minimal_textual:register"
 
 minimal calls every entry point on each reload, after registering `console` (so one can replace it) and before loading extensions (so extensions can replace its frontends). One that fails to import or raises is reported with the extension errors, and the others still register. Which frontend runs is decided before the session is opened: `--ui`, else the `ui` setting, else the only one installed besides `console`, else a menu when there are several, else `console`.
 
-**Frontends in other languages.** `minimal serve --ui <name>` runs minimal with no interface and speaks JSON lines on stdin and stdout; a program in any language starts it and draws what it sends. The user runs that program, not `minimal`. `--ui` names the frontend being served (default `console`): its folder is the one whose extensions load, and extensions with a `__frontend__` of another folder are skipped. Panels, status segments and renderers run inside minimal and reach the frontend as styled lines. See [serve.md](serve.md) for every message.
-
 A frontend's folder (`loader.frontend_folder`) is the toolkit it draws with, else its name: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, so its folder is `textual/`; `console` has `console/`). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose folder is `textual`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load wherever they sit, so one in a folder that is not `textual` must not import `textual` or `rich`: `minimal ext check` fails one that does.
 
 ```python

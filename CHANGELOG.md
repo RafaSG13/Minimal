@@ -20,12 +20,6 @@
   `minimal.register_renderer(kind, render)` draws Markdown fences (`fence:mermaid`), GitHub alerts (`blockquote:alert`)
   and tool-call bodies (`tool:edit`) in the terminal UI. `register_frontend(..., toolkit=)` names a frontend's UI
   toolkit. `PanelSpec`, `RendererSpec`, `STYLES`, `styled_line` and `styled_lines` are in `minimal.api`.
-- `minimal serve`: minimal without an interface, driven over JSON lines on stdin and stdout by a frontend written in
-  any language: messages in, text, tool calls, questions, panels, status segments and renderer output out, with the
-  extensions' Python panels and renderers running inside. It takes the session options of `minimal` (`-c`, `-s`,
-  `--provider`, `-m`, `-e`, `-y`, `--trust-project`) and `--ui <name>`, the frontend being served (default
-  `console`: it decides which extension folder loads); `/setup` and `/login` run on the controlling terminal while the
-  frontend steps aside. Protocol (version 2) and every message: [docs/serve.md](docs/serve.md).
 - Frontends of installed packages: a package declares a `minimal.frontends` entry point, `register(registry)`, that calls
   `registry.register_frontend(...)`; minimal calls it on every reload. A failing entry point is reported with the
   extension errors.

@@ -60,8 +60,8 @@ def frontend_folder(registry: Registry, ui: str | None) -> str:
     """The folder of frontend ``ui``: its ``toolkit`` if it has one, else its name.
 
     It is the marketplace folder and the install folder (``~/.minimal/extensions/<folder>/``) of that frontend,
-    and the ``__frontend__`` its extensions may declare. ``ui`` not being registered (a frontend served from another
-    program, ``minimal serve --ui <name>``) means its own name; ``None`` means :data:`DEFAULT_FOLDER`.
+    and the ``__frontend__`` its extensions may declare. ``ui`` not being registered means its own name; ``None``
+    means :data:`DEFAULT_FOLDER`.
     """
     if not ui:
         return DEFAULT_FOLDER
