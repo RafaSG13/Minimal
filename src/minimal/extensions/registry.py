@@ -338,8 +338,9 @@ class FrontendSpec:
         name: Unique name; registering the same name again replaces it.
         run: Called as ``run(host)`` with the :class:`~minimal.core.host.Host`; returns when the user quits.
         description: One line for ``minimal --help`` and the error that lists the frontends.
-        toolkit: The UI toolkit it draws with (``"textual"``), or ``""`` for none; extensions whose
-            ``__frontend__`` names a toolkit load only when the running frontend uses it.
+        toolkit: The UI toolkit it draws with (``"textual"``), or ``""`` for none. The frontend's folder
+            (:func:`~minimal.extensions.loader.frontend_folder`) is its toolkit, else its name: it names the
+            extension folders that load under it, and extensions whose ``__frontend__`` is another folder do not.
     """
 
     name: str
@@ -462,8 +463,8 @@ class Registry:
 
         ``run`` installs its :class:`~minimal.core.app.Frontend` with ``host.attach(frontend)`` and
         drives minimal through the :class:`~minimal.core.host.Host` until the user quits.
-        ``toolkit`` names the UI toolkit it draws with (``"textual"``); extensions with a
-        matching ``__frontend__`` load only under it.
+        ``toolkit`` names the UI toolkit it draws with (``"textual"``) and with it the folder of extensions
+        that load under this frontend (its name if empty); extensions with another ``__frontend__`` do not.
 
         Raises:
             ValueError: if ``name`` is empty, ``run`` is not callable or ``toolkit`` is not a string.

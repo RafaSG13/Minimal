@@ -5,8 +5,9 @@
 - ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`);
 - ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional; :data:`DEPENDENCY_RE`).
   ``/ext`` offers to install the missing ones into minimal's Python.
-- ``__frontend__ = "textual"``: the UI toolkit it needs (optional). It loads only under a frontend using that
-  toolkit; without it, the extension must not import ``textual`` or ``rich``.
+- ``__frontend__ = "textual"``: the frontend folder it belongs to (optional): ``console``, ``textual`` or ``go``
+  (:func:`~minimal.extensions.loader.frontend_folder`). It loads only under that frontend; without it, the extension
+  must not import ``textual`` or ``rich``.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ class Metadata:
     dependencies: tuple[str, ...] = ()
     """Top-level ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
     frontend: str = ""
-    """Top-level ``__frontend__``: the UI toolkit it needs (``"textual"``); ``""`` if any."""
+    """Top-level ``__frontend__``: the frontend folder it belongs to (``"textual"``); ``""`` if any."""
 
 
 DEPENDENCY_RE = re.compile(

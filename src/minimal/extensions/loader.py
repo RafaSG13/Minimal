@@ -11,9 +11,12 @@ is an :class:`~minimal.extensions.facade.Extension`::
 
 Search order (each folder in sorted order, names starting with ``_`` or ``.`` skipped):
 
-1. ``~/.minimal/extensions/``
-2. ``<cwd>/.minimal/extensions/`` (from a snapshot the user trusted)
+1. ``~/.minimal/extensions/<folder>/``
+2. ``<cwd>/.minimal/extensions/<folder>/`` (from a snapshot the user trusted)
 3. every ``--ext`` path (a file, a package folder, or a folder of extensions)
+
+``<folder>`` is the running frontend's (:func:`frontend_folder`): ``console``, ``textual``, ``go``. Only that
+folder loads, so each frontend has its own extensions, themes, tools and widgets.
 
 Within each folder, its own extensions load first, then those of its ``themes/``,
 ``tools/`` and ``widgets/`` subfolders: the marketplace's categories
@@ -44,15 +47,36 @@ from minimal.extensions.metadata import Metadata, SourceSyntaxError, check_api, 
 from minimal.extensions.registry import Registry
 
 GLOBAL_EXTENSIONS_DIR = Path.home() / ".minimal" / "extensions"
-"""Extensions loaded in every project."""
+"""Base of the global extensions: one :func:`frontend_folder` subfolder per frontend (:func:`global_extensions_dir`)."""
 
 CATEGORIES = ("extensions", "themes", "tools", "widgets")
-"""Marketplace categories: ``extensions`` live in an extensions folder itself, the others in a subfolder."""
+"""Marketplace categories: ``extensions`` live in a frontend's folder itself, the others in a subfolder."""
+
+DEFAULT_FOLDER = "console"
+"""The frontend folder of the built-in ``console`` frontend, and the one used when no frontend is known."""
 
 
-def project_extensions_dir(cwd: str) -> Path:
-    """Extensions loaded only when running in ``cwd``."""
-    return Path(cwd) / ".minimal" / "extensions"
+def frontend_folder(registry: Registry, ui: str | None) -> str:
+    """The folder of frontend ``ui``: its ``toolkit`` if it has one, else its name.
+
+    It is the marketplace folder and the install folder (``~/.minimal/extensions/<folder>/``) of that frontend,
+    and the ``__frontend__`` its extensions may declare. ``ui`` not being registered (``go`` served without its
+    binary on the ``PATH``) means its own name; ``None`` means :data:`DEFAULT_FOLDER`.
+    """
+    if not ui:
+        return DEFAULT_FOLDER
+    spec = registry.frontends.get(ui)
+    return (spec.toolkit or spec.name) if spec is not None else ui
+
+
+def global_extensions_dir(folder: str) -> Path:
+    """Extensions of frontend ``folder`` loaded in every project."""
+    return GLOBAL_EXTENSIONS_DIR / folder
+
+
+def project_extensions_dir(cwd: str, folder: str) -> Path:
+    """Extensions of frontend ``folder`` loaded only when running in ``cwd``."""
+    return Path(cwd) / ".minimal" / "extensions" / folder
 
 
 def ext_id(path: Path) -> str:
@@ -119,9 +143,9 @@ class ProjectSnapshot:
     """What a project asks to be trusted for, read once: its extensions and its trust-gated settings."""
 
     directory: Path
-    """:func:`project_extensions_dir` of the project, unresolved (for display)."""
+    """:func:`project_extensions_dir` of the project for the running frontend's folder, unresolved (for display)."""
     key: str
-    """``str(directory.resolve())``: the key in :data:`~minimal.config.TRUST_FILE`."""
+    """``str(directory.resolve())``: the key in :data:`~minimal.config.TRUST_FILE`; a project is trusted per frontend folder."""
     sources: tuple[ExtensionSource, ...]
     risky: dict
     """:func:`~minimal.config.risky_subset` of the project's settings layers."""
@@ -129,18 +153,23 @@ class ProjectSnapshot:
     """:func:`files_digest` of ``sources``, combined with ``risky`` when there is any."""
 
     @property
+    def root(self) -> Path:
+        """The project's ``.minimal`` folder (for display)."""
+        return self.directory.parent.parent
+
+    @property
     def count(self) -> int:
         """Extensions plus one for the trust-gated settings, if any: what ``/trust`` would apply."""
         return len(self.sources) + (1 if self.risky else 0)
 
 
-def read_project_snapshot(cwd: str, risky: dict) -> ProjectSnapshot | None:
-    """Snapshot of ``cwd``'s project extensions and trust-gated settings ``risky``; ``None`` if there are neither.
+def read_project_snapshot(cwd: str, risky: dict, folder: str = DEFAULT_FOLDER) -> ProjectSnapshot | None:
+    """Snapshot of ``cwd``'s project extensions for frontend ``folder`` and trust-gated settings ``risky``; ``None`` if there are neither.
 
     Raises:
         OSError: if an extension file cannot be read.
     """
-    directory = project_extensions_dir(cwd)
+    directory = project_extensions_dir(cwd, folder)
     sources = tuple(read_extensions(extension_entries(directory)))  # the only read: what is hashed, reviewed and run
     if not sources and not risky:
         return None
@@ -338,10 +367,10 @@ def load_sources(
 ) -> tuple[list[Path], list[str]]:
     """Load each ``(source, scope)`` in order into ``registry``.
 
-    Extensions declaring ``__frontend__`` load last, once every frontend is registered. When ``ui``
-    names a registered frontend whose toolkit differs from that ``__frontend__``, the extension is not
-    loaded and ``"<path>: needs a <toolkit> frontend; <ui> is not one"`` is appended to ``skipped``.
-    With ``ui`` ``None`` or unregistered nothing is skipped.
+    Extensions declaring ``__frontend__`` load last, once every frontend is registered. When ``ui`` is
+    given and its :func:`frontend_folder` differs from that ``__frontend__``, the extension is not
+    loaded and ``"<path>: needs a <frontend> frontend; <ui> is not one"`` is appended to ``skipped``.
+    With ``ui`` ``None`` nothing is skipped.
 
     Returns:
         ``(loaded, errors)``: the paths that loaded, and one ``"<path>: <ErrorType>: <message>"``
@@ -371,9 +400,9 @@ def load_sources(
 
     for source, scope in immediate:
         load(source, scope)
-    spec = registry.frontends.get(ui) if ui else None
+    folder = frontend_folder(registry, ui) if ui else None
     for source, scope, frontend in deferred:
-        if spec is not None and frontend != spec.toolkit:
+        if folder is not None and frontend != folder:
             if skipped is not None:
                 skipped.append(f"{source.path}: needs a {frontend} frontend; {ui} is not one")
             continue
@@ -403,24 +432,27 @@ def load_extensions(
 
     Returns:
         ``(loaded, errors)`` as from :func:`load_sources`, plus ``"<path>: not found"``
-        for a missing ``extra`` entry and one error per ``x.py``/``x/`` clash. ``ui`` and ``skipped``
+        for a missing ``extra`` entry and one error per ``x.py``/``x/`` clash. ``ui`` (default: ``console``) is the
+        running frontend: its :func:`frontend_folder` is the global folder loaded, and ``ui`` and ``skipped``
         are passed to :func:`load_sources`.
     """
     errors: list[str] = []
     sources: list[tuple[ExtensionSource, str]] = []
     disabled = settings.disabled
-    for path in extension_entries(GLOBAL_EXTENSIONS_DIR):
+    folder = frontend_folder(registry, ui)
+    global_dir = global_extensions_dir(folder)
+    for path in extension_entries(global_dir):
         if ext_id(path) in disabled:
             continue
         try:
             sources += [(s, "global") for s in read_extensions([path])]
         except OSError as e:
             errors.append(f"{path}: {type(e).__name__}: {e}")
-    errors += entry_conflicts(GLOBAL_EXTENSIONS_DIR)
+    errors += entry_conflicts(global_dir)
     project = list(project)
     sources += [(s, "project") for s in project if ext_id(s.path) not in disabled]
     if project:
-        errors += entry_conflicts(project_extensions_dir(cwd))
+        errors += entry_conflicts(project_extensions_dir(cwd, folder))
     for entry in extra:
         path = Path(cwd, entry).resolve()
         if not path.exists():

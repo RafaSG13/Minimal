@@ -1,24 +1,28 @@
 """The extension marketplace: a git repository of shareable extensions.
 
-Layout of the repository: items live in ``shared/<category>/`` (they work under any
-frontend) and in ``frontends/<frontend>/<category>/`` (they set ``__frontend__ = "<frontend>"``
-and need that frontend's toolkit). ``<category>`` is one of
+Layout of the repository: one top-level folder per frontend (``console/``, ``textual/``, ``go/``; the
+folder of a frontend is :func:`~minimal.extensions.loader.frontend_folder`), each holding the
+categories it has, ``<folder>/<category>/``. ``<category>`` is one of
 :data:`~minimal.extensions.loader.CATEGORIES`: ``extensions`` (general), ``themes`` (colour
-themes), ``tools`` (tools for the model) and ``widgets`` (terminal UI components), each holding
-``<name>.py`` files or ``<name>/`` package folders (with an ``__init__.py``). Everything else in
-the repository (``frontends/<frontend>/src``, ``tests``, a Go module...) is not an item.
-Installing mirrors the category only: ``shared/themes/ocean.py`` goes to
-``~/.minimal/extensions/themes/ocean.py``, wherever the item lived, so a name may exist once
-per category in the whole repository (:func:`_find_release` refuses a clash).
+themes), ``tools`` (tools for the model) and ``widgets`` (interface components), each holding
+``<name>.py`` files or ``<name>/`` package folders (with an ``__init__.py``). A top-level folder is
+a frontend folder if it holds at least one category folder; everything else in the repository
+(``textual/src``, ``textual/tests``, ``go/cmd``, ``go/go.mod``...) is not an item. An item that suits
+several frontends is copied into each folder, and the copies may diverge.
+Only the running frontend's folder is listed and installed from: ``textual/themes/ocean.py`` goes to
+``~/.minimal/extensions/textual/themes/ocean.py``, so a name is unique per frontend folder and category
+(:func:`_find_release` refuses one in several categories).
 There is no index; each extension carries its own metadata
 (:mod:`~minimal.extensions.metadata`), so concurrent publishes never conflict:
 
 * description: first line of the module docstring (required);
 * ``__version__ = "x"``: its version (required);
-* ``__api__ = "1"``: the minimal API it is written for (required);
+* ``__api__ = "2"``: the minimal API it is written for (required);
 * ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional). ``/ext``
   and ``ext_install`` offer to install the missing ones into minimal's Python after installing
   the extension (:func:`ensure_dependencies`); ``minimal ext check --install-deps`` installs them.
+* ``__frontend__ = "textual"``: the frontend folder it belongs to (optional); an item that sets it must
+  be in that folder (:func:`check`).
 
 Versions come from the git history of the cached clone, not from its HEAD alone: the
 candidates of an item are the commits that touched its path, newest first, and the
@@ -27,7 +31,7 @@ one offered and installed is the newest whose ``__api__`` this minimal can run
 older commit's is extracted with ``git archive`` and installed from there. An item with
 no such version anywhere is listed as incompatible and not installed.
 
-Each extensions folder (global and project) has a ``.lock.json`` recording where every
+Each frontend's extensions folder (global and project) has a ``.lock.json`` recording where every
 marketplace extension in it came from: the marketplace, the commit, ``__version__``,
 ``__api__`` and the SHA-256 of the installed copy (:func:`_content_digest`). The loader
 skips dot-files, so it is never loaded. A copy with a lock entry is outdated when its
@@ -60,12 +64,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import minimal
 from minimal import config
@@ -79,10 +82,6 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
 """Valid extension names (always ``fullmatch``): no path separators, no leading ``_``."""
 GIT_TIMEOUT = 120
 """Seconds a ``git`` or ``gh`` command may take before it is given up (a dead network must not hang ``/ext``)."""
-SHARED_DIR = "shared"
-"""Marketplace folder of the items that work under any frontend."""
-FRONTENDS_DIR = "frontends"
-"""Marketplace folder holding one ``<frontend>/`` folder per frontend with items of its own."""
 _COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc")
 
 
@@ -105,8 +104,6 @@ class Listing:
     """Its ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
     frontend: str = ""
     """Its ``__frontend__``."""
-    frontend_dir: str = ""
-    """The frontend folder it lives in (``frontends/<frontend_dir>/``); ``""`` for ``shared/`` or outside a marketplace layout."""
 
     @property
     def compatible(self) -> bool:
@@ -132,7 +129,7 @@ class Release:
 
     @property
     def relpath(self) -> str:
-        """The item's path inside the repository: ``<shared|frontends/<frontend>>/<category>/<name>.py`` or ``…/<name>``."""
+        """The item's path inside the repository: ``<folder>/<category>/<name>.py`` or ``…/<name>``."""
         return self.listing.path.relative_to(self.root).as_posix()
 
 
@@ -250,24 +247,11 @@ def _category_of(path: Path) -> str:
     return path.parent.name if path.parent.name in loader.CATEGORIES else "extensions"
 
 
-def _layout(path: Path) -> str | None:
-    """Where the item ``path`` sits in a marketplace layout: ``""`` in ``shared/<category>/``, the frontend's name in ``frontends/<frontend>/<category>/``, ``None`` anywhere else."""
-    if path.parent.name not in loader.CATEGORIES:
-        return None
-    home = path.parent.parent
-    if home.name == SHARED_DIR:
-        return ""
-    if home.parent.name == FRONTENDS_DIR:
-        return home.name
-    return None
-
-
 def describe(path: Path, name: str | None = None) -> Listing:
     """Read an extension's metadata without running it.
 
     Its category is the name of its folder when that is a category
-    (``themes/ocean.py`` is a theme), else ``extensions``; its :attr:`Listing.frontend_dir` is
-    the ``<frontend>`` of ``frontends/<frontend>/<category>/`` it sits in, else ``""``.
+    (``themes/ocean.py`` is a theme), else ``extensions``.
 
     Args:
         path: The extension file or package folder.
@@ -318,15 +302,12 @@ def describe(path: Path, name: str | None = None) -> Listing:
         problem,
         meta.dependencies,
         meta.frontend,
-        _layout(path) or "",
     )
 
 
 def format_listing(listing: Listing) -> str:
-    """One line: ``name version (<frontend> only) — description``; the frontend part only for an item of a frontend's folder (or declaring ``__frontend__``)."""
+    """One line: ``name version — description``."""
     head = f"{listing.name} {listing.version}" if listing.version else listing.name
-    if listing.frontend_dir or listing.frontend:
-        head += f" ({listing.frontend_dir or listing.frontend} only)"
     return f"{head} — {listing.description}"
 
 
@@ -370,62 +351,53 @@ def sync(url: str | None = None) -> Path:
     return target
 
 
-def _item_folders(root: Path, category: str) -> list[Path]:
-    """The folders of marketplace clone ``root`` that may hold ``category`` items: ``shared/<category>/``, then ``frontends/<frontend>/<category>/`` for each frontend by name."""
-    folders = [root / SHARED_DIR / category]
-    frontends = root / FRONTENDS_DIR
-    if frontends.is_dir():
-        folders += [
-            p / category
-            for p in sorted(frontends.iterdir())
-            if p.is_dir() and not p.name.startswith((".", "_"))
-        ]
-    return folders
+def _check_folder(folder: str) -> str:
+    """``folder`` if it is a plain folder name (it ends up in paths); else raise ``ValueError``."""
+    if not folder or Path(folder).name != folder or folder.startswith((".", "_")):
+        raise ValueError(f"invalid frontend folder {folder!r}")
+    return folder
 
 
-def _entries(root: Path, category: str) -> tuple[list[Path], list[Path]]:
-    """``(entries, shadowed)`` of ``category`` in every :func:`_item_folders` of ``root`` (:func:`~minimal.extensions.loader.category_entries`); ``entries`` by name."""
-    entries: list[Path] = []
-    shadowed: list[Path] = []
-    for folder in _item_folders(root, category):
-        found, hidden = loader.category_entries(folder, category)
-        entries += found
-        shadowed += hidden
-    return sorted(entries, key=lambda p: p.name), shadowed
+def frontend_folders(root: Path) -> list[str]:
+    """The frontend folders of marketplace checkout ``root``, by name: top-level folders holding at least one category folder."""
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir()
+        and not p.name.startswith((".", "_"))
+        and any((p / category).is_dir() for category in loader.CATEGORIES)
+    )
 
 
-def _clashing(paths: Iterable[Path]) -> dict[str, list[Path]]:
-    """The items of ``paths`` sharing a name, by name: installed, they would land in the same place."""
-    by_name: dict[str, list[Path]] = {}
-    for path in paths:
-        by_name.setdefault(path.stem if path.suffix == ".py" else path.name, []).append(path)
-    return {name: found for name, found in by_name.items() if len(found) > 1}
+def _entries(root: Path, folder: str, category: str) -> tuple[list[Path], list[Path]]:
+    """``(entries, shadowed)`` of ``<folder>/<category>/`` in clone ``root`` (:func:`~minimal.extensions.loader.category_entries`)."""
+    return loader.category_entries(root / _check_folder(folder) / category, category)
 
 
 def releases(
-    query: str = "", url: str | None = None, category: str | None = None
+    query: str = "", url: str | None = None, category: str | None = None, folder: str = loader.DEFAULT_FOLDER
 ) -> list[Release]:
-    """The offered version (:class:`Release`) of each extension whose name or description contains ``query`` (case-insensitive); all if empty.
+    """The offered version (:class:`Release`) of each extension of frontend ``folder`` whose name or description contains ``query`` (case-insensitive); all if empty.
 
     Listed by category in :data:`~minimal.extensions.loader.CATEGORIES` order, then by
-    name; only ``category``'s if given. Items come from ``shared/<category>/`` and every
-    ``frontends/<frontend>/<category>/``; a name in several of them is listed once per folder.
+    name; only ``category``'s if given. Items come from ``<folder>/<category>/`` only: the other frontends' are not offered.
     Extensions whose HEAD has invalid metadata are skipped. The description is the offered version's.
 
     Raises:
-        ValueError: if ``category`` is not one of :data:`~minimal.extensions.loader.CATEGORIES`.
+        ValueError: if ``category`` is not one of :data:`~minimal.extensions.loader.CATEGORIES`, or ``folder`` is not a folder name.
         RuntimeError: if git fails.
     """
     if category:
         loader.category_dir(
             Path(), category
         )  # validates it: the folder name must not be a path
+    _check_folder(folder)
     url = url or marketplace_url()
     root = sync(url)
     needle = query.lower()
     found = []
-    for folder in [category] if category else loader.CATEGORIES:
-        for path in _entries(root, folder)[0]:
+    for kind in [category] if category else loader.CATEGORIES:
+        for path in _entries(root, folder, kind)[0]:
             try:
                 release = _resolve(root, url, path)
             except ValueError:
@@ -437,10 +409,10 @@ def releases(
 
 
 def search(
-    query: str = "", url: str | None = None, category: str | None = None
+    query: str = "", url: str | None = None, category: str | None = None, folder: str = loader.DEFAULT_FOLDER
 ) -> list[Listing]:
-    """The offered version of each extension matching ``query``: :func:`releases`' listings."""
-    return [release.listing for release in releases(query, url, category)]
+    """The offered version of each extension of frontend ``folder`` matching ``query``: :func:`releases`' listings."""
+    return [release.listing for release in releases(query, url, category, folder)]
 
 
 @contextlib.contextmanager
@@ -555,15 +527,11 @@ def _check_package_name(path: Path, name: str, category: str) -> None:
         )
 
 
-def _installed_path(scope: str, cwd: str, category: str, name: str) -> Path | None:
-    """The installed copy of ``name`` in ``scope``'s ``category`` folder (the ``.py`` file wins); ``None`` if none."""
-    folder = _target_dir(scope, cwd, category)
+def _installed_path(scope: str, cwd: str, folder: str, category: str, name: str) -> Path | None:
+    """The installed copy of ``name`` in ``scope``'s ``category`` folder of frontend ``folder`` (the ``.py`` file wins); ``None`` if none."""
+    target = _target_dir(scope, cwd, folder, category)
     return next(
-        (
-            path
-            for path in (folder / f"{name}.py", folder / name)
-            if _is_extension(path)
-        ),
+        (path for path in (target / f"{name}.py", target / name) if _is_extension(path)),
         None,
     )
 
@@ -588,19 +556,19 @@ LOCK_NAME = ".lock.json"
 """Where each extensions folder records the marketplace extensions installed in it (a dot-file: never loaded)."""
 
 
-def _lock_id(category: str, name: str) -> str:
+def lock_id(category: str, name: str) -> str:
     """Key of an extension in the lock: its id (:func:`~minimal.extensions.loader.ext_id`): ``name`` or ``category/name``."""
     return name if category == "extensions" else f"{category}/{name}"
 
 
-def _lock_path(scope: str, cwd: str) -> Path:
-    return _target_dir(scope, cwd) / LOCK_NAME
+def _lock_path(scope: str, cwd: str, folder: str) -> Path:
+    return _target_dir(scope, cwd, folder) / LOCK_NAME
 
 
-def _read_lock(scope: str, cwd: str) -> dict[str, dict]:
-    """The lock of ``scope``; empty if it is missing or unreadable (the next install rewrites it)."""
+def read_lock(path: Path) -> dict[str, dict]:
+    """The lock file ``path``; empty if it is missing or unreadable (the next install rewrites it)."""
     try:
-        data = json.loads(_lock_path(scope, cwd).read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return (
@@ -610,9 +578,14 @@ def _read_lock(scope: str, cwd: str) -> dict[str, dict]:
     )
 
 
-def _lock_entry(scope: str, cwd: str, category: str, name: str) -> dict | None:
+def _read_lock(scope: str, cwd: str, folder: str) -> dict[str, dict]:
+    """The lock of ``scope`` for frontend ``folder`` (:func:`read_lock`)."""
+    return read_lock(_lock_path(scope, cwd, folder))
+
+
+def _lock_entry(scope: str, cwd: str, folder: str, category: str, name: str) -> dict | None:
     """The lock's entry for ``name``; ``None`` if there is none or it lacks a string ``commit`` or ``sha256``."""
-    entry = _read_lock(scope, cwd).get(_lock_id(category, name))
+    entry = _read_lock(scope, cwd, folder).get(lock_id(category, name))
     if (
         entry is None
         or not isinstance(entry.get("commit"), str)
@@ -622,12 +595,11 @@ def _lock_entry(scope: str, cwd: str, category: str, name: str) -> dict | None:
     return entry
 
 
-def _write_lock(scope: str, cwd: str, lock: dict[str, dict]) -> None:
-    """Replace the lock of ``scope`` atomically (private, mode 0600, in the global folder); delete it if ``lock`` is empty."""
-    path = _lock_path(scope, cwd)
+def write_lock(path: Path, lock: dict[str, dict], private: bool) -> None:
+    """Replace lock file ``path`` atomically (mode 0600 if ``private``); delete it if ``lock`` is empty."""
     if not lock:
         _remove(path)
-    elif scope == "global":
+    elif private:
         config.write_private(path, lock)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -644,10 +616,15 @@ def _write_lock(scope: str, cwd: str, lock: dict[str, dict]) -> None:
             raise
 
 
-def _is_modified(scope: str, cwd: str, category: str, name: str) -> bool:
+def _write_lock(scope: str, cwd: str, folder: str, lock: dict[str, dict]) -> None:
+    """Replace the lock of ``scope`` for frontend ``folder`` (:func:`write_lock`; private in the global folder)."""
+    write_lock(_lock_path(scope, cwd, folder), lock, private=scope == "global")
+
+
+def _is_modified(scope: str, cwd: str, folder: str, category: str, name: str) -> bool:
     """Whether the installed copy of ``name`` has local changes: it has a lock entry its files no longer match."""
-    path = _installed_path(scope, cwd, category, name)
-    entry = _lock_entry(scope, cwd, category, name)
+    path = _installed_path(scope, cwd, folder, category, name)
+    entry = _lock_entry(scope, cwd, folder, category, name)
     return (
         path is not None
         and entry is not None
@@ -655,35 +632,26 @@ def _is_modified(scope: str, cwd: str, category: str, name: str) -> bool:
     )
 
 
-def catalog(url: str, cwd: str) -> list[Entry]:
-    """Every extension in marketplace ``url`` (as offered, :func:`releases`) with its installed copies (global and ``cwd``'s project).
+def catalog(url: str, cwd: str, folder: str = loader.DEFAULT_FOLDER) -> list[Entry]:
+    """Every extension of frontend ``folder`` in marketplace ``url`` (as offered, :func:`releases`) with its installed copies (global and ``cwd``'s project).
 
     A copy is outdated when its lock entry from ``url`` names another commit than the offered one;
-    without such an entry its files are compared with the offered version's. A name that is in
-    several folders of one category is left out (a note goes to stderr): its copies would install to the same place.
+    without such an entry its files are compared with the offered version's.
     """
     entries = []
-    offered = releases("", url)
-    count = Counter((r.listing.category, r.listing.name) for r in offered)
-    for release in offered:
-        if count[release.listing.category, release.listing.name] > 1:
-            print(
-                f"[marketplace] skipped {release.relpath}: the name is also in another folder of {url}",
-                file=sys.stderr,
-            )
-            continue
+    for release in releases("", url, None, folder):
         listing = release.listing
         installed, outdated, modified, version = [], [], [], ""
         wanted = None
         for scope in ("global", "project"):
-            path = _installed_path(scope, cwd, listing.category, listing.name)
+            path = _installed_path(scope, cwd, folder, listing.category, listing.name)
             if path is None:
                 continue
             installed.append(scope)
             current = _digest_or_none(
                 path
             )  # None: a symlink was added to the installed copy
-            lock = _lock_entry(scope, cwd, listing.category, listing.name)
+            lock = _lock_entry(scope, cwd, folder, listing.category, listing.name)
             if lock is not None and current != lock["sha256"]:
                 modified.append(scope)
             if lock is not None and lock.get("marketplace") == release.url:
@@ -702,72 +670,62 @@ def catalog(url: str, cwd: str) -> list[Entry]:
     return entries
 
 
-def _target_dir(scope: str, cwd: str, category: str = "extensions") -> Path:
-    """Folder for ``category`` extensions in ``scope``: ``"global"`` or ``"project"``."""
+def _target_dir(scope: str, cwd: str, folder: str, category: str = "extensions") -> Path:
+    """Folder for ``category`` extensions of frontend ``folder`` in ``scope``: ``"global"`` or ``"project"``."""
+    _check_folder(folder)
     if scope == "global":
-        return loader.category_dir(loader.GLOBAL_EXTENSIONS_DIR, category)
+        return loader.category_dir(loader.global_extensions_dir(folder), category)
     if scope == "project":
-        return loader.category_dir(loader.project_extensions_dir(cwd), category)
+        return loader.category_dir(loader.project_extensions_dir(cwd, folder), category)
     raise ValueError("scope must be global or project")
 
 
-def _find(root: Path, name: str, category: str | None) -> list[Path]:
-    """``name``'s file or package folder in each :func:`_item_folders` of each category (or only ``category``) of marketplace clone ``root``."""
+def _find(root: Path, name: str, category: str | None, folder: str) -> list[Path]:
+    """``name``'s file or package folder in each category (or only ``category``) of ``<folder>/`` in marketplace clone ``root``."""
     found = []
     for kind in [category] if category else loader.CATEGORIES:
-        for folder in _item_folders(root, kind):
-            path = next(
-                (
-                    p
-                    for p in (folder / f"{name}.py", folder / name)
-                    if _is_extension(p)
-                ),
-                None,
-            )
-            if path is not None:
-                found.append(path)
+        where = root / _check_folder(folder) / kind
+        path = next(
+            (p for p in (where / f"{name}.py", where / name) if _is_extension(p)),
+            None,
+        )
+        if path is not None:
+            found.append(path)
     return found
 
 
-def _find_release(name: str, url: str | None, category: str | None) -> Release:
-    """The offered version (:func:`_resolve`) of ``name`` in the marketplace at ``url`` (default: :func:`marketplace_url`).
+def _find_release(name: str, url: str | None, category: str | None, folder: str = loader.DEFAULT_FOLDER) -> Release:
+    """The offered version (:func:`_resolve`) of ``name`` in frontend ``folder`` of the marketplace at ``url`` (default: :func:`marketplace_url`).
 
     Raises:
-        ValueError: if the name or category is invalid, or the name is not in the marketplace, or is in
-            several categories or in several folders (``shared/``, ``frontends/<frontend>/``) of its category.
+        ValueError: if the name, category or folder is invalid, or the name is not in the marketplace's ``folder``,
+            or is in several of its categories.
     """
     if category:
         loader.category_dir(
             Path(), category
         )  # validates it: the folder name must not be a path
     _check_name(name)
+    _check_folder(folder)
     url = url or marketplace_url()
     root = sync(url)
-    found = _find(root, name, category)
+    found = _find(root, name, category, folder)
     if not found:
-        raise ValueError(f"{name} is not in the marketplace (open /ext to browse it)")
+        raise ValueError(f"{name} is not in the marketplace's {folder}/ folder (open /ext to browse it)")
     if len(found) > 1:
         categories = list(dict.fromkeys(_category_of(p) for p in found))
-        if len(categories) > 1:
-            raise ValueError(
-                f"{name} is in several categories ({', '.join(categories)}); pick one"
-            )
-        raise ValueError(
-            f"{name} is in several folders of the marketplace "
-            f"({', '.join(p.relative_to(root).as_posix() for p in found)}); "
-            "it would install to the same place, so the marketplace must keep only one"
-        )
+        raise ValueError(f"{name} is in several categories ({', '.join(categories)}); pick one")
     return _resolve(root, url, found[0])
 
 
-def _check_installable(release: Release, scope: str, cwd: str, force: bool) -> None:
+def _check_installable(release: Release, scope: str, cwd: str, folder: str, force: bool) -> None:
     """Raise ``ValueError`` if no version of ``release`` runs here, or installing would overwrite local changes without ``force``."""
     listing = release.listing
     if not listing.compatible:
         raise ValueError(_incompatible(listing))
-    if not force and _is_modified(scope, cwd, listing.category, listing.name):
+    if not force and _is_modified(scope, cwd, folder, listing.category, listing.name):
         raise ValueError(
-            f"{listing.name} has local changes in {_installed_path(scope, cwd, listing.category, listing.name)}; "
+            f"{listing.name} has local changes in {_installed_path(scope, cwd, folder, listing.category, listing.name)}; "
             "installing would overwrite them (pass force to do it)"
         )
 
@@ -869,26 +827,28 @@ def install(
     url: str | None = None,
     category: str | None = None,
     force: bool = False,
+    folder: str = loader.DEFAULT_FOLDER,
 ) -> tuple[Path, bool]:
-    """Copy the offered version of extension ``name`` (:class:`Release`) from the marketplace into the ``scope`` folder of its category.
+    """Copy the offered version of extension ``name`` (:class:`Release`) from the marketplace's ``folder/`` into the ``scope`` folder of frontend ``folder``, in its category.
 
     It is not loaded; reload the extensions to activate it.
 
     Args:
         category: Where to look; needed only when several categories have ``name``.
         force: Overwrite an installed copy that has local changes.
+        folder: The frontend to install for (:func:`~minimal.extensions.loader.frontend_folder`).
 
     Returns:
         ``(dest, updated)``: the installed file or folder, and whether it replaced an existing copy.
 
     Raises:
-        ValueError: if the name or category is invalid, the name is not in the marketplace or in
+        ValueError: if the name or category is invalid, the name is not in the marketplace's ``folder`` or is in
             several categories, no version of the extension is written for an API this minimal provides,
             or the installed copy has local changes and ``force`` is false.
     """
-    release = _find_release(name, url, category)
-    _check_installable(release, scope, cwd, force)
-    return install_release(release, scope, cwd)
+    release = _find_release(name, url, category, folder)
+    _check_installable(release, scope, cwd, folder, force)
+    return install_release(release, scope, cwd, folder)
 
 
 @contextlib.contextmanager
@@ -901,19 +861,19 @@ def release_source(release: Release) -> Iterator[Path]:
         yield tmp / release.relpath
 
 
-def install_release(release: Release, scope: str, cwd: str) -> tuple[Path, bool]:
-    """Install ``release`` (see :func:`install_from`), extracting it first if it is not HEAD's, and record it in the lock.
+def install_release(release: Release, scope: str, cwd: str, folder: str = loader.DEFAULT_FOLDER) -> tuple[Path, bool]:
+    """Install ``release`` for frontend ``folder`` (see :func:`install_from`), extracting it first if it is not HEAD's, and record it in the lock.
 
     Overwrites local changes: :func:`install` is what asks for ``force``.
     """
     with release_source(release) as src:
-        return install_from(src, scope, cwd, (release.url, release.commit))
+        return install_from(src, scope, cwd, (release.url, release.commit), folder)
 
 
 def install_from(
-    src: Path, scope: str, cwd: str, origin: tuple[str, str] | None = None
+    src: Path, scope: str, cwd: str, origin: tuple[str, str] | None = None, folder: str = loader.DEFAULT_FOLDER
 ) -> tuple[Path, bool]:
-    """Copy marketplace extension ``src`` (a file or package folder of a synced clone, or extracted from one) into ``scope``'s category folder.
+    """Copy extension ``src`` (a file or package folder of a synced clone, or extracted from one) into ``scope``'s category folder of frontend ``folder``.
 
     A copy in the other form (``x.py`` for a folder ``x/``, or the reverse) is removed. The lock of
     ``scope`` gets an entry for it when ``origin`` ``(marketplace URL, commit)`` is given; without
@@ -929,12 +889,12 @@ def install_from(
     listing = describe(src)
     if not listing.compatible:
         raise ValueError(_incompatible(listing))
-    folder = _target_dir(scope, cwd, src.parent.name)
-    dest = folder / src.name
-    other = folder / listing.name if src.is_file() else folder / f"{listing.name}.py"
+    target = _target_dir(scope, cwd, folder, src.parent.name)
+    dest = target / src.name
+    other = target / listing.name if src.is_file() else target / f"{listing.name}.py"
     _check_replaceable(dest)
     updated = _is_extension(dest) or _is_extension(other)
-    folder.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
     if _is_extension(other):
         _remove(other)
     if src.is_dir():
@@ -942,8 +902,8 @@ def install_from(
         shutil.copytree(src, dest, ignore=_COPY_IGNORE)
     else:
         shutil.copyfile(src, dest)
-    lock = _read_lock(scope, cwd)
-    key = _lock_id(listing.category, listing.name)
+    lock = _read_lock(scope, cwd, folder)
+    key = lock_id(listing.category, listing.name)
     if origin is not None:
         url, commit = origin
         lock[key] = {
@@ -953,9 +913,9 @@ def install_from(
             "api": listing.api,
             "sha256": _content_digest(dest),
         }
-        _write_lock(scope, cwd, lock)
+        _write_lock(scope, cwd, folder, lock)
     elif lock.pop(key, None) is not None:
-        _write_lock(scope, cwd, lock)
+        _write_lock(scope, cwd, folder, lock)
     return dest, updated
 
 
@@ -976,36 +936,40 @@ def _remove(path: Path) -> None:
 
 
 def uninstall(
-    name: str, scope: str = "global", cwd: str = ".", category: str = "extensions"
+    name: str,
+    scope: str = "global",
+    cwd: str = ".",
+    category: str = "extensions",
+    folder: str = loader.DEFAULT_FOLDER,
 ) -> Path:
-    """Delete an installed extension (file or package folder), drop its lock entry and return its path.
+    """Delete an installed extension (file or package folder) of frontend ``folder``, drop its lock entry and return its path.
 
     Raises:
         ValueError: if the name is invalid or the extension is not installed in ``scope``'s ``category`` folder.
     """
     _check_name(name)
-    folder = _target_dir(scope, cwd, category)
+    target = _target_dir(scope, cwd, folder, category)
     removed = None
-    for path in (folder / f"{name}.py", folder / name):
+    for path in (target / f"{name}.py", target / name):
         if _is_extension(path):
             _remove(path)
             removed = removed or path
     if removed is None:
-        raise ValueError(f"{name} is not installed in {folder}")
-    lock = _read_lock(scope, cwd)
-    if lock.pop(_lock_id(category, name), None) is not None:
-        _write_lock(scope, cwd, lock)
+        raise ValueError(f"{name} is not installed in {target}")
+    lock = _read_lock(scope, cwd, folder)
+    if lock.pop(lock_id(category, name), None) is not None:
+        _write_lock(scope, cwd, folder, lock)
     return removed
 
 
-def installed(cwd: str) -> list[tuple[str, str, Path]]:
-    """Installed extensions (files and package folders) as ``(scope, category, path)``: global ones first, then project ones."""
+def installed(cwd: str, folder: str = loader.DEFAULT_FOLDER) -> list[tuple[str, str, Path]]:
+    """Installed extensions of frontend ``folder`` (files and package folders) as ``(scope, category, path)``: global ones first, then project ones."""
     return [
         (scope, category, path)
         for scope in ("global", "project")
         for category in loader.CATEGORIES
         for path in loader.category_entries(
-            _target_dir(scope, cwd, category), category
+            _target_dir(scope, cwd, folder, category), category
         )[0]
     ]
 
@@ -1015,6 +979,7 @@ def publish(
     name: str | None = None,
     url: str | None = None,
     category: str | None = None,
+    folder: str = loader.DEFAULT_FOLDER,
 ) -> str:
     """Propose an extension to the marketplace on a new branch, opening a pull request if ``gh`` is installed.
 
@@ -1023,15 +988,16 @@ def publish(
     Args:
         path: The extension file or package folder.
         category: Marketplace category folder (default: the extension's own folder if it is a
-            category, such as ``~/.minimal/extensions/themes``, else ``extensions``). It goes
-            to ``frontends/<frontend>/<category>/`` if it sets ``__frontend__``, else to ``shared/<category>/``.
+            category, such as ``~/.minimal/extensions/console/themes``, else ``extensions``).
+        folder: The running frontend's folder (:func:`~minimal.extensions.loader.frontend_folder`):
+            the extension goes to ``<folder>/<category>/``.
 
     Returns:
         What happened, for the user.
 
     Raises:
-        ValueError: if the extension is missing, invalid, or already published unchanged, the category is unknown,
-            its ``__frontend__`` is not a valid name, or the marketplace already has the name in another folder of the category.
+        ValueError: if the extension is missing, invalid, or already published unchanged, the category or
+            folder is unknown, or it sets ``__frontend__`` to another frontend than ``folder``.
         RuntimeError: if a git command fails (for example, no push access).
     """
     path = Path(path).resolve()
@@ -1040,31 +1006,21 @@ def publish(
     listing = describe(path, name)
     category = category or listing.category
     loader.category_dir(Path(), category)  # validates it
+    _check_folder(folder)
     _check_package_name(path, listing.name, category)
-    if listing.frontend and not NAME_RE.fullmatch(listing.frontend):
+    if listing.frontend and listing.frontend != folder:
         raise ValueError(
-            f'{path}: invalid __frontend__ {listing.frontend!r}; use a frontend name such as "textual"'
+            f"{path}: it sets __frontend__ = {listing.frontend!r}, so it belongs in the marketplace's "
+            f"{listing.frontend}/ folder; publish it from the {listing.frontend} frontend (this one publishes to {folder}/)"
         )
     url = url or marketplace_url()
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         _git(
             "clone", "--quiet", "--", url, tmp
         )  # "--": a URL starting with "-" is not an option
-        home = Path(FRONTENDS_DIR, listing.frontend) if listing.frontend else Path(SHARED_DIR)
-        folder = Path(tmp, home, category)
-        dest = folder / (listing.name if path.is_dir() else f"{listing.name}.py")
-        other = folder / (f"{listing.name}.py" if path.is_dir() else listing.name)
-        elsewhere = [
-            p.relative_to(tmp).as_posix()
-            for other_folder in _item_folders(Path(tmp), category)
-            if other_folder != folder
-            for p in (other_folder / f"{listing.name}.py", other_folder / listing.name)
-            if _is_extension(p)
-        ]
-        if elsewhere:
-            raise ValueError(
-                f"{listing.name} is already in {', '.join(elsewhere)}; a name may exist once per category in the marketplace"
-            )
+        where = Path(tmp, folder, category)
+        dest = where / (listing.name if path.is_dir() else f"{listing.name}.py")
+        other = where / (f"{listing.name}.py" if path.is_dir() else listing.name)
         if (
             _is_extension(dest)
             and not _is_extension(other)
@@ -1074,7 +1030,7 @@ def publish(
                 f"{listing.name} is already published with identical content"
             )
         _check_replaceable(dest)
-        folder.mkdir(parents=True, exist_ok=True)
+        where.mkdir(parents=True, exist_ok=True)
         replaced = [p for p in (dest, other) if _is_extension(p)]
         for p in replaced:
             _remove(p)
@@ -1134,13 +1090,13 @@ def check(
 ) -> tuple[list[str], bool]:
     """Validate extensions the way the marketplace and the loader see them, for ``minimal ext check``.
 
-    Each path is an extension file or package folder, or a marketplace checkout (a folder
-    holding ``shared/`` or ``frontends/``), whose every item in ``shared/<category>/`` and
-    ``frontends/<frontend>/<category>/`` is checked (``frontends/<frontend>/src``, ``tests``
-    and the like are not items). Each extension must describe itself (:func:`describe`), accept
-    this minimal (``__api__``) and load into a fresh registry from ``make_registry``. An item in
-    ``frontends/<frontend>/`` must set ``__frontend__`` to that frontend, one in ``shared/`` must
-    not set it, and a name may exist once per category in a checkout. An item for
+    Each path is an extension file or package folder, or a marketplace checkout (a folder holding
+    at least one frontend folder, :func:`frontend_folders`), whose every item in
+    ``<folder>/<category>/`` is checked (``textual/src``, ``go/cmd`` and the like are not items).
+    Each extension must describe itself (:func:`describe`), accept
+    this minimal (``__api__``) and load into a fresh registry from ``make_registry``. An item that
+    sets ``__frontend__ = X`` must be in folder ``X/`` of a checkout, and one that imports ``textual``
+    or ``rich`` must set ``__frontend__ = "textual"``. An item for
     ``__frontend__ = "textual"`` is only checked statically (metadata, API, syntax) when
     ``textual`` is not installed here.
 
@@ -1151,7 +1107,7 @@ def check(
     Returns:
         ``(lines, ok)``: ``ok   category/name version``, ``WARN category/name: needs <module>``
         when it imports a module that is not installed here, or ``FAIL category/name: problem``
-        (``<frontend>/category/name`` for an item of ``frontends/<frontend>/``); ``ok`` lines of
+        (``<folder>/category/name`` for an item of a checkout's frontend folder); ``ok`` lines of
         statically checked items end with ``(static checks only: textual is not installed)``;
         ``ok`` is false if any line is ``FAIL`` or installing the dependencies failed.
     """
@@ -1159,9 +1115,9 @@ def check(
     if install_deps:
         requirements: list[str] = []
         for item in items:
-            if isinstance(item, Path):
+            if isinstance(item, _Item):
                 with contextlib.suppress(ValueError):  # reported as FAIL below
-                    requirements += describe(item).dependencies
+                    requirements += describe(item.path).dependencies
         missing = missing_dependencies(requirements)
         if missing:
             try:
@@ -1176,58 +1132,59 @@ def check(
     return lines, not any(line.startswith("FAIL") for line in lines)
 
 
-def _label(path: Path) -> str:
-    """How ``check`` names the item ``path``: ``category/name``, with a ``<frontend>/`` prefix for one in ``frontends/<frontend>/``."""
-    home = _layout(path)
-    return f"{home + '/' if home else ''}{_category_of(path)}/{path.name if path.is_dir() else path.stem}"
+class _Item(NamedTuple):
+    path: Path
+    """An extension file or package folder."""
+    folder: str
+    """The frontend folder of the checkout it is in; ``""`` if it was given on its own."""
 
 
-def _check_items(paths: list[Path]) -> list[Path | str]:
-    """What :func:`check` looks at, in order: each extension's path, or a ``FAIL`` line for a problem found while listing them."""
-    items: list[Path | str] = []
+def _label(item: _Item) -> str:
+    """How ``check`` names ``item``: ``category/name``, with a ``<folder>/`` prefix for one in a checkout."""
+    path = item.path
+    return f"{item.folder + '/' if item.folder else ''}{_category_of(path)}/{path.name if path.is_dir() else path.stem}"
+
+
+def _check_items(paths: list[Path]) -> list[_Item | str]:
+    """What :func:`check` looks at, in order: each extension, or a ``FAIL`` line for a problem found while listing them."""
+    items: list[_Item | str] = []
     for path in paths:
         path = path.resolve()
         if not path.exists():
             items.append(f"FAIL {path}: not found")
         elif path.is_dir() and not (path / "__init__.py").is_file():
-            if not any((path / d).is_dir() for d in (SHARED_DIR, FRONTENDS_DIR)):
+            folders = frontend_folders(path)
+            if not folders:
                 items.append(
-                    f"FAIL {path}: not an extension, and not a marketplace checkout (no {SHARED_DIR}/ or {FRONTENDS_DIR}/ folder)"
+                    f"FAIL {path}: not an extension, and not a marketplace checkout (no <frontend>/<category>/ folder)"
                 )
                 continue
-            for category in loader.CATEGORIES:
-                entries, shadowed = _entries(path, category)
-                items += [
-                    f"FAIL {_label(p)}: both {p.name}.py and {p.name}/ exist; remove one"
-                    for p in shadowed
-                ]
-                items += [
-                    f"FAIL {category}/{name}: in several folders ({', '.join(p.relative_to(path).as_posix() for p in found)}); "
-                    "it would install to the same place, so keep only one"
-                    for name, found in _clashing(entries).items()
-                ]
-                items += entries
+            for folder in folders:
+                for category in loader.CATEGORIES:
+                    entries, shadowed = _entries(path, folder, category)
+                    items += [
+                        f"FAIL {_label(_Item(p, folder))}: both {p.name}.py and {p.name}/ exist; remove one"
+                        for p in shadowed
+                    ]
+                    items += [_Item(p, folder) for p in entries]
         else:
-            items.append(path)
+            items.append(_Item(path, ""))
     return items
 
 
-def _check_one(path: Path, make_registry: Callable[[], Registry]) -> str:
-    label = _label(path)
+def _check_one(item: _Item, make_registry: Callable[[], Registry]) -> str:
+    path, folder = item
+    label = _label(item)
     try:
         listing = describe(path)
     except ValueError as e:
         return f"FAIL {label}: {str(e).removeprefix(f'{path}: ')}"
     if not listing.compatible:
         return f"FAIL {label}: {listing.problem}"
-    home = _layout(path)
-    if home and listing.frontend != home:
-        declared = f"it sets {listing.frontend!r}" if listing.frontend else "it does not set it"
-        return f'FAIL {label}: it is in {FRONTENDS_DIR}/{home}/, so it must set __frontend__ = "{home}" ({declared})'
-    if home == "" and listing.frontend:
+    if folder and listing.frontend and listing.frontend != folder:
         return (
-            f"FAIL {label}: it is in {SHARED_DIR}/, so it must not set __frontend__ (it sets {listing.frontend!r}); "
-            f"move it to {FRONTENDS_DIR}/{listing.frontend}/"
+            f"FAIL {label}: it sets __frontend__ = {listing.frontend!r} but is in {folder}/; "
+            f"move it to {listing.frontend}/ or fix __frontend__"
         )
     errors: list[str] = []
     registry = make_registry()
@@ -1276,7 +1233,7 @@ def _known_marketplace(url: str | None) -> str | None:
     return url
 
 
-def _ext_search(input: dict, ctx: Any) -> str:
+def _ext_search(input: dict, ctx: Any, folder: str) -> str:
     category = input.get("category")
     if category:
         loader.category_dir(
@@ -1286,7 +1243,7 @@ def _ext_search(input: dict, ctx: Any) -> str:
     lines = []
     for url in urls:
         try:
-            found = releases(input.get("query", ""), url, category)
+            found = releases(input.get("query", ""), url, category, folder)
         except (RuntimeError, ValueError) as e:
             lines.append(f"({url}: {e})")
             continue
@@ -1302,7 +1259,7 @@ def _ext_search(input: dict, ctx: Any) -> str:
     return "\n".join(lines) or "No extensions found."
 
 
-def _ext_install(input: dict, ctx: Any) -> str:
+def _ext_install(input: dict, ctx: Any, folder: str) -> str:
     name, category = input["name"], input.get("category")
     url = _known_marketplace(input.get("marketplace"))
     if url is None:
@@ -1312,7 +1269,7 @@ def _ext_install(input: dict, ctx: Any) -> str:
         having = []
         for candidate in marketplaces():
             try:
-                if _find(sync(candidate), name, category):
+                if _find(sync(candidate), name, category, folder):
                     having.append(candidate)
             except RuntimeError:
                 continue
@@ -1322,23 +1279,24 @@ def _ext_install(input: dict, ctx: Any) -> str:
             )
         url = having[0] if having else None
     scope = input.get("scope", "global")
-    release = _find_release(name, url, category)
-    _check_installable(release, scope, ctx.cwd, bool(input.get("force")))
+    release = _find_release(name, url, category, folder)
+    _check_installable(release, scope, ctx.cwd, folder, bool(input.get("force")))
     if scope == "global" and not confirm_global([release], ctx.ui.ask):
         raise ValueError(f"{name} was not installed: the user did not approve it")
-    dest, updated = install_release(release, scope, ctx.cwd)
+    dest, updated = install_release(release, scope, ctx.cwd, folder)
     msg = ensure_dependencies([release.listing], ctx.ui.ask)
     done = f"{'Updated' if updated else 'Installed'} {name} at {dest}."
     return f"{done} {msg + ' ' if msg else ''}Call reload_extensions to activate it."
 
 
-def _ext_publish(input: dict, ctx: Any) -> str:
+def _ext_publish(input: dict, ctx: Any, folder: str) -> str:
     url = _known_marketplace(input.get("marketplace")) or marketplace_url()
     return publish(
         Path(ctx.cwd, input["path"]),
         input.get("name"),
         url=url,
         category=input.get("category"),
+        folder=folder,
     )
 
 
@@ -1354,16 +1312,15 @@ _MARKETPLACE_SCHEMA = {
 }
 
 
-def register_marketplace_tools(registry: Registry) -> None:
-    """Add ``ext_search``, ``ext_install`` and ``ext_publish`` to ``registry``."""
+def register_marketplace_tools(registry: Registry, folder: str = loader.DEFAULT_FOLDER) -> None:
+    """Add ``ext_search``, ``ext_install`` and ``ext_publish`` to ``registry``, working on the marketplace's ``folder/`` (the running frontend's)."""
     registry.register_tool(
         name="ext_search",
-        run=_ext_search,
+        run=lambda input, ctx: _ext_search(input, ctx, folder),
         description=(
-            "Search every configured minimal extension marketplace. Returns one line per extension: "
-            "category/name, version, \"(<frontend> only)\" if it works only under that frontend (an item in the "
-            "marketplace's frontends/<frontend>/ folder; the rest, in shared/, work under any), and description, "
-            "prefixed by the marketplace when there are several. "
+            "Search every configured minimal extension marketplace for the running frontend (it only lists the "
+            f"{folder}/ folder, the extensions that work here). Returns one line per extension: "
+            "category/name, version and description, prefixed by the marketplace when there are several. "
             "Check it before writing a new extension; one may already exist."
         ),
         input_schema={
@@ -1379,12 +1336,11 @@ def register_marketplace_tools(registry: Registry) -> None:
     )
     registry.register_tool(
         name="ext_install",
-        run=_ext_install,
+        run=lambda input, ctx: _ext_install(input, ctx, folder),
         description=(
-            "Install an extension from a marketplace into the global (default) or project extensions folder, "
-            "in the subfolder of its category (the same wherever it lives in the marketplace: shared/ or a "
-            "frontend's folder): the newest version written for this minimal's API. A \"(<frontend> only)\" "
-            "extension loads only under that frontend. It is not "
+            "Install an extension from a marketplace into the global (default) or project extensions folder of "
+            f"the running frontend ({folder}/), in the subfolder of its category: the newest version written for "
+            "this minimal's API. It is not "
             "active until you call reload_extensions. An installed copy with local changes is not overwritten "
             "unless force is true."
         ),
@@ -1419,13 +1375,13 @@ def register_marketplace_tools(registry: Registry) -> None:
     )
     registry.register_tool(
         name="ext_publish",
-        run=_ext_publish,
+        run=lambda input, ctx: _ext_publish(input, ctx, folder),
         description=(
             "Publish an extension file or package folder to a marketplace: pushes a new branch and opens a pull "
             "request. It must define register(minimal), start with a docstring (its first line is the description) "
-            "and set __version__. It goes in the category of its folder (for example ~/.minimal/extensions/themes) "
-            "unless one is given; in the marketplace it is filed under shared/, or under frontends/<frontend>/ "
-            "if it sets __frontend__."
+            "and set __version__. It goes in the category of its folder (for example "
+            f"~/.minimal/extensions/{folder}/themes) unless one is given; in the marketplace it is filed under "
+            f"{folder}/<category>/."
         ),
         input_schema={
             "type": "object",

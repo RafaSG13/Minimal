@@ -25,14 +25,14 @@ def resolve_path(ctx: Any, path: str) -> Path:
 
 
 def readable_without_asking(path: Path, ctx: Any) -> bool:
-    """Whether resolved ``path`` is in the working directory, minimal's own source or the global extensions folder."""
+    """Whether resolved ``path`` is in the working directory, minimal's own source or the global extensions folder (``~/.minimal/extensions``, every frontend's subfolder)."""
     roots = (Path(ctx.cwd).resolve(), Path(minimal.__file__).resolve().parent, loader.GLOBAL_EXTENSIONS_DIR.resolve())
     return any(path.is_relative_to(root) for root in roots)
 
 
 def outside_workspace(input: dict, ctx: Any) -> bool:
     """Whether ``input["path"]`` (default ``.``) resolves outside the working directory, minimal's
-    own source (the system prompt points the model at extensions/registry.py) and the global extensions folder.
+    own source (the system prompt points the model at extensions/registry.py) and the global extensions folder (``~/.minimal/extensions``, every frontend's subfolder).
 
     The ``confirm`` of the reading tools: those places are read freely, anything
     else (``~/.ssh``, ``~/.minimal/keys.json``, a symlink leading there) asks first.

@@ -40,9 +40,6 @@ SUSPEND_WAIT = 5
 QUEUED = object()
 """Put in the inbox when an extension queues a user message, to wake the main loop."""
 
-TOOLKIT_UI = "console"
-"""The frontend :class:`~minimal.core.app.App` is told is running: its toolkit (none) decides which extensions load."""
-
 
 def take_streams() -> tuple[TextIO, TextIO]:
     """Claim the process's stdin and stdout for the protocol and return them as ``(inp, out)``.

@@ -593,7 +593,7 @@ class ReloadTest(unittest.TestCase):
         self.app = App(
             registry=self.registry, session=session, cwd=str(self.tmp), auto_approve=True, trust_project=True
         )
-        self.ext_dir = self.tmp / ".minimal" / "extensions"
+        self.ext_dir = self.tmp / ".minimal" / "extensions" / "console"
         self.ext_dir.mkdir(parents=True)
 
     def test_reload_picks_up_new_extension(self):

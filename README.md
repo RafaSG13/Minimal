@@ -57,20 +57,52 @@ Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
 
 ### Install the `minimal` command
 
-The package is published on PyPI as `mnml-agent`; the command it installs is `minimal`.
+The package is `mnml-agent`; the command it installs is `minimal`, and it is the only command you type. The core has the plain console and no UI toolkit; the other interfaces are installed next to it and `minimal` finds them: the Textual terminal UI is the Python package `minimal-textual` (it registers the `tui` frontend), and the Go UI is a program called `minimal-go` on your `PATH`.
+
+> [!IMPORTANT]
+> The newest release on PyPI (0.4.0) predates this layout: it has no `minimal serve`, no `minimal-textual` support and extension API 1, so it cannot install anything from the current marketplace. Until 0.5 is published, install from git:
 
 ```bash
-uv tool install mnml-agent
-minimal                 # the plain console
+uv tool install "mnml-agent @ git+https://github.com/RafaSG13/Minimal" \
+  --with "minimal-textual @ git+https://github.com/RafaSG13/minimal-marketplace#subdirectory=textual"
+minimal                 # the Textual UI; minimal --ui console for the plain console
 ```
 
-The core has a plain console and no UI toolkit. For the Textual terminal UI, install its package next to minimal; it registers the `tui` frontend, which then becomes the default:
+Leave out the `--with` line for the console only. Once 0.5 is on PyPI, `uv tool install mnml-agent --with "minimal-textual @ …"` does the same.
+
+### Install the Go UI (optional)
+
+`minimal-go` is a standalone terminal UI written in Go. `minimal` starts it for you and it starts `minimal serve` as a child process and draws what it says (see [docs/serve.md](docs/serve.md)), so it needs the `minimal` above on your `PATH` and Go 1.26 or later:
 
 ```bash
-uv tool install mnml-agent --with "minimal-textual @ git+https://github.com/RafaSG13/minimal-marketplace#subdirectory=frontends/textual"
+go install github.com/RafaSG13/minimal-marketplace/go/cmd/minimal-go@latest
+minimal                 # in your project directory: runs the Go UI once you chose it (see below)
 ```
 
-The Go UI is a standalone program that starts `minimal serve` (see [docs/serve.md](docs/serve.md)); both live in the [marketplace repository](https://github.com/RafaSG13/minimal-marketplace/tree/main/frontends) under `frontends/`.
+`go install` puts the binary in `$(go env GOPATH)/bin` (usually `~/go/bin`); add that folder to your `PATH`, or link the binary into one that is (`ln -s ~/go/bin/minimal-go ~/.local/bin/`). `minimal-go` also runs by hand (arguments go to `minimal serve`), and `MINIMAL_BIN` points it at another `minimal`.
+
+### Pick an interface
+
+`minimal` runs the interface chosen by `--ui <name>`, else by the `ui` setting, else by what is installed:
+
+| Installed                                   | `minimal` opens                                                                                |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| nothing besides the core                    | `console`, the plain line-by-line console                                                      |
+| one of `minimal-textual` (`tui`), `minimal-go` (`go`) | that one, without asking                                                             |
+| both                                        | a menu (arrow keys, as in setup) the first time; the choice is saved as `ui` in `~/.minimal/settings.json` |
+
+`minimal --ui console`, `--ui tui` and `--ui go` pick one for one run. To change the saved choice, set `"ui"` in `~/.minimal/settings.json` (or a project's `.minimal/settings.json`), or delete it to be asked again. When the Go UI is chosen `minimal` runs setup first if no provider is chosen yet, then replaces itself with `minimal-go`, passing its options on (`minimal -c`, `minimal --model …`).
+
+Each interface has its own extensions: installed ones live in `~/.minimal/extensions/<frontend>/` (`console/`, `textual/`, `go/`; `<frontend>/` in a project's `.minimal/extensions/` too) and only the running interface's folder loads. `/ext` lists the marketplace's folder of the same name, so you are only offered what works in the interface you are in (see [docs/extensions.md](docs/extensions.md#marketplace)).
+
+### Upgrading from 0.4
+
+0.5 splits the interfaces out of the core, moves the extension API to 2.0 and gives each interface its own extension folders, so an existing install needs these steps:
+
+1. **Reinstall** with `--force` and the command above. The `[tui]` extra is gone: `mnml-agent[tui]` installs the core without the Textual UI.
+2. **Your installed extensions move by themselves.** On the first start, the extensions, themes, tools and widgets directly in `~/.minimal/extensions/` (and its `themes/`, `tools/`, `widgets/`) are copied into the folder of every interface you have installed (`console/` always, `textual/` and `go/` if installed), except those that declare `__frontend__ = "X"`, which go only to `X/`. The old copies are removed once each copy is identical, their `.lock.json` entries move with them, and minimal prints what moved. Nothing is overwritten (a different copy already in a folder keeps the old one in place and is reported) and nothing is deleted otherwise. A project's `.minimal/extensions/` is not moved, since it belongs to the repository: minimal prints what is not loaded any more; move those files into `.minimal/extensions/<frontend>/` yourself.
+3. **Update your extensions.** Everything written for API 1 is refused at start (`written for minimal API 1.x, this minimal has API 2.0: install a version of it made for API 2`). Run `/ext`, pick the marketplace, tick the items shown as updates in each category, then `/reload`. Every marketplace item has an API 2 version; your own extensions need `__api__ = "2"` (and, if they used `minimal.api.logo_content` or the theme names of `minimal.api.theme`, the `minimal_textual` equivalents; see [docs/extensions.md](docs/extensions.md#api-versions)).
+4. **Remove `go_tui`.** The old `--ui go` extension is replaced by the standalone `minimal-go` above: delete `go_tui/` from `~/.minimal/extensions/` or a project's `.minimal/extensions/` (and its entry in that folder's `.lock.json`).
 
 ### Run from source
 
@@ -79,7 +111,8 @@ git clone https://github.com/RafaSG13/Minimal.git
 cd Minimal
 uv sync
 uv run minimal          # first run: setup, then the console
-uv tool install .       # optional: install the `minimal` command globally
+uv run --with "minimal-textual @ git+https://github.com/RafaSG13/minimal-marketplace#subdirectory=textual" minimal   # with the Textual UI
+uv tool install --editable . --with "minimal-textual @ git+https://github.com/RafaSG13/minimal-marketplace#subdirectory=textual"   # optional: `minimal` everywhere, tracking this checkout
 ```
 
 On the first start, setup asks (arrow keys) for the default provider, its credentials (a browser login for `claude`; for an API-key provider, the key from the environment or a new one) and the model, then saves the choice in `~/.minimal/settings.json`. It runs again whenever the saved provider can no longer start (for example after `minimal --logout`), and on demand with `minimal --setup` or `/setup`. Without a terminal (a pipe, CI) there is no setup: save a choice first or pass `--provider`.
@@ -89,8 +122,8 @@ On the first start, setup asks (arrow keys) for the default provider, its creden
 ## Getting Started
 
 ```bash
-minimal                          # interactive interface: the Textual UI if minimal-textual is installed, else the console
-minimal --ui console             # the plain line-by-line console (Ctrl-C interrupts a turn, Ctrl-D quits); the default without minimal-textual
+minimal                          # interactive interface: --ui, else the `ui` setting, else the installed one (a menu if several)
+minimal --ui console             # the plain line-by-line console (Ctrl-C interrupts a turn, Ctrl-D quits); tui and go pick the others
 minimal serve [options]          # no interface: serve minimal to a frontend over JSON lines (docs/serve.md)
 minimal -c                       # resume the last session of this directory
 minimal -s <id>                  # open (or create) a specific session
@@ -105,7 +138,7 @@ minimal ext check [--install-deps] <path>...   # validate extension files, packa
 
 If an `AGENTS.md` exists in the current directory, it is added to the system prompt (`prompt.files` in [settings](#settings) changes which files). minimal needs a terminal, and a turn can only be started from inside its interface: there is no one-shot `minimal -p "prompt"` mode that runs the agent straight from the shell.
 
-**Frontends.** The interface is a frontend. minimal has `console` built in, a plain REPL without colours, widgets or themes; an installed package adds more through a `minimal.frontends` entry point (`minimal-textual` adds `tui`, the default when installed), and an extension can add one with `register_frontend` (see [docs/extensions.md](docs/extensions.md#frontends)). `--ui <name>` or the `ui` setting picks one. A frontend in another language, such as the Go UI, starts `minimal serve` and talks to it in JSON lines: [docs/serve.md](docs/serve.md) lists every message.
+**Frontends.** The interface is a frontend. minimal has `console` built in, a plain REPL without colours, widgets or themes; an installed package adds more through a `minimal.frontends` entry point (`minimal-textual` adds `tui`), the `minimal-go` program on your `PATH` adds `go`, and an extension can add one with `register_frontend` (see [docs/extensions.md](docs/extensions.md#frontends)). `--ui <name>` or the `ui` setting picks one; with neither, `minimal` uses the one installed, or asks which and saves the answer when there are several. A frontend in another language, such as the Go UI, starts `minimal serve --ui <name>` and talks to it in JSON lines: [docs/serve.md](docs/serve.md) lists every message.
 
 **Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
 
@@ -179,9 +212,9 @@ A project's `permissions.allow`, `extensions.disabled` and `extensions.settings`
 
 ## Extensions
 
-An extension is a Python file, or a folder with an `__init__.py`, defining `register(minimal)`. Extensions are loaded from `~/.minimal/extensions/`, `./.minimal/extensions/` and any path passed with `--ext`; names starting with `_` or `.` are skipped. Each folder's own entries load first, then those in its `themes/`, `tools/` and `widgets/` subfolders, where the marketplace installs those categories. `extensions.disabled` in [settings](#settings) skips some by id.
+An extension is a Python file, or a folder with an `__init__.py`, defining `register(minimal)`. Extensions are loaded from `~/.minimal/extensions/<frontend>/`, `./.minimal/extensions/<frontend>/` and any path passed with `--ext`, where `<frontend>` is the running interface's folder (`console`, `textual` or `go`); names starting with `_` or `.` are skipped. Each folder's own entries load first, then those in its `themes/`, `tools/` and `widgets/` subfolders, where the marketplace installs those categories. `extensions.disabled` in [settings](#settings) skips some by id.
 
-A project's `./.minimal/extensions/` is code from the repository, so minimal does not run it until you trust it. Untrusted, it is skipped without asking: the transcript says so and the status line shows `⚠ N untrusted`. `/trust` prints a static scan of each file (what it can do: run commands, use the network, read environment variables or credential files, write files, decode hidden data, hook tool calls…; a list of capabilities, not of intent) and the project's trust-gated settings, and asks once. The answer is remembered for exactly what was scanned (`~/.minimal/trusted.json`); adding or editing a file or one of those settings makes the project untrusted again, including files written by the model or installed by `/ext`. `--trust-project` applies them without `/trust`; `-y` does not.
+A project's `./.minimal/extensions/<frontend>/` is code from the repository, so minimal does not run it until you trust it. Untrusted, it is skipped without asking: the transcript says so and the status line shows `⚠ N untrusted`. `/trust` prints a static scan of each file (what it can do: run commands, use the network, read environment variables or credential files, write files, decode hidden data, hook tool calls…; a list of capabilities, not of intent) and the project's trust-gated settings, and asks once. The answer is remembered for exactly what was scanned in that frontend's folder (`~/.minimal/trusted.json`); adding or editing a file or one of those settings makes the project untrusted again, including files written by the model or installed by `/ext`. `--trust-project` applies them without `/trust`; `-y` does not.
 
 ```python
 """Blocks force pushes and tells the time."""
@@ -224,9 +257,9 @@ The model knows how to write extensions: the system prompt explains the API and 
 
 ## Marketplace
 
-Extensions are shared through a git repository. Items that work under any frontend live in `shared/<category>/`; items written for one frontend live in `frontends/<frontend>/<category>/` (for example `frontends/textual/widgets/`) and declare `__frontend__ = "<frontend>"`. The categories are `extensions/` (general), `themes/` (colour themes), `tools/` (tools for the model) and `widgets/` (interface components); no other folder of the repository (a frontend's `src/`, `tests/`, the Go program) holds items, and a name is used once per category across the whole repository. Each category folder holds `<name>.py` files or `<name>/` package folders whose docstring's first line is the description, with a required `__version__ = "1.0"` and the `__api__ = "2"` of the minimal API it is written for. Third-party packages go in an optional `__dependencies__ = ["termaid>=0.3"]`: `/ext` offers to install the missing ones into minimal's Python. Installing mirrors the category and drops the folder it came from, so `shared/themes/amber.py` goes to `~/.minimal/extensions/themes/amber.py`, and so does a theme of a frontend folder. Before publishing, `minimal ext check <path>` (or `minimal ext check .` in a marketplace checkout, which checks `shared/` and every `frontends/<frontend>/` item; items for the Textual frontend get static checks only when Textual is not installed; `--install-deps` installs the declared packages first) loads each item without a terminal and prints `ok`, `WARN` (a missing optional module) or `FAIL`; it exits 1 on any failure.
+Extensions are shared through a git repository with one top-level folder per frontend: `console/`, `textual/` and `go/`. Each holds the categories it has: `extensions/` (general), `themes/` (colour themes), `tools/` (tools for the model) and `widgets/` (interface components); a top-level folder counts as a frontend folder when it has at least one of them, and nothing else in the repository (`textual/src`, `textual/tests`, `go/cmd`, `go/go.mod`…) holds items. An item that suits several frontends is copied into each folder, and the copies may diverge. A category folder holds `<name>.py` files or `<name>/` package folders whose docstring's first line is the description, with a required `__version__ = "1.0"` and the `__api__ = "2"` of the minimal API it is written for. Third-party packages go in an optional `__dependencies__ = ["termaid>=0.3"]`: `/ext` offers to install the missing ones into minimal's Python. `/ext`, `ext_search` and `ext_install` only see the running interface's folder and install into the same-named folder, so `textual/themes/amber.py` goes to `~/.minimal/extensions/textual/themes/amber.py`; a name is unique per frontend folder and category. Before publishing, `minimal ext check <path>` (or `minimal ext check .` in a marketplace checkout, which checks every item of every frontend folder; an item that sets `__frontend__ = X` must be in folder `X/`, and one that imports `textual` or `rich` must set `__frontend__ = "textual"`; items for the Textual frontend get static checks only when Textual is not installed; `--install-deps` installs the declared packages first) loads each item without a terminal and prints `ok`, `WARN` (a missing optional module) or `FAIL`; it exits 1 on any failure.
 
-Versions come from the repository's git history. For each item minimal takes the newest commit that touched it whose `__api__` this minimal can run: HEAD's version if it can, else the latest older one (shown as "latest for this minimal (newer needs API 2)"). An item with no such version is shown but not installed. Each extensions folder, global and project, keeps a `.lock.json` (ignored by the loader) recording, per installed item, its marketplace, commit, `__version__`, `__api__` and the SHA-256 of the installed files. An item is "update available" when its commit is not the one on offer, not merely when its bytes differ, so editing an installed copy is no longer mistaken for an update. An edited copy is marked "local changes": `/ext` leaves it unticked in the "Update these?" list (ticking it overwrites it) and the model's `ext_install` refuses to replace it unless called with `force: true`. A copy without a lock entry (installed by hand or by an older minimal) is still compared byte by byte.
+Versions come from the repository's git history. For each item minimal takes the newest commit that touched it whose `__api__` this minimal can run: HEAD's version if it can, else the latest older one (shown as "latest for this minimal (newer needs API 2)"). An item with no such version is shown but not installed. Each frontend's extensions folder, global and project, keeps a `.lock.json` (ignored by the loader) recording, per installed item, its marketplace, commit, `__version__`, `__api__` and the SHA-256 of the installed files. An item is "update available" when its commit is not the one on offer, not merely when its bytes differ, so editing an installed copy is no longer mistaken for an update. An edited copy is marked "local changes": `/ext` leaves it unticked in the "Update these?" list (ticking it overwrites it) and the model's `ext_install` refuses to replace it unless called with `force: true`. A copy without a lock entry (installed by hand or by an older minimal) is still compared byte by byte.
 
 The default marketplace is [`RafaSG13/minimal-marketplace`](https://github.com/RafaSG13/minimal-marketplace). `MINIMAL_MARKETPLACE` adds another URL or local path (for example your fork) and makes it the one the model's tools use.
 
@@ -236,7 +269,7 @@ The default marketplace is [`RafaSG13/minimal-marketplace`](https://github.com/R
 /ext publish <path> [name]        push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
 ```
 
-`/ext` lists the default marketplace, `$MINIMAL_MARKETPLACE` and the ones you added. "Add a marketplace…" takes a git URL or a local path, checks that it can be cloned and saves it under `marketplaces` in `~/.minimal/settings.json`; "Remove a saved marketplace…" forgets one. Picking a marketplace shows its categories with item and install counts; picking a category shows a checklist with installed items ticked. Tick to install (then choose the global or the project folder), untick to uninstall; items with a newer version on offer are offered for update. `Space` toggles, `Enter` applies, `Esc` cancels; extensions are reloaded afterwards. `/ext publish` files an extension under the category of the folder it comes from (`~/.minimal/extensions/themes/x.py` → `themes/`), else under `extensions/`.
+`/ext` lists the default marketplace, `$MINIMAL_MARKETPLACE` and the ones you added. "Add a marketplace…" takes a git URL or a local path, checks that it can be cloned and saves it under `marketplaces` in `~/.minimal/settings.json`; "Remove a saved marketplace…" forgets one. Picking a marketplace shows the categories of the running interface's folder with item and install counts; picking a category shows a checklist with installed items ticked. Tick to install (then choose the global or the project folder), untick to uninstall; items with a newer version on offer are offered for update. `Space` toggles, `Enter` applies, `Esc` cancels; extensions are reloaded afterwards. `/ext publish` files an extension under the category of the folder it comes from (`~/.minimal/extensions/textual/themes/x.py` → `themes/`), else under `extensions/`, in the running interface's folder of the marketplace; an extension that sets `__frontend__` to another frontend is refused (publish it from that frontend).
 
 The model has the `ext_search`, `ext_install` and `ext_publish` tools (each takes an optional `category`). `ext_search` searches every configured marketplace; `ext_install` and `ext_publish` take an optional `marketplace` (one of those URLs), and otherwise install from the marketplace that has the item and publish to `$MINIMAL_MARKETPLACE` or the default; `ext_install` also takes `force` to overwrite a copy with local changes. The model must call `reload_extensions` after installing. Publishing never pushes to the default branch: without push access, fork the marketplace and point `MINIMAL_MARKETPLACE` at the fork.
 
@@ -250,6 +283,7 @@ The model has the `ext_search`, `ext_install` and `ext_publish` tools (each take
 flowchart LR
   cli[cli.main] --> app[App]
   cli --> frontend["frontend: console, tui (minimal-textual), or an extension's (--ui)"] --> host[Host]
+  cli --> go["go: exec minimal-go, which runs minimal serve --ui go"]
   cli --> serve["minimal serve: JSON lines"] --> host
   host --> commands[App.run_command]
   host --> turn[App.run_turn]
@@ -267,7 +301,7 @@ flowchart LR
 
 **One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply; `before_request` handlers may change what one request sends (a summary instead of a long history, say), and a failed request goes to `provider_error` handlers, which may retry it or switch provider. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), permission rules (a deny fails the call, an allow skips the question), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If a turn fails or is interrupted before the model replied, it is dropped from the history; after that, it is kept, with the finished tool results, an error for each call not finished and a closing `[turn interrupted: …]` note. A reply cut off by the output token limit never runs its tool calls: each gets an error asking for smaller steps. The session file is appended to after every turn.
 
-**Frontends.** A frontend drives minimal through a `Host` (`core/host.py`): send a message, run a command, interrupt, read the status and what extensions add to the interface; it shows minimal through a `Frontend` (`core/app.py`) that it attaches to the host. The `console` REPL (`ui/frontends.py`) is built in; installed packages add frontends through the `minimal.frontends` entry-point group (`minimal-textual` registers `tui`), and all are registered like any extension's frontend, so `--ui` picks one and an extension can replace one by name; `import minimal.api` loads no UI toolkit. `minimal serve` (`ui/serve.py`, `ui/views.py`) is a frontend with no screen: it attaches a `Frontend` that writes every event as a JSON line to stdout, reads the user's actions from stdin, and runs the extensions' panels, status segments and renderers itself ([docs/serve.md](docs/serve.md)); a frontend in another language, such as the Go UI, drives it as a child process.
+**Frontends.** A frontend drives minimal through a `Host` (`core/host.py`): send a message, run a command, interrupt, read the status and what extensions add to the interface; it shows minimal through a `Frontend` (`core/app.py`) that it attaches to the host. The `console` REPL (`ui/frontends.py`) is built in; installed packages add frontends through the `minimal.frontends` entry-point group (`minimal-textual` registers `tui`), and all are registered like any extension's frontend, so `--ui` picks one and an extension can replace one by name; `import minimal.api` loads no UI toolkit. `cli.resolve_ui` picks the frontend before the session is locked (`--ui`, the `ui` setting, else what is installed, asking once when there are several); a frontend that is a program on the `PATH` (`minimal-go`, registered as `go`) is started by replacing the process with it, after setup if needed. `minimal serve` (`ui/serve.py`, `ui/views.py`) is a frontend with no screen: it attaches a `Frontend` that writes every event as a JSON line to stdout, reads the user's actions from stdin, and runs the extensions' panels, status segments and renderers itself ([docs/serve.md](docs/serve.md)); `--ui <name>` tells it which frontend it serves, which decides the extension folder; a frontend in another language, such as the Go UI, drives it as a child process. The folder of a frontend (`loader.frontend_folder`) is its toolkit, else its name; `extensions/migrate.py` moves the old flat install layout into those folders once.
 
 **History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
 
@@ -289,7 +323,8 @@ src/minimal/         packages from the bottom up; each imports only from the one
     registry.py      internal Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
     facade.py        Extension: what an extension's register(minimal) receives (decorators, declare_settings)
     metadata.py      reads docstring, __version__, __api__ and __frontend__ without running the code; API version checks
-    loader.py        finds extension files and package folders, imports them and calls their register(minimal)
+    loader.py        finds extension files and package folders (per frontend folder), imports them and calls their register(minimal)
+    migrate.py       one-time move of the old flat extension layout into per-frontend folders
     audit.py         static scan of extension source for /trust: what a file can do
     marketplace.py   git-based marketplaces: list, search, install, publish, `minimal ext check` (~/.minimal/marketplace cache)
     logo.py          python -m minimal.extensions.logo: turns an image into a header-logo extension (needs Pillow)
@@ -344,7 +379,7 @@ uv run mypy
 uv run coverage run -m unittest discover -s tests && uv run coverage report
 ```
 
-CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` fails below the threshold in `pyproject.toml`), and checks every item of the default marketplace with `minimal ext check`. The Textual UI is tested in its own package (`frontends/textual` of the marketplace repository). Plain `uv run python -m unittest discover -s tests` runs the suite without coverage. The suite needs no network or API key. It covers:
+CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` fails below the threshold in `pyproject.toml`), and checks every item of the default marketplace with `minimal ext check`. The Textual UI is tested in its own package (`textual/` of the marketplace repository). Plain `uv run python -m unittest discover -s tests` runs the suite without coverage. The suite needs no network or API key. It covers:
 
 | Test file             | What's covered                                                                                   |
 | --------------------- | ------------------------------------------------------------------------------------------------ |
@@ -359,7 +394,8 @@ CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` 
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_serve.py`       | `minimal serve`: hello, turns, questions, panels and renderers, terminal commands, and a child process whose stdout carries only protocol lines |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
-| `test_frontends.py`   | Frontends: the console REPL, entry-point discovery, the default frontend, `--ui` with an extension's frontend, frontend commands, `minimal.api` without Textual |
+| `test_frontends.py`   | Frontends: the console REPL, entry-point discovery, which frontend `minimal` runs (`--ui`, the `ui` setting, the menu), starting `minimal-go`, `--ui` with an extension's frontend, frontend commands, `minimal.api` without Textual |
+| `test_migrate.py`     | The move of the old flat extension layout into per-frontend folders: nothing lost, locks carried over, a second run |
 | `test_bundled_extensions.py` | Marketplace items through `App`: web search, subagent, compaction (also in the middle of a turn), retries, scope fence. Loads them from `../minimal-marketplace` or `$MARKETPLACE_CHECKOUT`; skipped without a checkout |
 
 ---

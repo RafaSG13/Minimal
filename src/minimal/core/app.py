@@ -29,6 +29,8 @@ from minimal.core.permissions import Permissions
 from minimal.core.session import Session
 from minimal.extensions.loader import (
     ProjectSnapshot,
+    frontend_folder,
+    global_extensions_dir,
     load_extensions,
     project_extensions_dir,
     read_project_snapshot,
@@ -68,8 +70,8 @@ SELF_EXTEND_PROMPT = (
     'describes it), set __version__ = "1.0" and __api__ = "{api_major}", the minimal API it is written for (without '
     "it, minimal does not load the file). "
     "Save new extensions to {global_dir}/<name>.py, or {project_dir}/<name>.py when the user wants it only for this "
-    "project; themes, tools and UI widgets go in the themes/, tools/ or widgets/ subfolder, as the marketplace groups "
-    "them. "
+    "project (those folders are the running frontend's; each frontend has its own); themes, tools and UI widgets go "
+    "in the themes/, tools/ or widgets/ subfolder, as the marketplace groups them. "
     "@minimal.tool(description=..., input_schema=..., confirm=...) on run(input, ctx) adds a tool (name and "
     "description default to the function's name and docstring); @minimal.command() on run(args, ctx) adds a slash "
     'command; @minimal.on(event) on handler(event) hooks events: "tool_call", "tool_result", "turn_end", '
@@ -119,7 +121,7 @@ SELF_EXTEND_PROMPT = (
 )
 
 
-def build_system_prompt(registry: Registry, cwd: str, settings: config.Settings) -> str:
+def build_system_prompt(registry: Registry, cwd: str, settings: config.Settings, ui: str | None = None) -> str:
     """Assemble the system prompt.
 
     Parts, separated by blank lines: the base prompt (:func:`base_prompt`), the
@@ -130,14 +132,15 @@ def build_system_prompt(registry: Registry, cwd: str, settings: config.Settings)
     Files listed by a project or local settings file must be inside ``cwd``:
     a project cannot pull ``~/.ssh/id_rsa`` into the prompt.
     """
+    folder = frontend_folder(registry, ui)
     parts = [
         base_prompt(settings),
         f"Working directory: {cwd}\nDate: {datetime.now(timezone.utc).date().isoformat()}",
         SELF_EXTEND_PROMPT.format(
             facade_path=Path(minimal.extensions.facade.__file__),
             context_path=Path(minimal.core.context.__file__),
-            global_dir=minimal.extensions.loader.GLOBAL_EXTENSIONS_DIR,
-            project_dir=project_extensions_dir(cwd),
+            global_dir=global_extensions_dir(folder),
+            project_dir=project_extensions_dir(cwd, folder),
             api_major=minimal.API_VERSION.split(".")[0],
         ),
     ]
@@ -337,7 +340,8 @@ class App:
         extensions: Extensions loaded by the last reload.
         extension_errors: Failures of the last reload, setting errors included.
         extension_skipped: Extensions the last reload did not load because they need another UI toolkit.
-        ui: Name of the frontend that runs: ``--ui``, else the ``ui`` setting, else ``tui`` if one is registered, else ``console``.
+        ui: Name of the frontend that runs: ``--ui``, else the ``ui`` setting, else ``console``. Its folder
+            (:attr:`folder`) decides which extensions load.
         settings: The settings read by the last reload, with project trust applied.
         setting_errors: Problems found in the settings files by the last reload.
         untrusted: What the last reload did not apply because the user has not
@@ -397,9 +401,13 @@ class App:
         return []
 
     def _pick_ui(self) -> str:
-        """``--ui``, else the ``ui`` setting, else ``tui`` if registered, else ``console``."""
-        preferred = config.DEFAULT_UI if config.DEFAULT_UI in self.registry.frontends else config.FALLBACK_UI
-        return self._ui_option or self.settings.ui or preferred
+        """``--ui``, else the ``ui`` setting, else ``console``."""
+        return self._ui_option or self.settings.ui or config.DEFAULT_UI
+
+    @property
+    def folder(self) -> str:
+        """The folder of the running frontend (:func:`~minimal.extensions.loader.frontend_folder`): where its extensions are installed and loaded from."""
+        return frontend_folder(self.registry, self.ui)
 
     def add_frontend_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
         """Add a built-in command that only the active frontend has (the terminal UI's ``/theme``); kept across reloads."""
@@ -421,7 +429,7 @@ class App:
         tools on its next model request. The current provider instance keeps
         working even if its spec is gone.
 
-        The project's extensions (``<cwd>/.minimal/extensions``) and its trust-gated
+        The project's extensions (``<cwd>/.minimal/extensions/<folder>``) and its trust-gated
         settings (:data:`~minimal.config.RISKY`) apply only if the
         user trusted exactly that snapshot (:meth:`is_trusted`). Otherwise they are
         skipped without asking and recorded in :attr:`untrusted`; that is not an
@@ -434,12 +442,13 @@ class App:
         layers, setting_errors = config.read_layers(self.cwd)
         risky = config.risky_subset(layers)
         read_error = None
+        folder = frontend_folder(self.registry, self._ui_option or config.Settings(tuple(layers)).ui or config.DEFAULT_UI)
         try:
-            snapshot = read_project_snapshot(self.cwd, risky)
+            snapshot = read_project_snapshot(self.cwd, risky, folder)
             trusted = snapshot is None or self.is_trusted(snapshot)
         except OSError as e:
             snapshot, trusted = None, False
-            read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
+            read_error = f"{project_extensions_dir(self.cwd, folder)}: cannot read the project extensions ({e}), skipped them"
         self.settings = config.Settings(tuple(layers), trusted)
         self.permissions = Permissions(self.settings)
         self.setting_errors = setting_errors
@@ -447,9 +456,9 @@ class App:
         self.registry.reset()
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
-        register_marketplace_tools(self.registry)
         frontend_errors = self._register_builtins()
         self.ui = self._pick_ui()
+        register_marketplace_tools(self.registry, self.folder)
         project = snapshot.sources if snapshot is not None and trusted else ()
         skipped: list[str] = []
         loaded, errors = load_extensions(
@@ -470,7 +479,7 @@ class App:
         if self.untrusted is None:
             return None
         return (
-            f"{self.untrusted.count} project extension(s) and/or settings in {self.untrusted.directory.parent} are not "
+            f"{self.untrusted.count} project extension(s) and/or settings in {self.untrusted.root} are not "
             "trusted, so they were not applied; run /trust to review them"
         )
 
@@ -614,7 +623,7 @@ class App:
 
     def system_prompt(self) -> str:
         """The system prompt of the next turn (:func:`build_system_prompt`)."""
-        return build_system_prompt(self.registry, self.cwd, self.settings)
+        return build_system_prompt(self.registry, self.cwd, self.settings, self.ui)
 
     def request_options(self) -> dict:
         """Provider request options of the next request: ``max_tokens`` from the settings

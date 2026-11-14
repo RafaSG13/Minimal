@@ -21,7 +21,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `provider`            | string                       | all          | highest layer wins                                                   |
 | `model`               | string                       | all          | highest layer wins                                                   |
 | `theme`               | string                       | all          | highest layer wins                                                   |
-| `ui`                  | string: a frontend name (`console`, `tui` from minimal-textual, or one a package or extension registers) | all | highest layer wins; `--ui` beats it; default `tui` if registered, else `console` |
+| `ui`                  | string: a frontend name (`console`, `tui` from minimal-textual, `go` from the minimal-go binary, or one a package or extension registers) | all | highest layer wins; `--ui` beats it; unset, `minimal` uses the only frontend installed besides `console`, asks which (a menu) when there are several and saves the answer here (global file), and uses `console` when there is none |
 | `max_tokens`          | positive integer, or object: `"provider"` or `"provider/model"` → positive integer | all | highest layer wins; default: each provider's own (8192 for Anthropic, Claude and Gemini, none sent to OpenAI-compatible servers) |
 | `marketplaces`        | list of strings (git URLs or paths) | global only | —                                                         |
 | `prompt.base`         | string: path of the base system prompt (`~` allowed) | global only | — (default: the packaged prompt)          |
@@ -34,7 +34,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 
 - **`prompt.files`** are read relative to the working directory and added to the system prompt as `Project instructions (<name>)`. Missing files are skipped. Files set by the project or local layer must stay inside the project; others are ignored.
 - **`max_tokens`** is the output-token limit of each model request. `{"max_tokens": 16000}` applies to every model; `{"max_tokens": {"anthropic": 16000, "openai/gpt-5.5": 32000}}` picks by `provider/model` first, then by provider, and leaves the rest at their default.
-- **`extensions.disabled`** lists ids (`compact`, `tools/subagent`, see [extensions](extensions.md#layout-and-where-to-save)) not to load from `~/.minimal/extensions` or `.minimal/extensions`. Extensions passed with `--ext` always load.
+- **`extensions.disabled`** lists ids (`compact`, `tools/subagent`, see [extensions](extensions.md#layout-and-where-to-save)) not to load from `~/.minimal/extensions/<frontend>` or `.minimal/extensions/<frontend>` (the running frontend's folders). Extensions passed with `--ext` always load.
 - **`extensions.settings`** holds the values an extension declares with `declare_settings` ([extensions](extensions.md#settings)).
 
 A file that is not valid JSON is left out entirely. An unknown key, a value of the wrong type, an invalid permission rule, or a global-only key in a project file is dropped. Each problem is reported by `/reload` and `/settings` with the file's path, and the rest still applies.
