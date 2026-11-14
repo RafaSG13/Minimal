@@ -10,14 +10,12 @@ A package ships a frontend by declaring an entry point in the group :data:`ENTRY
 ``register`` is called as ``register(registry)`` with the :class:`~minimal.extensions.registry.Registry`
 on every reload and calls ``registry.register_frontend(name, run, description, toolkit=...)``.
 
-A frontend can also be a separate program that drives ``minimal serve`` (:data:`EXTERNAL_FRONTENDS`):
-it is available when its binary is on the ``PATH``, and ``minimal`` starts it instead of running one in-process.
+A frontend in another language is not a package: it starts ``minimal serve`` and talks to it in JSON lines
+(see ``docs/serve.md``).
 """
 
 from __future__ import annotations
 
-import os
-import shutil
 import sys
 import threading
 from collections.abc import Callable
@@ -32,33 +30,10 @@ from minimal.extensions.registry import Registry
 ENTRY_POINT_GROUP = "minimal.frontends"
 """Entry-point group of installed packages that provide frontends."""
 
-EXTERNAL_FRONTENDS = {"go": "minimal-go"}
-"""Frontends that are programs: name -> binary on the ``PATH``. Each one is its own toolkit (its folder is its name)."""
-
 
 def register_builtin_frontends(registry: Registry) -> None:
-    """Register ``console`` and the external frontends whose binary is on the ``PATH``."""
+    """Register ``console``."""
     registry.register_frontend("console", run_console, "a plain console: one line per message, no colours or widgets")
-    for name, binary in EXTERNAL_FRONTENDS.items():
-        if shutil.which(binary):
-            registry.register_frontend(name, _external_run(name, binary), f"the {binary} program", toolkit=name)
-
-
-def _external_run(name: str, binary: str) -> Callable[[Host], None]:
-    def run(host: Host) -> None:
-        raise RuntimeError(f"{name} is the {binary} program, which starts minimal serve itself: run `minimal --ui {name}`")
-
-    return run
-
-
-def exec_external(name: str, args: list[str]) -> None:
-    """Replace this process with external frontend ``name``'s binary, started with ``args``. Does not return.
-
-    Raises:
-        OSError: if the binary is not on the ``PATH`` or cannot be started.
-    """
-    binary = EXTERNAL_FRONTENDS[name]
-    os.execvp(binary, [binary, *args])
 
 
 def register_installed_frontends(registry: Registry) -> list[str]:
@@ -73,7 +48,7 @@ def register_installed_frontends(registry: Registry) -> list[str]:
 
 
 def register_frontends(registry: Registry) -> list[str]:
-    """Register ``console`` and the external frontends, then the installed ones; the errors of the latter, as from :func:`register_installed_frontends`."""
+    """Register ``console``, then the installed frontends; the errors of the latter, as from :func:`register_installed_frontends`."""
     register_builtin_frontends(registry)
     return register_installed_frontends(registry)
 

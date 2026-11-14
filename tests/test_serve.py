@@ -463,11 +463,11 @@ class ServeProcessTest(unittest.TestCase):
         self.assertIn("Unknown option: --setup", done.stderr)
 
     def test_ui_picks_the_folder_that_loads(self):
-        for ui in ("console", "go"):
+        for ui in ("console", "web"):
             folder = self.tmp / ".minimal" / "extensions" / ui
             folder.mkdir(parents=True)
             (folder / "marker.py").write_text(f'__api__ = "2"\n\ndef register(minimal):\n    print("loaded the {ui} folder")\n')
-        for ui, other in (("console", "go"), ("go", "console")):
+        for ui, other in (("console", "web"), ("web", "console")):
             with self.subTest(ui=ui):
                 done = self.serve(
                     json.dumps({"t": "quit"}) + "\n", "--provider", "scripted", "--trust-project", "--ui", ui, "-e", str(self.tmp / "ext.py")
@@ -498,7 +498,7 @@ class ParseArgsTest(unittest.TestCase):
             (opts.cont, opts.session, opts.provider, opts.model, opts.ext, opts.yes, opts.trust_project, opts.ui),
             (True, "abc", "p", "m", ["x.py"], True, True, "console"),
         )
-        self.assertEqual(cli.parse_args(["--ui", "go"], True).ui, "go")
+        self.assertEqual(cli.parse_args(["--ui", "web"], True).ui, "web")
         for flag in ("--setup", "--login", "--logout"):
             with self.subTest(flag=flag), mock.patch("builtins.print"), self.assertRaises(SystemExit):
                 cli.parse_args([flag], True)

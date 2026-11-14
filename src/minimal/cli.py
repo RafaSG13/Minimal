@@ -22,7 +22,7 @@ from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import serve, setup
 from minimal.ui.commands import register_builtin_commands
-from minimal.ui.frontends import EXTERNAL_FRONTENDS, exec_external, register_builtin_frontends, register_frontends, scan_frontends
+from minimal.ui.frontends import register_builtin_frontends, register_frontends, scan_frontends
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
@@ -45,9 +45,9 @@ Options:
                         (default $MINIMAL_PROVIDER, else the settings' provider)
   -m, --model <name>    model (default $MINIMAL_MODEL, else the settings' model, else the provider's default)
   -e, --ext <path>      load an extension file or folder (repeatable)
-  --ui <name>           frontend: console (plain line-by-line), tui (minimal-textual), go (the minimal-go program),
-                        or one added by another package or an extension. Default: the settings' ui; unset, the
-                        installed one, or a menu to choose (and save) one when there are several
+  --ui <name>           frontend: console (plain line-by-line), tui (minimal-textual), or one added by another
+                        package or an extension. Default: the settings' ui; unset, the installed one, or a menu
+                        to choose (and save) one when there are several
   -y, --yes             do not ask for confirmation for write/edit/bash
   --trust-project       apply this project's extensions and trust-gated settings without /trust
   -h, --help            this help
@@ -70,7 +70,7 @@ Environment:
                                 model's tools and listed first by /ext
                                 (default https://github.com/RafaSG13/minimal-marketplace.git)
 
-Extensions are kept per frontend: ~/.minimal/extensions/<frontend>/ (console, textual, go) and
+Extensions are kept per frontend: ~/.minimal/extensions/<frontend>/ (console, textual) and
 .minimal/extensions/<frontend>/ in a project; only the running frontend's folder loads."""
 
 SERVE_HELP = """minimal serve — minimal without an interface, for a frontend that drives it over JSON lines
@@ -137,8 +137,6 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nCancelled.", file=sys.stderr)
             sys.exit(130)
-        if opts.ui in EXTERNAL_FRONTENDS:
-            start_external(opts, argv)
     try:
         session = open_session(opts.session or (last_session(cwd) if opts.cont else None) or new_id(), cwd)
         session.lock()
@@ -263,61 +261,6 @@ def resolve_ui(explicit: str | None, cwd: str) -> str:
     except (OSError, ValueError) as e:
         print(f"warning: could not save the frontend choice ({e}); it will be asked again", file=sys.stderr)
     return choice
-
-
-def passthrough_args(argv: list[str]) -> list[str]:
-    """``argv`` without what an external frontend must not receive: ``--ui <name>`` (it is told with ``minimal serve --ui``) and ``--setup`` (done before)."""
-    args: list[str] = []
-    skip = False
-    for arg in argv:
-        if skip:
-            skip = False
-        elif arg == "--ui":
-            skip = True
-        elif not arg.startswith("--ui=") and arg != "--setup":
-            args.append(arg)
-    return args
-
-
-def start_external(opts: argparse.Namespace, argv: list[str]) -> None:
-    """Run setup if no provider is chosen yet, then replace this process with the external frontend (``opts.ui``) given the rest of ``argv``. Does not return.
-
-    The frontend starts ``minimal serve --ui <name>`` itself, which locks the session: nothing is locked here.
-    """
-    try:
-        config.apply_keys()
-        ensure_provider(opts)
-    except KeyboardInterrupt:
-        print("\nSetup cancelled.", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(e, file=sys.stderr)
-        sys.exit(1)
-    binary = EXTERNAL_FRONTENDS[opts.ui]
-    try:
-        exec_external(opts.ui, passthrough_args(argv))
-    except OSError as e:
-        print(f"cannot start the {opts.ui} frontend: {binary}: {e}; install {binary} and put it on the PATH", file=sys.stderr)
-        sys.exit(1)
-
-
-def ensure_provider(opts: argparse.Namespace) -> None:
-    """Run setup like :func:`start_provider` does when no provider is chosen yet (or ``--setup``, or the saved one cannot start); nothing else.
-
-    Providers added by extensions are not known here: a provider that only an extension offers is left for ``minimal serve`` to start.
-    """
-    if (opts.provider or os.environ.get("MINIMAL_PROVIDER")) and not opts.setup:
-        return
-    registry = Registry()
-    register_builtin_providers(registry)
-    saved = None if opts.setup else config.Settings(tuple(config.read_layers(os.getcwd())[0])).provider
-    if saved is not None:
-        spec = registry.providers.get(saved)
-        problem = spec.missing_credentials() if spec is not None else None
-        if problem is None:
-            return
-        print(f"{problem}\n", file=sys.stderr)
-    setup.run_setup(registry)
 
 
 def start_provider(app: App, opts: argparse.Namespace) -> None:

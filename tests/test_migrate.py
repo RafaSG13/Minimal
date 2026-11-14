@@ -50,15 +50,15 @@ class MigrateTest(unittest.TestCase):
         self.write("widgets/fancy.py", source("Fancy.", "textual"))
         self.write("tools/pkg/__init__.py", source("A package."))
         self.write("tools/pkg/data.txt", "resource")
-        notice, _ = self.migrate(("console", "textual", "go"))
-        for folder in ("console", "textual", "go"):
+        notice, _ = self.migrate(("console", "textual", "web"))
+        for folder in ("console", "textual", "web"):
             self.assertEqual((self.base / folder / "hello.py").read_text(), source("Hello."))
             self.assertEqual((self.base / folder / "themes" / "ocean.py").read_text(), source("Ocean."))
             self.assertEqual((self.base / folder / "tools" / "pkg" / "data.txt").read_text(), "resource")
         self.assertEqual(sorted(p.name for p in self.base.glob("*/widgets/*.py")), ["fancy.py"])
         self.assertTrue((self.base / "textual" / "widgets" / "fancy.py").is_file())  # only where it says
-        self.assertEqual(sorted(p.name for p in self.base.iterdir()), ["console", "go", "textual"])  # the old copies are gone
-        for line in ("hello -> console/, textual/, go/", "themes/ocean -> console/, textual/, go/", "widgets/fancy -> textual/"):
+        self.assertEqual(sorted(p.name for p in self.base.iterdir()), ["console", "textual", "web"])  # the old copies are gone
+        for line in ("hello -> console/, textual/, web/", "themes/ocean -> console/, textual/, web/", "widgets/fancy -> textual/"):
             self.assertIn(line, notice)
 
     def test_an_item_for_a_frontend_that_is_not_installed_is_kept_in_its_folder(self):
@@ -130,10 +130,10 @@ class ListingTest(unittest.TestCase):
     def test_frontend_folders_are_the_top_level_folders_holding_a_category(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for relative in ("console/tools/a.py", "go/widgets/b.py", "textual/src/pkg/c.py", "docs/readme.md", ".git/tools/x.py", "_x/tools/y.py"):
+            for relative in ("console/tools/a.py", "web/widgets/b.py", "textual/src/pkg/c.py", "docs/readme.md", ".git/tools/x.py", "_x/tools/y.py"):
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
                 (root / relative).write_text("")
-            self.assertEqual(marketplace.frontend_folders(root), ["console", "go"])
+            self.assertEqual(marketplace.frontend_folders(root), ["console", "web"])
 
 
 if __name__ == "__main__":

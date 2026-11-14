@@ -8,8 +8,8 @@
   order, all or none), and returns the changed lines numbered like `read`. The terminal UI shows a diff for each.
 - `/title [text]` names the session. The title, and the session a new one was started from with `ctx.new_session`
   (`parent`, e.g. by `compact`), are kept in the session file's header and shown by `/sessions` and `/resume`.
-- Extension API 1.2: frontends. `--ui <name>` (or the `ui` setting) picks the interface: `tui`,
-  the terminal UI (the `minimal-textual` package), `go`, the Go UI (the `minimal-go` program on the `PATH`), or `console`, a plain line-by-line REPL (Ctrl-C interrupts a turn, Ctrl-D quits).
+- Extension API 1.2: frontends. `--ui <name>` (or the `ui` setting) picks the interface: `tui`, the terminal UI (the
+  `minimal-textual` package), or `console`, a plain line-by-line REPL (Ctrl-C interrupts a turn, Ctrl-D quits).
   `minimal.register_frontend(name, run, description)` adds another; `run(host)` gets a `Host`, the API a frontend drives
   minimal with (`submit`, `run_command`, `interrupt`, `complete`, `status`, the widgets, status segments, themes and logo
   extensions registered, …), and shows minimal through a `Frontend` it attaches (`ConsoleFrontend` is a ready-made
@@ -28,11 +28,10 @@
   frontend steps aside. Protocol (version 2) and every message: [docs/serve.md](docs/serve.md).
 - Frontends of installed packages: a package declares a `minimal.frontends` entry point, `register(registry)`, that calls
   `registry.register_frontend(...)`; minimal calls it on every reload. A failing entry point is reported with the
-  extension errors. `minimal-go` on the `PATH` registers the `go` frontend the same way.
+  extension errors.
 - One command for every interface: `minimal` picks the frontend before it opens the session: `--ui`, else the `ui`
   setting, else the only one installed besides `console`, else a menu (arrow keys, as in setup) whose answer is saved as
-  `ui` in `~/.minimal/settings.json`, else `console`. When that is `go`, `minimal` runs setup if no provider is chosen
-  yet and replaces itself with `minimal-go`, passing its options on; `minimal-go` starts `minimal serve --ui go`.
+  `ui` in `~/.minimal/settings.json`, else `console`.
 - Extensions installed for an older minimal are moved by themselves, once, into the new per-frontend folders (see
   Changed): the extensions, themes, tools and widgets directly in `~/.minimal/extensions/` are copied into the folder of
   every available frontend (or only into the one named by their `__frontend__`), the old copies are removed once each
@@ -47,25 +46,24 @@
   (`uv tool install mnml-agent --with "minimal-textual @ git+https://github.com/RafaSG13/minimal-marketplace#subdirectory=textual"`)
   and it registers the `tui` frontend. There is no `tui` extra
   and minimal no longer depends on Textual; `--ui tui` without the package says that `minimal-textual` is missing.
-  `src/minimal/ui/tui/` is gone. The Go UI is installed with
-  `go install github.com/RafaSG13/minimal-marketplace/go/cmd/minimal-go@latest`; the `go_tui` extension is gone.
+  `src/minimal/ui/tui/` is gone.
 - **Breaking, extension API 2.0:** `minimal.api.logo_content` and the theme names of `minimal.api.theme`
   (`DEFAULT`, `MINIMAL`, `build`, `available`) were removed; they are `minimal_textual.logo_content` and
   `minimal_textual.theme.*` now, and importing the old names says so (`minimal.api.REMOVED`). Removing names is a major
   version, so extensions declare `__api__ = "2"`; those written for API 1 stop loading until a version for 2 is installed.
-- **Breaking:** the marketplace has one top-level folder per frontend: `console/`, `textual/` and `go/`, each with the
+- **Breaking:** the marketplace has one top-level folder per frontend: `console/` and `textual/`, each with the
   categories it has (`<frontend>/<category>/`; `shared/`, `frontends/` and the old flat `<category>/` folders are no
   longer read). An item that suits several frontends is copied into each folder. `/ext`, `ext_search` and `ext_install`
   list and install only the running frontend's folder, `/ext publish` files into it, and `minimal ext check <checkout>`
   checks every folder: an item that sets `__frontend__ = X` must be in `X/`, and one that imports `textual` or `rich`
   must set `__frontend__ = "textual"` (items for the Textual frontend get static checks only when Textual is not installed).
 - **Breaking:** installed extensions are per frontend: `~/.minimal/extensions/<frontend>/` (with its own `themes/`,
-  `tools/`, `widgets/` and `.lock.json`) and `./.minimal/extensions/<frontend>/`, where `<frontend>` is `console`,
-  `textual` or `go` (the frontend's toolkit, else its name), and only the running frontend's folder loads. Extensions
+  `tools/`, `widgets/` and `.lock.json`) and `./.minimal/extensions/<frontend>/`, where `<frontend>` is `console` or
+  `textual` (the frontend's toolkit, else its name), and only the running frontend's folder loads. Extensions
   directly in `~/.minimal/extensions/` are moved by minimal on the first start (see Added); a project's are not and must
   be moved by hand. Trust is per project and frontend folder, so `/trust` has to be answered once for each frontend. An
   extension that registers a frontend must be in that frontend's folder (or be passed with `-e`).
-- Extensions that need Textual declare `__frontend__ = "textual"`. Under a frontend with another folder (`console`, `go`)
+- Extensions that need Textual declare `__frontend__ = "textual"`. Under a frontend with another folder (`console`)
   they are skipped, not failed (`Skipped:` in the reload summary and at startup); the marketplace's `textual/` folder
   holds them. Such extensions load after the others.
 - A status segment's `render(ctx)` may return styled text (a string, a `(text, style)` tuple or a list of them); the

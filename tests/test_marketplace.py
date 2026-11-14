@@ -715,12 +715,12 @@ class MarketplaceTest(unittest.TestCase):
         self.push_file("textual/widgets/gauge.py", item("A textual gauge.", "textual"))
         self.push_file("textual/widgets/fancy.py", item("A fancy widget.", "textual"))
         self.push_file("console/widgets/gauge.py", item("A console gauge."))  # the same name, a copy that may diverge
-        self.push_file("go/tools/probe.py", item("A go probe."))
+        self.push_file("web/tools/probe.py", item("A web probe."))
         # Not items: a frontend's package, tests and other languages' files, and the old layouts.
         self.push_file("textual/src/minimal_textual/__init__.py", item("The package."))
         self.push_file("textual/tests/widgets/test_x.py", item("A test."))
-        self.push_file("go/cmd/widgets/x.py", item("Go."))
-        self.push_file("go/go.mod", "module x\n")
+        self.push_file("web/src/widgets/x.py", item("Source."))
+        self.push_file("web/package.json", "{}\n")
         self.push_file("widgets/old.py", item("The old flat layout."))
         self.push_file("shared/widgets/old.py", item("The old shared folder."))
 
@@ -730,12 +730,12 @@ class MarketplaceTest(unittest.TestCase):
         self.assertEqual([(x.name, x.category, x.frontend) for x in console], [("hello", "extensions", ""), ("gauge", "widgets", "")])
         textual = marketplace.search(folder="textual")
         self.assertEqual([(x.name, x.category, x.frontend) for x in textual], [("fancy", "widgets", "textual"), ("gauge", "widgets", "textual")])
-        self.assertEqual([x.name for x in marketplace.search(folder="go")], ["probe"])
+        self.assertEqual([x.name for x in marketplace.search(folder="web")], ["probe"])
         self.assertEqual(marketplace.search(folder="nope"), [])
         self.assertEqual(marketplace.releases("fancy", folder="textual")[0].relpath, "textual/widgets/fancy.py")
         self.assertEqual(marketplace.format_listing(textual[0]), "fancy 1.0 — A fancy widget.")
         with self.assertRaisesRegex(ValueError, "invalid frontend folder"):
-            marketplace.search(folder="../go")
+            marketplace.search(folder="../web")
 
         registry = Registry()
         marketplace.register_marketplace_tools(registry, "textual")
@@ -897,15 +897,15 @@ class CheckTest(unittest.TestCase):
                 root,
                 {
                     "console/extensions/hello.py": HELLO,
-                    "go/widgets/gauge.py": item("A gauge."),
+                    "web/widgets/gauge.py": item("A gauge."),
                     "textual/widgets/fancy.py": item("Fancy.", "textual", "from textual.widgets import Static\n"),
                     "textual/widgets/pkg/__init__.py": item("A package.", "textual"),
-                    # Not items: a Python package, tests, a Go module and a virtualenv.
+                    # Not items: a Python package, tests, another language's sources and a virtualenv.
                     "textual/src/minimal_textual/__init__.py": "this is not python (",
                     "textual/tests/widgets/test_x.py": "this is not python (",
                     "textual/.venv/widgets/z.py": "this is not python (",
-                    "go/main.go": "package main\n",
-                    "go/cmd/widgets/x.py": "this is not python (",
+                    "web/package.json": "{}\n",
+                    "web/src/widgets/x.py": "this is not python (",
                     "README.md": "# marketplace\n",
                 },
             )
@@ -915,9 +915,9 @@ class CheckTest(unittest.TestCase):
             lines,
             [
                 "ok   console/extensions/hello 1.0",
-                "ok   go/widgets/gauge 1.0",
                 "ok   textual/widgets/fancy 1.0 (static checks only: textual is not installed)",
                 "ok   textual/widgets/pkg 1.0 (static checks only: textual is not installed)",
+                "ok   web/widgets/gauge 1.0",
             ],
         )
         self.assertTrue(ok)
@@ -952,10 +952,10 @@ class CheckTest(unittest.TestCase):
                 root,
                 {
                     "textual/widgets/a.py": item("No frontend."),  # fine: the folder says it
-                    "textual/widgets/b.py": item("Another frontend.", "go"),
+                    "textual/widgets/b.py": item("Another frontend.", "web"),
                     "console/widgets/c.py": item("A textual one in the console.", "textual"),
-                    "go/widgets/d.py": item("With a toolkit.", extra="import textual\n"),
-                    "go/widgets/e.py": item("Its own.", "go"),
+                    "web/widgets/d.py": item("With a toolkit.", extra="import textual\n"),
+                    "web/widgets/e.py": item("Its own.", "web"),
                 },
             )
             with mock.patch.object(marketplace, "_missing", return_value=True):
@@ -965,10 +965,10 @@ class CheckTest(unittest.TestCase):
             lines,
             [
                 "FAIL console/widgets/c: it sets __frontend__ = 'textual' but is in console/; move it to textual/ or fix __frontend__",
-                'FAIL go/widgets/d: imports textual without __frontend__ = "textual"',
-                "ok   go/widgets/e 1.0",
                 "ok   textual/widgets/a 1.0",
-                "FAIL textual/widgets/b: it sets __frontend__ = 'go' but is in textual/; move it to go/ or fix __frontend__",
+                "FAIL textual/widgets/b: it sets __frontend__ = 'web' but is in textual/; move it to web/ or fix __frontend__",
+                'FAIL web/widgets/d: imports textual without __frontend__ = "textual"',
+                "ok   web/widgets/e 1.0",
             ],
         )
 
@@ -985,12 +985,12 @@ class CheckTest(unittest.TestCase):
     def test_a_name_may_exist_in_every_frontend_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.write_checkout(root, {"console/tools/dup.py": item("Console."), "go/tools/dup.py": item("Go.")})
-            self.assertEqual(marketplace.check([root]), (["ok   console/tools/dup 1.0", "ok   go/tools/dup 1.0"], True))
+            self.write_checkout(root, {"console/tools/dup.py": item("Console."), "web/tools/dup.py": item("Web.")})
+            self.assertEqual(marketplace.check([root]), (["ok   console/tools/dup 1.0", "ok   web/tools/dup 1.0"], True))
 
     def test_a_folder_without_a_category_folder_is_not_a_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.write_checkout(Path(tmp), {"hello.py": HELLO, "shared/old.txt": "x", "go/main.go": "package main\n"})
+            self.write_checkout(Path(tmp), {"hello.py": HELLO, "shared/old.txt": "x", "web/package.json": "{}\n"})
             [line], ok = marketplace.check([Path(tmp)])
         self.assertFalse(ok)
         self.assertIn("not a marketplace checkout (no <frontend>/<category>/ folder)", line)

@@ -5,7 +5,7 @@
 - ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`);
 - ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional; :data:`DEPENDENCY_RE`).
   ``/ext`` offers to install the missing ones into minimal's Python.
-- ``__frontend__ = "textual"``: the frontend folder it belongs to (optional): ``console``, ``textual`` or ``go``
+- ``__frontend__ = "textual"``: the frontend folder it belongs to (optional): ``console`` or ``textual``
   (:func:`~minimal.extensions.loader.frontend_folder`). It loads only under that frontend; without it, the extension
   must not import ``textual`` or ``rich``.
 """

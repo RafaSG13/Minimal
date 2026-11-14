@@ -22,7 +22,7 @@ def register(minimal):
 
 ## Layout and where to save
 
-Extensions load from three places, and each frontend has its own folder in the first two (`<frontend>` is `console`, `textual` or `go`: the running frontend's toolkit if it has one, else its name; `--ui tui` is `textual`):
+Extensions load from three places, and each frontend has its own folder in the first two (`<frontend>` is `console` or `textual`: the running frontend's toolkit if it has one, else its name; `--ui tui` is `textual`):
 
 | Place                               | Scope     | Notes                                                              |
 | ----------------------------------- | --------- | ------------------------------------------------------------------ |
@@ -34,7 +34,7 @@ Only the running frontend's folder loads, so each frontend has its own extension
 
 A frontend added by an extension (`register_frontend("plain", ...)`) has the folder `plain/` (or its toolkit's), so the extension that defines it must itself be in `plain/` or passed with `-e`.
 
-Extensions installed before frontends had folders sat directly in `~/.minimal/extensions/` (with `themes/`, `tools/`, `widgets/`). minimal moves them once, on the first start: an item without `__frontend__` is copied into the folder of every frontend available (`console`, `textual` if installed, `go` if installed), one with `__frontend__ = "X"` only into `X/`; each old copy is removed once its copies are identical, its `.lock.json` entry moves with it, and minimal prints what moved. A different file already in a destination is never overwritten: the old copy stays and is reported. A project's `.minimal/extensions/` is not moved (it belongs to the repository); minimal says which extensions in it are not loaded any more.
+Extensions installed before frontends had folders sat directly in `~/.minimal/extensions/` (with `themes/`, `tools/`, `widgets/`). minimal moves them once, on the first start: an item without `__frontend__` is copied into the folder of every frontend available (`console`, and `textual` if installed), one with `__frontend__ = "X"` only into `X/`; each old copy is removed once its copies are identical, its `.lock.json` entry moves with it, and minimal prints what moved. A different file already in a destination is never overwritten: the old copy stays and is reported. A project's `.minimal/extensions/` is not moved (it belongs to the repository); minimal says which extensions in it are not loaded any more.
 
 An extension is either:
 
@@ -57,7 +57,7 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__version__`  | `"1.0"`: a string, required by the marketplace; shown as `minimal.version`                                 |
 | `__api__`      | `"2"`: the [API version](#api-versions) it is written for, required. `"2"` runs on any 2.x; `"2.1"` needs 2.1 or a later 2.x |
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
-| `__frontend__` | `"textual"`: optional; the frontend folder it belongs to (`console`, `textual`, `go`; [Frontends](#frontends)). An extension without it loads wherever it sits |
+| `__frontend__` | `"textual"`: optional; the frontend folder it belongs to (`console` or `textual`; [Frontends](#frontends)). An extension without it loads wherever it sits |
 
 An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "2"`), and neither is one written for another major version (`written for minimal API 1, this minimal has API 2.0`) or a newer minor (`needs minimal API 2.3, this minimal has API 2.0: upgrade minimal`).
 
@@ -314,7 +314,7 @@ uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.mini
 
 ## Frontends
 
-A frontend is the interface minimal runs in. `console`, a plain line-by-line REPL, is built in; the `minimal-textual` package adds `tui` (the Textual terminal UI), and a `minimal-go` program on the `PATH` adds `go` (the Go UI). `--ui <name>` or the `ui` setting picks one; with neither, `minimal` uses the only one installed, or shows a menu (the arrow-key chooser of setup) and saves the answer as `ui`. `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
+A frontend is the interface minimal runs in. `console`, a plain line-by-line REPL, is built in; the `minimal-textual` package adds `tui` (the Textual terminal UI). `--ui <name>` or the `ui` setting picks one; with neither, `minimal` uses the only one installed, or shows a menu (the arrow-key chooser of setup) and saves the answer as `ui`. `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
 
 **Frontends from packages.** A Python package ships a frontend with an entry point in the group `minimal.frontends`, a function called as `register(registry)` that calls `registry.register_frontend(name, run, description, toolkit=...)` on the `Registry`:
 
@@ -323,11 +323,11 @@ A frontend is the interface minimal runs in. `console`, a plain line-by-line REP
 tui = "minimal_textual:register"
 ```
 
-minimal calls every entry point on each reload, after registering `console` and `go` (so one can replace them) and before loading extensions (so extensions can replace its frontends). One that fails to import or raises is reported with the extension errors, and the others still register. Which frontend runs is decided before the session is opened: `--ui`, else the `ui` setting, else the only one installed besides `console`, else a menu when there are several, else `console`.
+minimal calls every entry point on each reload, after registering `console` (so one can replace it) and before loading extensions (so extensions can replace its frontends). One that fails to import or raises is reported with the extension errors, and the others still register. Which frontend runs is decided before the session is opened: `--ui`, else the `ui` setting, else the only one installed besides `console`, else a menu when there are several, else `console`.
 
-**Frontends in other languages.** `minimal serve --ui <name>` runs minimal with no interface and speaks JSON lines on stdin and stdout; a program in any language starts it and draws what it sends. `--ui` names the frontend being served (default `console`): its folder is the one whose extensions load (`go` for the Go UI), and extensions with a `__frontend__` of another folder are skipped. Panels, status segments and renderers run inside minimal and reach the frontend as styled lines. The Go UI is found as the binary `minimal-go` on the `PATH`: when it is the chosen frontend, `minimal` runs setup if no provider is chosen yet and then replaces itself with `minimal-go`, passing its own options on (without `--ui`); `minimal-go` starts `minimal serve --ui go ...`. See [serve.md](serve.md) for every message.
+**Frontends in other languages.** `minimal serve --ui <name>` runs minimal with no interface and speaks JSON lines on stdin and stdout; a program in any language starts it and draws what it sends. The user runs that program, not `minimal`. `--ui` names the frontend being served (default `console`): its folder is the one whose extensions load, and extensions with a `__frontend__` of another folder are skipped. Panels, status segments and renderers run inside minimal and reach the frontend as styled lines. See [serve.md](serve.md) for every message.
 
-A frontend's folder (`loader.frontend_folder`) is the toolkit it draws with, else its name: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, so its folder is `textual/`; `console` has `console/`, and `go` registers itself with toolkit `"go"`). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose folder is `textual`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load wherever they sit, so one in a folder that is not `textual` must not import `textual` or `rich`: `minimal ext check` fails one that does.
+A frontend's folder (`loader.frontend_folder`) is the toolkit it draws with, else its name: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, so its folder is `textual/`; `console` has `console/`). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose folder is `textual`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load wherever they sit, so one in a folder that is not `textual` must not import `textual` or `rich`: `minimal ext check` fails one that does.
 
 ```python
 from minimal.api import ConsoleFrontend, ExitRepl
@@ -366,7 +366,7 @@ A project's `./.minimal/extensions/<frontend>/` is code from the repository, so 
 
 ## Publishing and `minimal ext check`
 
-A marketplace is a git repository with one top-level folder per frontend: `console/`, `textual/` and `go/` (the folder of a frontend, [above](#frontends)). Each holds the categories it has, `extensions/`, `themes/`, `tools/` and `widgets/`, with extension files and package folders; a top-level folder is a frontend folder if it holds at least one category folder. Other files and folders (`textual/src`, `textual/tests`, `go/cmd`, `go/go.mod`, …) are not items. An item that suits several frontends is copied into each folder, and the copies may diverge. `/ext`, `ext_search` and `ext_install` list and install only the running frontend's folder, into `~/.minimal/extensions/<frontend>/<category>/` (or the project's); a name is unique per folder and category. Publishing (`/ext publish`, `ext_publish`) files an item under `<frontend>/<category>/` of the running frontend, and refuses one whose `__frontend__` is another frontend. Listings need a docstring, `__version__` and `__api__`.
+A marketplace is a git repository with one top-level folder per frontend: `console/` and `textual/` (the folder of a frontend, [above](#frontends)). Each holds the categories it has, `extensions/`, `themes/`, `tools/` and `widgets/`, with extension files and package folders; a top-level folder is a frontend folder if it holds at least one category folder. Other files and folders (`textual/src`, `textual/tests`, …) are not items. An item that suits several frontends is copied into each folder, and the copies may diverge. `/ext`, `ext_search` and `ext_install` list and install only the running frontend's folder, into `~/.minimal/extensions/<frontend>/<category>/` (or the project's); a name is unique per folder and category. Publishing (`/ext publish`, `ext_publish`) files an item under `<frontend>/<category>/` of the running frontend, and refuses one whose `__frontend__` is another frontend. Listings need a docstring, `__version__` and `__api__`.
 
 **Versions are commits.** minimal keeps a clone of the marketplace and, for each item, looks at the commits that touched its path, newest first. It offers and installs the newest one whose `__api__` this minimal can run: HEAD's if it can, otherwise an older one (extracted with `git archive`, and labelled "latest for this minimal (newer needs API 2)"). So publishing a version for a new API major does not strand users of the old one, as long as the old version stays in the history; an item with no version for this minimal is shown but not installed.
 

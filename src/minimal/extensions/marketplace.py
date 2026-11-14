@@ -1,13 +1,13 @@
 """The extension marketplace: a git repository of shareable extensions.
 
-Layout of the repository: one top-level folder per frontend (``console/``, ``textual/``, ``go/``; the
+Layout of the repository: one top-level folder per frontend (``console/``, ``textual/``; the
 folder of a frontend is :func:`~minimal.extensions.loader.frontend_folder`), each holding the
 categories it has, ``<folder>/<category>/``. ``<category>`` is one of
 :data:`~minimal.extensions.loader.CATEGORIES`: ``extensions`` (general), ``themes`` (colour
 themes), ``tools`` (tools for the model) and ``widgets`` (interface components), each holding
 ``<name>.py`` files or ``<name>/`` package folders (with an ``__init__.py``). A top-level folder is
 a frontend folder if it holds at least one category folder; everything else in the repository
-(``textual/src``, ``textual/tests``, ``go/cmd``, ``go/go.mod``...) is not an item. An item that suits
+(``textual/src``, ``textual/tests``...) is not an item. An item that suits
 several frontends is copied into each folder, and the copies may diverge.
 Only the running frontend's folder is listed and installed from: ``textual/themes/ocean.py`` goes to
 ``~/.minimal/extensions/textual/themes/ocean.py``, so a name is unique per frontend folder and category
@@ -1092,7 +1092,7 @@ def check(
 
     Each path is an extension file or package folder, or a marketplace checkout (a folder holding
     at least one frontend folder, :func:`frontend_folders`), whose every item in
-    ``<folder>/<category>/`` is checked (``textual/src``, ``go/cmd`` and the like are not items).
+    ``<folder>/<category>/`` is checked (``textual/src`` and the like are not items).
     Each extension must describe itself (:func:`describe`), accept
     this minimal (``__api__``) and load into a fresh registry from ``make_registry``. An item that
     sets ``__frontend__ = X`` must be in folder ``X/`` of a checkout, and one that imports ``textual``
