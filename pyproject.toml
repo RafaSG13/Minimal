@@ -9,7 +9,7 @@ authors = [
     { name = "RafaSG13", email = "rafasrrg13@gmail.com" }
 ]
 requires-python = ">=3.11"
-keywords = ["agent", "llm", "cli", "tui", "claude", "gemini"]
+keywords = ["agent", "llm", "cli", "claude", "gemini"]
 classifiers = [
     "Environment :: Console",
     "License :: OSI Approved :: MIT License",
@@ -24,9 +24,6 @@ dependencies = [
     "openai>=3.49.0",
     "questionary>=2",
 ]
-
-[project.optional-dependencies]
-tui = ["textual>=8.2"]
 
 [project.urls]
 Homepage = "https://github.com/RafaSG13/Minimal"

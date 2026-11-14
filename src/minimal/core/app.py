@@ -331,12 +331,13 @@ class App:
         frontend: Where turns are shown and confirmations asked.
         register_commands: Registers the built-in slash commands into the registry
             (:attr:`~minimal.extensions.registry.Registry.builtin_commands`), now and on every reload.
-        register_frontends: Registers the built-in frontends (``tui``, ``console``), now and on every reload.
+        register_frontends: Registers the built-in and installed frontends (``console``, ``tui`` from minimal-textual, …),
+            now and on every reload; it may return one error line per frontend that failed to register.
         queued: User messages queued by extensions (``ctx.queue_user_message``), sent when the UI is idle.
         extensions: Extensions loaded by the last reload.
         extension_errors: Failures of the last reload, setting errors included.
         extension_skipped: Extensions the last reload did not load because they need another UI toolkit.
-        ui: Name of the frontend that runs: ``--ui``, else the ``ui`` setting, else ``tui``.
+        ui: Name of the frontend that runs: ``--ui``, else the ``ui`` setting, else ``tui`` if one is registered, else ``console``.
         settings: The settings read by the last reload, with project trust applied.
         setting_errors: Problems found in the settings files by the last reload.
         untrusted: What the last reload did not apply because the user has not
@@ -355,7 +356,7 @@ class App:
         extra_extensions: Iterable[str] = (),
         frontend: Frontend | None = None,
         register_commands: Callable[[Registry], None] | None = None,
-        register_frontends: Callable[[Registry], None] | None = None,
+        register_frontends: Callable[[Registry], list[str] | None] | None = None,
         ui: str | None = None,
     ) -> None:
         self.registry = registry
@@ -366,7 +367,6 @@ class App:
         self.extra_extensions = list(extra_extensions)
         self.frontend: Frontend = frontend or ConsoleFrontend()
         self._ui_option = ui
-        self.ui: str = ui or config.DEFAULT_UI
         self.provider: Provider | None = None
         self.provider_name = ""
         self.model = ""
@@ -384,15 +384,22 @@ class App:
         self._register_frontends = register_frontends
         self._frontend_commands: dict[str, tuple[CommandRun, str, bool]] = {}
         self._register_builtins()  # usable before the first reload
+        self.ui: str = self._pick_ui()
 
-    def _register_builtins(self) -> None:
-        """Register the built-in commands, the active frontend's commands and the built-in frontends."""
+    def _register_builtins(self) -> list[str]:
+        """Register the built-in commands, the active frontend's commands and the frontends; return the frontends' errors."""
         if self._register_commands is not None:
             self._register_commands(self.registry)
         for name, (run, description, terminal) in self._frontend_commands.items():
             self.registry.register_builtin_command(name, run, description, terminal)
         if self._register_frontends is not None:
-            self._register_frontends(self.registry)
+            return self._register_frontends(self.registry) or []
+        return []
+
+    def _pick_ui(self) -> str:
+        """``--ui``, else the ``ui`` setting, else ``tui`` if registered, else ``console``."""
+        preferred = config.DEFAULT_UI if config.DEFAULT_UI in self.registry.frontends else config.FALLBACK_UI
+        return self._ui_option or self.settings.ui or preferred
 
     def add_frontend_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
         """Add a built-in command that only the active frontend has (the terminal UI's ``/theme``); kept across reloads."""
@@ -434,7 +441,6 @@ class App:
             snapshot, trusted = None, False
             read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
         self.settings = config.Settings(tuple(layers), trusted)
-        self.ui = self._ui_option or self.settings.ui or config.DEFAULT_UI
         self.permissions = Permissions(self.settings)
         self.setting_errors = setting_errors
         self.registry.dispose()
@@ -442,12 +448,14 @@ class App:
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         register_marketplace_tools(self.registry)
-        self._register_builtins()
+        frontend_errors = self._register_builtins()
+        self.ui = self._pick_ui()
         project = snapshot.sources if snapshot is not None and trusted else ()
         skipped: list[str] = []
         loaded, errors = load_extensions(
             self.registry, self.cwd, self.settings, self.extra_extensions, project=project, ui=self.ui, skipped=skipped
         )
+        errors = frontend_errors + errors
         if read_error:
             errors.append(read_error)
         errors.extend(setting_errors)

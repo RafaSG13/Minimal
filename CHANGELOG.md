@@ -8,8 +8,8 @@
   order, all or none), and returns the changed lines numbered like `read`. The terminal UI shows a diff for each.
 - `/title [text]` names the session. The title, and the session a new one was started from with `ctx.new_session`
   (`parent`, e.g. by `compact`), are kept in the session file's header and shown by `/sessions` and `/resume`.
-- Extension API 1.2: frontends. `--ui <name>` (or the `ui` setting) picks the interface: `tui`, the terminal UI and
-  still the default, or `console`, a plain line-by-line REPL (Ctrl-C interrupts a turn, Ctrl-D quits).
+- Extension API 1.2: frontends. `--ui <name>` (or the `ui` setting) picks the interface: `tui`,
+  the terminal UI (the `minimal-textual` package, the default once installed), or `console`, a plain line-by-line REPL (Ctrl-C interrupts a turn, Ctrl-D quits).
   `minimal.register_frontend(name, run, description)` adds another; `run(host)` gets a `Host`, the API a frontend drives
   minimal with (`submit`, `run_command`, `interrupt`, `complete`, `status`, the widgets, status segments, themes and logo
   extensions registered, …), and shows minimal through a `Frontend` it attaches (`ConsoleFrontend` is a ready-made
@@ -20,11 +20,32 @@
   `minimal.register_renderer(kind, render)` draws Markdown fences (`fence:mermaid`), GitHub alerts (`blockquote:alert`)
   and tool-call bodies (`tool:edit`) in the terminal UI. `register_frontend(..., toolkit=)` names a frontend's UI
   toolkit. `PanelSpec`, `RendererSpec`, `STYLES`, `styled_line` and `styled_lines` are in `minimal.api`.
+- `minimal serve`: minimal without an interface, driven over JSON lines on stdin and stdout by a frontend written in
+  any language: messages in, text, tool calls, questions, panels, status segments and renderer output out, with the
+  extensions' Python panels and renderers running inside. It takes the session options of `minimal` (`-c`, `-s`,
+  `--provider`, `-m`, `-e`, `-y`, `--trust-project`); `/setup` and `/login` run on the controlling terminal while the
+  frontend steps aside. Protocol (version 2) and every message: [docs/serve.md](docs/serve.md).
+- Frontends of installed packages: a package declares a `minimal.frontends` entry point, `register(registry)`, that calls
+  `registry.register_frontend(...)`; minimal calls it on every reload. A failing entry point is reported with the
+  extension errors. `tui` is the default frontend when one registers that name, else `console`.
 
 ### Changed
 
-- Textual is now the `tui` extra: install with `uv tool install "mnml-agent[tui]"` (`pip install "mnml-agent[tui]"`).
-  Without it only `--ui console` runs, and `--ui tui` explains how to install it.
+- **Breaking:** the Textual UI is no longer part of minimal. It is the `minimal-textual` package (import package
+  `minimal_textual`, sources in the marketplace repository under `frontends/textual/`): install it next to minimal
+  (`uv tool install mnml-agent --with "minimal-textual @ git+https://github.com/RafaSG13/minimal-marketplace#subdirectory=frontends/textual"`)
+  and it registers the `tui` frontend. There is no `tui` extra
+  and minimal no longer depends on Textual; without the package the default frontend is `console`, and `--ui tui` says
+  that `minimal-textual` is missing. `src/minimal/ui/tui/` is gone.
+- **Breaking, extension API 2.0:** `minimal.api.logo_content` and the theme names of `minimal.api.theme`
+  (`DEFAULT`, `MINIMAL`, `build`, `available`) were removed; they are `minimal_textual.logo_content` and
+  `minimal_textual.theme.*` now, and importing the old names says so (`minimal.api.REMOVED`). Removing names is a major
+  version, so extensions declare `__api__ = "2"`; those written for API 1 stop loading until a version for 2 is installed.
+- **Breaking:** the marketplace has a new layout: items live in `shared/<category>/` (work under any frontend) and
+  `frontends/<frontend>/<category>/` (need that frontend, e.g. `frontends/textual/widgets/`); the old flat
+  `<category>/` folders at the root are no longer read. Installed files and lock ids are unchanged. `/ext` and
+  `ext_search` show which frontend an item is for, and `minimal ext check <checkout>` checks the whole layout (items
+  for the Textual frontend get static checks only when Textual is not installed).
 - Extensions that need Textual declare `__frontend__ = "textual"`. Under a frontend with another toolkit (`console`) they
   are skipped, not failed (`Skipped:` in the reload summary and at startup); `/ext` marks them `textual only`; and
   `minimal ext check` fails an item that imports `textual` or `rich` without it. Such extensions load after the others.
@@ -34,9 +55,7 @@
   (the user, a formatter or a `bash` command modified it), and ask the model to read it again.
 - `read` shows bytes that are not UTF-8 as U+FFFD, with a note, instead of failing; a binary file (a NUL byte in its
   first 8 KiB) is reported, not printed. `edit` on a file that is not UTF-8 fails with a clear message.
-- `import minimal.api` no longer imports Textual: `minimal.api.theme` is now the glyphs module (`minimal.glyphs`); the
-  built-in theme names it also had (`DEFAULT`, `MINIMAL`, `build`, `available`) and `logo_content` still work and load
-  the terminal UI on first use. `available` takes the extension themes by name (`host.themes`), not the registry.
+- `import minimal.api` imports no UI toolkit: `minimal.api.theme` is the glyphs module (`minimal.glyphs`).
 - `/theme` belongs to the terminal UI, which registers it; the `Frontend` protocol lost `themes`, `set_theme` and
   `choose_theme`. The terminal UI drives minimal through the `Host` instead of the `App`'s internals.
 - CI runs `mypy` and measures test coverage (`coverage report` fails below 83%); `dev` gains `mypy` and `coverage`.

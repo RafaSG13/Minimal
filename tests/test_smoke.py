@@ -574,7 +574,7 @@ class FailedTurnTest(unittest.TestCase):
         self.assertEqual([m["role"] for m in self.app.messages], ["user", "assistant"])
 
 
-HELLO_EXT = '__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
+HELLO_EXT = '__api__ = "2"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda input, ctx: "{reply}")\n'
 
 
 class ReloadTest(unittest.TestCase):

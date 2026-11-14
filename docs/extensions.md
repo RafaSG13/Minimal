@@ -1,12 +1,12 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers minimal API 1.1 ([API versions](#api-versions)).
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers minimal API 2.0 ([API versions](#api-versions)).
 
 ```python
 """Greets the user."""
 
 __version__ = "1.0"
-__api__ = "1"
+__api__ = "2"
 
 
 def register(minimal):
@@ -51,13 +51,13 @@ Metadata is read from the source without running it (for a package, from `__init
 | -------------- | ---------------------------------------------------------------------------------------------------------- |
 | docstring      | Its first line is the description shown by the marketplace (required to publish)                           |
 | `__version__`  | `"1.0"`: a string, required by the marketplace; shown as `minimal.version`                                 |
-| `__api__`      | `"1"`: the [API version](#api-versions) it is written for, required. `"1"` runs on any 1.x; `"1.2"` needs 1.2 or a later 1.x |
+| `__api__`      | `"2"`: the [API version](#api-versions) it is written for, required. `"2"` runs on any 2.x; `"2.1"` needs 2.1 or a later 2.x |
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
 | `__frontend__` | `"textual"`: optional; the UI toolkit it needs ([Frontends](#frontends)). Without it the extension loads under every frontend |
 
-An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "1"`), and neither is one written for another major version (`written for minimal API 0, this minimal has API 1.1`) or a newer minor (`needs minimal API 1.3, this minimal has API 1.1: upgrade minimal`).
+An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "2"`), and neither is one written for another major version (`written for minimal API 1, this minimal has API 2.0`) or a newer minor (`needs minimal API 2.3, this minimal has API 2.0: upgrade minimal`).
 
-`__frontend__ = "textual"` names the UI toolkit the extension needs (not a frontend). Under a frontend with another toolkit, such as `console`, it is skipped; `/ext` marks it `textual only`. Declare it when the extension imports `textual` or `rich`, e.g. for `register_widget`; `minimal ext check` fails an item that imports them without it.
+`__frontend__ = "textual"` names the UI toolkit the extension needs (not a frontend). Under a frontend with another toolkit, such as `console` or `minimal serve`, it is skipped; `/ext` marks it `textual only`. Declare it when the extension imports `textual` or `rich`, e.g. for `register_widget`; `minimal ext check` fails an item that imports them without it.
 
 ## `minimal`: the `Extension`
 
@@ -253,7 +253,7 @@ class SessionPanel(Static):
 minimal.register_widget("session", lambda ctx: SessionPanel(), area="sidebar")
 ```
 
-`register_widget(name, create, area)` places the widget built by `create(ctx)` in `area`, one of `WIDGET_AREAS`: `"top"`, `"bottom"` or `"sidebar"`. A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `ui/tui/theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. If it has a `refresh_live(ctx, event)` method, the UI calls it while a turn runs: when a turn or command starts (`{"kind": "start", "turn": bool}`), after each tool call is shown (`{"kind": "tool_call", "call": …}`) and after each result (`{"kind": "tool_result", "call": …, "result": …}`; the result is not in `ctx.messages` until every call of that reply has finished). The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
+`register_widget(name, create, area)` places the widget built by `create(ctx)` in `area`, one of `WIDGET_AREAS`: `"top"`, `"bottom"` or `"sidebar"`. A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `minimal_textual/theme.py` in the minimal-textual package). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. If it has a `refresh_live(ctx, event)` method, the UI calls it while a turn runs: when a turn or command starts (`{"kind": "start", "turn": bool}`), after each tool call is shown (`{"kind": "tool_call", "call": …}`) and after each result (`{"kind": "tool_result", "call": …, "result": …}`; the result is not in `ctx.messages` until every call of that reply has finished). The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
 
 A widget is a Textual widget, so its extension must declare `__frontend__ = "textual"` (see [Frontends](#frontends)). To only show text, use a [panel](#panels): it works in every frontend.
 
@@ -288,7 +288,7 @@ Only the terminal UI draws renderers; `width` is the columns available.
 minimal.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
 ```
 
-A theme needs `background`, `foreground` and `accent` (`#rrggbb`); the other colours (`THEME_COLORS`: `surface`, `muted`, `error`, `user_bg`, `diff_added`, …) are optional and derived when left out. The built-in theme is `minimal` (black and white) and cannot be replaced; `amber`, `dark` and `light` are in the marketplace's `themes/` (install them with `/ext` → Themes). Registered themes appear in `/theme` and `Ctrl+P` → Theme; both belong to the terminal UI, so other frontends ignore themes. If a reload removes the active theme, the UI goes back to `minimal`. `minimal.api.theme` (also `minimal.api.glyphs`) holds the glyphs (`theme.SUCCESS`, `theme.BRANCH`, …) and imports no UI toolkit; its old names for the built-in theme (`DEFAULT`, `MINIMAL`, `build`, `available`) still work and load the terminal UI when used.
+A theme needs `background`, `foreground` and `accent` (`#rrggbb`); the other colours (`THEME_COLORS`: `surface`, `muted`, `error`, `user_bg`, `diff_added`, …) are optional and derived when left out. The built-in theme is `minimal` (black and white) and cannot be replaced; `amber`, `dark` and `light` are in the marketplace's `shared/themes/` (install them with `/ext` → Themes). Registered themes appear in `/theme` and `Ctrl+P` → Theme; both belong to the terminal UI, so other frontends ignore themes. If a reload removes the active theme, the UI goes back to `minimal`. `minimal.api.theme` (also `minimal.api.glyphs`) holds the glyphs (`theme.SUCCESS`, `theme.BRANCH`, …) and imports no UI toolkit; its old names for the built-in theme (`DEFAULT`, `MINIMAL`, `build`, `available`) were removed in API 2.0 and are in `minimal_textual.theme` now.
 
 ## Header logo
 
@@ -310,15 +310,26 @@ uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.mini
 
 ## Frontends
 
-A frontend is the interface minimal runs in. `tui` (the terminal UI) is the default and `console` is a plain line-by-line REPL; `--ui <name>` or the `ui` setting picks one, and `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
+A frontend is the interface minimal runs in. `console`, a plain line-by-line REPL, is built in; the `minimal-textual` package adds `tui` (the Textual terminal UI), the default when installed. `--ui <name>` or the `ui` setting picks one, and `register_frontend(name, run, description)` adds another (or replaces one by name). minimal loads the extensions, starts the provider, then calls `run(host)` and exits when it returns.
 
-A frontend names the UI toolkit it draws with: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, `console` none). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose toolkit is `"textual"`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load everywhere, so they must not import `textual` or `rich`: `minimal ext check` fails one that does.
+**Frontends from packages.** A Python package ships a frontend with an entry point in the group `minimal.frontends`, a function called as `register(registry)` that calls `registry.register_frontend(name, run, description, toolkit=...)` on the `Registry`:
+
+```toml
+[project.entry-points."minimal.frontends"]
+tui = "minimal_textual:register"
+```
+
+minimal calls every entry point on each reload, after registering `console` (so one can replace it) and before loading extensions (so extensions can replace its frontends). One that fails to import or raises is reported with the extension errors, and the others still register. When neither `--ui` nor the `ui` setting names a frontend, minimal runs `tui` if one is registered, else `console`.
+
+**Frontends in other languages.** `minimal serve` runs minimal with no interface and speaks JSON lines on stdin and stdout; a program in any language starts it and draws what it sends. Extensions with `__frontend__` are skipped under it, but panels, status segments and renderers run inside minimal and reach the frontend as styled lines. See [serve.md](serve.md) for every message.
+
+A frontend names the UI toolkit it draws with: `register_frontend(name, run, description, toolkit="")` (`tui` uses `"textual"`, `console` and `minimal serve` none). An extension that declares `__frontend__ = "textual"` loads only under a frontend whose toolkit is `"textual"`; under another it is skipped, not failed, and the reload summary and the startup output list it as `Skipped:`. Items without `__frontend__` load everywhere, so they must not import `textual` or `rich`: `minimal ext check` fails one that does.
 
 ```python
 from minimal.api import ConsoleFrontend, ExitRepl
 
 __version__ = "1.0"
-__api__ = "1.2"
+__api__ = "2"
 
 
 def register(minimal):
@@ -351,7 +362,7 @@ A project's `./.minimal/extensions/` is code from the repository, so minimal doe
 
 ## Publishing and `minimal ext check`
 
-A marketplace is a git repository with `extensions/`, `themes/`, `tools/` and `widgets/` folders holding extension files and package folders. Listings need a docstring, `__version__` and `__api__`.
+A marketplace is a git repository. Items live in `shared/<category>/` (they work under any frontend and declare no `__frontend__`) or `frontends/<frontend>/<category>/` (written for one frontend, declaring `__frontend__ = "<frontend>"`), with the categories `extensions/`, `themes/`, `tools/` and `widgets/` holding extension files and package folders. Other folders (`frontends/textual/src`, `frontends/go`, …) are not items, and a name is used once per category across the repository. Installing ignores the folder it came from: `frontends/textual/widgets/x.py` goes to `~/.minimal/extensions/widgets/x.py`. Listings need a docstring, `__version__` and `__api__`; they show which frontend an item is for.
 
 **Versions are commits.** minimal keeps a clone of the marketplace and, for each item, looks at the commits that touched its path, newest first. It offers and installs the newest one whose `__api__` this minimal can run: HEAD's if it can, otherwise an older one (extracted with `git archive`, and labelled "latest for this minimal (newer needs API 2)"). So publishing a version for a new API major does not strand users of the old one, as long as the old version stays in the history; an item with no version for this minimal is shown but not installed.
 
@@ -377,7 +388,7 @@ WARN extensions/mermaid: needs termaid
 FAIL widgets/broken: syntax error: '(' was never closed (broken.py, line 2)
 ```
 
-`WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+Items under `frontends/textual/` need Textual to load; where it is not installed, `ext check` runs their static checks only (metadata, API, syntax) and marks the line `(static checks only: textual is not installed)`. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
 
 Only the package name of a `__dependencies__` entry is checked when deciding what is missing, not its version range.
 
@@ -395,18 +406,20 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `USER_DENIED`                                               | The text of a tool result the user declined                       |
 | `ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`, `SessionStartEvent`, `SessionSwitchEvent`, `TurnStartEvent`, `BeforeRequestEvent`, `AfterResponseEvent`, `ShutdownEvent`, `ProviderErrorEvent` | Event payload types |
 | `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas, status sides and theme colours   |
-| `LogoSpec`, `logo_content`, `theme`, `glyphs`               | Logo rendering (`logo_content` returns Textual content and loads the terminal UI on first use) and the UI glyphs |
+| `LogoSpec`, `theme`, `glyphs`                               | Logo description and the UI glyphs (`logo_content`, which turns a `LogoSpec` into Textual content, is `minimal_textual.logo_content`) |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `1.3`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.0`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
 API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response`, `shutdown` and `provider_error`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
 API 1.2 added frontends: `register_frontend`, `Host`, `HostStatus`, `Frontend`, `ConsoleFrontend`, `FrontendSpec` and `ExitRepl`, and `minimal.api.glyphs`. Importing `minimal.api` no longer imports Textual. An extension using any of them declares `__api__ = "1.2"`.
 
 API 1.3 added `register_panel` and `register_renderer` (and `PanelSpec`, `RendererSpec`, `STYLES`, `styled_line`, `styled_lines` in `minimal.api`), the `end` live event, styled-text status segments, and `register_frontend(..., toolkit="")`. An extension using any of them declares `__api__ = "1.3"`.
+
+API 2.0 removed what only the Textual UI could provide, now that it is a separate package (`minimal-textual`): `minimal.api.logo_content` (use `minimal_textual.logo_content`) and the theme names of `minimal.api.theme` (`DEFAULT`, `MINIMAL`, `build`, `available`; use `minimal_textual.theme`). Both are in `REMOVED`. Everything else is unchanged, but a major version refuses every extension written for the old one, so extensions declare `__api__ = "2"` (nothing else in them needs to change unless they used those names).
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

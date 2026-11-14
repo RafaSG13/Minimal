@@ -173,7 +173,10 @@ def _validate(raw: dict, scope: str) -> tuple[dict, list[str]]:
 
 
 DEFAULT_UI = "tui"
-"""The frontend used when neither ``--ui`` nor the ``ui`` setting names one."""
+"""The frontend used when neither ``--ui`` nor the ``ui`` setting names one, if an installed package registers it."""
+
+FALLBACK_UI = "console"
+"""The frontend used instead of :data:`DEFAULT_UI` when that one is not registered."""
 
 
 @dataclass(frozen=True)
@@ -209,7 +212,7 @@ class Settings:
 
     @property
     def ui(self) -> str | None:
-        """The frontend to run (``tui``, ``console`` or one an extension registers); ``--ui`` wins over it."""
+        """The frontend to run (``console``, ``tui`` or one a package or extension registers); ``--ui`` wins over it."""
         return self.scalar("ui")[0]
 
     def max_tokens_for(self, provider: str, model: str) -> int | None:

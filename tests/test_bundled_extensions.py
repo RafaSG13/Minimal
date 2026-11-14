@@ -104,7 +104,7 @@ class WebSearchTest(BundledExtensionTest):
         super().setUp()
         self.registry = Registry()
         _, errors = load_extensions(
-            self.registry, str(self.tmp), config.Settings(), extra=[MARKETPLACE / "tools" / "web_search.py"]
+            self.registry, str(self.tmp), config.Settings(), extra=[MARKETPLACE / "shared" / "tools" / "web_search.py"]
         )
         self.assertEqual(errors, [])
         self.ctx = SimpleNamespace(cwd=str(self.tmp))
@@ -158,7 +158,7 @@ class SubagentTest(BundledExtensionTest):
     def test_subagent_has_its_own_history_and_cannot_nest(self):
         call = {"type": "tool_use", "id": "t1", "name": "subagent", "input": {"prompt": "find x"}}
         app = self.make_app(
-            "tools/subagent.py",
+            "shared/tools/subagent.py",
             Session("t", self.tmp / "t.jsonl"),
             [Reply(content=[call], stop_reason="tool_use"), text_reply("sub done"), text_reply("ok")],
         )
@@ -173,7 +173,7 @@ class SubagentTest(BundledExtensionTest):
         ext_dir = self.tmp / ".minimal" / "extensions"
         ext_dir.mkdir(parents=True)
         hello = ext_dir / "hello.py"
-        hello.write_text('__api__ = "1"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda i, c: "v1")\n')
+        hello.write_text('__api__ = "2"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda i, c: "v1")\n')
         call = {"type": "tool_use", "id": "t1", "name": "subagent", "input": {"prompt": "reload"}}
         reload = {"type": "tool_use", "id": "r1", "name": "reload_extensions", "input": {}}
         use = [
@@ -181,7 +181,7 @@ class SubagentTest(BundledExtensionTest):
             {"type": "tool_use", "id": "b1", "name": "bye", "input": {}},
         ]
         app = self.make_app(
-            "tools/subagent.py",
+            "shared/tools/subagent.py",
             Session("t", self.tmp / "t.jsonl"),
             [
                 Reply(content=[call], stop_reason="tool_use"),
@@ -192,7 +192,7 @@ class SubagentTest(BundledExtensionTest):
             ],
         )
         hello.write_text(
-            '__api__ = "1"\n'
+            '__api__ = "2"\n'
             "def register(minimal):\n"
             '    minimal.register_tool(name="hello", run=lambda i, c: "v2")\n'
             '    minimal.register_tool(name="bye", run=lambda i, c: "bye")\n'
@@ -211,8 +211,8 @@ class CompactTest(BundledExtensionTest):
         patcher = mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.app = self.make_app("extensions/compact.py", session_mod.open_session("old"), [])
-        self.ext = sys.modules[loader.module_name(MARKETPLACE / "extensions" / "compact.py")]
+        self.app = self.make_app("shared/extensions/compact.py", session_mod.open_session("old"), [])
+        self.ext = sys.modules[loader.module_name(MARKETPLACE / "shared" / "extensions" / "compact.py")]
 
     def test_compacts_into_a_new_session_at_the_threshold(self):
         ext, app = self.ext, self.app
@@ -326,8 +326,8 @@ class RetryTest(BundledExtensionTest):
         patcher.start()
         self.addCleanup(patcher.stop)
         (self.tmp / "settings.json").write_text(json.dumps({"extensions": {"settings": {"retry": {"base_delay": 0}}}}))
-        self.app = self.make_app("extensions/retry.py", session_mod.open_session("s"), [])
-        self.ext = sys.modules[loader.module_name(MARKETPLACE / "extensions" / "retry.py")]
+        self.app = self.make_app("shared/extensions/retry.py", session_mod.open_session("s"), [])
+        self.ext = sys.modules[loader.module_name(MARKETPLACE / "shared" / "extensions" / "retry.py")]
 
     def test_rate_limit_is_retried(self):
         app = self.app
@@ -366,7 +366,7 @@ class ScopeFenceTest(BundledExtensionTest):
         before = planted.read_text()
         write = {"type": "tool_use", "id": "w1", "name": "write", "input": {"path": "src/x.py", "content": "x"}}
         app = self.make_app(
-            "extensions/scope_fence.py",
+            "shared/extensions/scope_fence.py",
             session_mod.open_session("s"),
             [Reply(content=[write], stop_reason="tool_use"), text_reply("ok")],
         )

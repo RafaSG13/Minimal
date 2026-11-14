@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 
 __version__ = "1.1"
-__api__ = "1.3"
+__api__ = "2"
 
 
 def register(minimal):

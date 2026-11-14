@@ -21,7 +21,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `provider`            | string                       | all          | highest layer wins                                                   |
 | `model`               | string                       | all          | highest layer wins                                                   |
 | `theme`               | string                       | all          | highest layer wins                                                   |
-| `ui`                  | string: a frontend name (`tui`, `console` or one an extension registers) | all | highest layer wins; `--ui` beats it; default `tui` |
+| `ui`                  | string: a frontend name (`console`, `tui` from minimal-textual, or one a package or extension registers) | all | highest layer wins; `--ui` beats it; default `tui` if registered, else `console` |
 | `max_tokens`          | positive integer, or object: `"provider"` or `"provider/model"` → positive integer | all | highest layer wins; default: each provider's own (8192 for Anthropic, Claude and Gemini, none sent to OpenAI-compatible servers) |
 | `marketplaces`        | list of strings (git URLs or paths) | global only | —                                                         |
 | `prompt.base`         | string: path of the base system prompt (`~` allowed) | global only | — (default: the packaged prompt)          |

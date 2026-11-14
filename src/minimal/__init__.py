@@ -7,7 +7,7 @@ Packages, from the bottom up; a package imports only from the ones above it in t
 - :mod:`minimal.extensions`  the Registry, extension loading, the /trust scan, the marketplace
 - :mod:`minimal.tools`       built-in tools: read, write, edit, bash, grep, glob, reload_extensions
 - :mod:`minimal.core`        the engine: agent loop, App (one user turn), sessions, base prompt
-- :mod:`minimal.ui`          slash commands, the setup wizard, the Textual UI
+- :mod:`minimal.ui`          slash commands, the setup wizard, the console frontend, ``minimal serve``
 - :mod:`minimal.cli`         option parsing, the ``minimal`` entry point
 
 Extensions import only from :mod:`minimal.api`.
@@ -15,7 +15,7 @@ Extensions import only from :mod:`minimal.api`.
 
 __version__ = "0.4.0"
 
-API_VERSION = "1.3"
+API_VERSION = "2.0"
 """Version of :mod:`minimal.api`, separate from :data:`__version__`: ``MAJOR.MINOR``.
 
 A minor release only adds to the API; a major one changes or removes something. An extension
