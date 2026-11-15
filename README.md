@@ -2,8 +2,6 @@
   <img src="assets/banner.svg" alt="minimal" width="100%">
 </p>
 
-<h1 align="center">minimal</h1>
-
 <p align="center">
   <a href="https://github.com/RafaSG13/Minimal">Repository</a> · <a href="https://github.com/RafaSG13/minimal-marketplace">Marketplace</a> · <a href="https://github.com/RafaSG13/Minimal/issues">Issues</a>
 </p>
