@@ -7,7 +7,7 @@ Needs Pillow, which minimal does not depend on::
     uv run --with pillow python -m minimal.extensions.logo IMAGE [-w 24] [-c 16] [--nearest] [-o FILE]
 
 Without ``-o`` the extension source is printed; save it in an extensions
-folder (e.g. ``~/.minimal/extensions/textual/widgets/logo.py``) and ``/reload``.
+folder (e.g. ``~/.minimal/extensions/widgets/logo.py``) and ``/reload``.
 """
 
 from __future__ import annotations

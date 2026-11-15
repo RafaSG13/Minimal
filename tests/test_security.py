@@ -88,7 +88,7 @@ class PrivateFilesTest(TempDirTest):
 class ProjectTrustTest(TempDirTest):
     def setUp(self):
         super().setUp()
-        self.ext_dir = self.cwd / ".minimal" / "extensions" / "console"
+        self.ext_dir = self.cwd / ".minimal" / "extensions"
         self.ext_dir.mkdir(parents=True)
         (self.ext_dir / "hello.py").write_text(HELLO_EXT.format(reply="v1"))
         self.frontend = mock.Mock()
@@ -213,7 +213,6 @@ class CliTest(TempDirTest):
         with (
             mock.patch.object(sys, "argv", ["minimal", *argv]),
             mock.patch.object(cli.setup, "can_run", return_value=terminal),
-            mock.patch.object(cli, "resolve_ui", return_value="console"),  # not whatever frontends this machine has
             mock.patch.object(cli, "App", side_effect=Started) as app,
             contextlib.redirect_stderr(err),
             contextlib.redirect_stdout(io.StringIO()),
@@ -388,7 +387,6 @@ class PathValidationTest(TempDirTest):
         with (
             mock.patch.object(sys, "argv", ["minimal", "-s", "../../x"]),
             mock.patch.object(cli.setup, "can_run", return_value=True),
-            mock.patch.object(cli, "resolve_ui", return_value="console"),
             contextlib.redirect_stderr(err),
             self.assertRaises(SystemExit) as exit,
         ):

@@ -200,14 +200,14 @@ def _trust(args: str, ctx: Context) -> None:
     app = _app(ctx)
     if args:
         raise ValueError("usage: /trust")
-    project = loader.read_project_snapshot(app.cwd, config.risky_subset(config.read_layers(app.cwd)[0]), app.folder)
+    project = loader.read_project_snapshot(app.cwd, config.risky_subset(config.read_layers(app.cwd)[0]))
     if project is None:
         print(f"No project extensions or trust-gated settings in {Path(app.cwd, '.minimal')}.")
         return
     if app.is_trusted(project):
         print(f"The project extensions and settings in {project.root} are already trusted.")
         if app.untrusted is not None:  # trusted elsewhere since the last reload
-            print(reload_summary(*app.reload_extensions(), app.untrusted_notice(), app.extension_skipped))
+            print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
         return
     print(audit.format_report(project))
     if not app.frontend.ask(
@@ -216,7 +216,7 @@ def _trust(args: str, ctx: Context) -> None:
         print("Not trusted: the project extensions and settings stay unapplied.")
         return
     config.save_trusted(project.key, project.digest)
-    print(reload_summary(*app.reload_extensions(), app.untrusted_notice(), app.extension_skipped))
+    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
 _SCALARS = ("provider", "model", "theme", "max_tokens", "prompt.base", "prompt.files")
@@ -268,14 +268,14 @@ def _ext(args: str, ctx: Context) -> None:
     if not words:
         _ext_picker(app)
     elif words == ["list"]:
-        rows = marketplace.installed(app.cwd, app.folder)
+        rows = marketplace.installed(app.cwd)
         for where, category, path in rows:
             disabled = "disabled" if loader.ext_id(path) in app.settings.disabled else ""
             print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled}".rstrip())
         if not rows:
             print("(none)")
     elif words[0] == "publish" and 2 <= len(words) <= 3:
-        print(marketplace.publish(Path(app.cwd, words[1]), words[2] if len(words) > 2 else None, folder=app.folder))
+        print(marketplace.publish(Path(app.cwd, words[1]), words[2] if len(words) > 2 else None))
     else:
         raise ValueError(f"usage: {EXT_USAGE}")
 
@@ -355,10 +355,10 @@ def _ext_picker(app: App) -> None:
         print("Cancelled.")
         return
     by_category: dict[str, list[marketplace.Entry]] = {}
-    for entry in marketplace.catalog(url, app.cwd, app.folder):
+    for entry in marketplace.catalog(url, app.cwd):
         by_category.setdefault(entry.listing.category, []).append(entry)
     if not by_category:
-        print(f"No {app.folder}/ extensions in {url}.")
+        print(f"No extensions in {url}.")
         return
     category = app.frontend.choose(
         f"Category · {url}", [(c, _category_label(c, entries)) for c, entries in by_category.items()]
@@ -385,10 +385,10 @@ def _ext_picker(app: App) -> None:
         where = app.frontend.choose(
             f"Install {len(to_install)} item(s) into",
             [
-                ("global", f"Global: {loader.category_dir(loader.global_extensions_dir(app.folder), category)}"),
+                ("global", f"Global: {loader.category_dir(loader.global_extensions_dir(), category)}"),
                 (
                     "project",
-                    f"This project: {loader.category_dir(loader.project_extensions_dir(app.cwd, app.folder), category)}",
+                    f"This project: {loader.category_dir(loader.project_extensions_dir(app.cwd), category)}",
                 ),
             ],
         )
@@ -422,11 +422,11 @@ def _ext_picker(app: App) -> None:
         print("Cancelled.")
         return
     for e in to_install:
-        dest, _ = marketplace.install_release(e.release, scope, app.cwd, app.folder)
+        dest, _ = marketplace.install_release(e.release, scope, app.cwd)
         print(f"Installed {e.listing.name} at {dest}")
     for e in to_update:
         for s in e.outdated:
-            dest, _ = marketplace.install_release(e.release, s, app.cwd, app.folder)
+            dest, _ = marketplace.install_release(e.release, s, app.cwd)
             print(f"Updated {e.listing.name} at {dest}")
     try:
         msg = marketplace.ensure_dependencies([e.release.listing for e in to_install + to_update], app.frontend.ask)
@@ -436,8 +436,8 @@ def _ext_picker(app: App) -> None:
         print(msg)
     for e in to_remove:
         for s in e.installed:
-            print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd, category, app.folder)}")
-    print(reload_summary(*app.reload_extensions(), app.untrusted_notice(), app.extension_skipped))
+            print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd, category)}")
+    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
 def register_builtin_commands(registry: Registry) -> None:
