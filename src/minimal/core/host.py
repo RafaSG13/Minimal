@@ -1,10 +1,9 @@
-"""Host: what a frontend drives minimal with.
+"""Host: what the terminal UI drives minimal with.
 
-A frontend (the terminal UI, the console REPL, one an extension registers with
-``register_frontend``) gets a :class:`Host` in ``run(host)``. It shows minimal through
-its :class:`~minimal.core.app.Frontend`, installed with :meth:`Host.attach`, and acts on
-minimal only through the host: send a message, run a command, interrupt, read the
-status and what extensions added to the interface. Nothing here imports a UI toolkit.
+The terminal UI (:mod:`minimal.ui.tui`) gets a :class:`Host` in ``run_tui(host)``. It shows
+minimal through its :class:`~minimal.core.app.Frontend`, installed with :meth:`Host.attach`,
+and acts on minimal only through the host: send a message, run a command, interrupt, read
+the status and what extensions added to the interface. Nothing here imports a UI toolkit.
 
 Threads: :meth:`Host.submit` and :meth:`Host.run_command` block until the turn or
 command ends; a frontend with its own event loop calls them from a worker thread.
@@ -85,7 +84,7 @@ class Host:
 
     @property
     def settings(self) -> config.Settings:
-        """The settings the last reload read (``theme``, ``ui``, …)."""
+        """The settings the last reload read (``theme``, …)."""
         return self._app.settings
 
     def status(self) -> HostStatus:
@@ -105,11 +104,6 @@ class Host:
     def extension_errors(self) -> list[str]:
         """Failures of the last reload (extensions that did not load, settings errors)."""
         return list(self._app.extension_errors)
-
-    @property
-    def extension_skipped(self) -> list[str]:
-        """Extensions the last reload did not load because they need another UI toolkit."""
-        return list(self._app.extension_skipped)
 
     def untrusted_notice(self) -> str | None:
         """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""

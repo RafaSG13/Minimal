@@ -70,20 +70,6 @@ def run_setup(registry: Registry) -> tuple[str, str]:
     return name, model
 
 
-def choose_frontend(frontends: dict[str, str]) -> str:
-    """Ask which of ``frontends`` (name -> description) to use with the same arrow-key menu as the provider.
-
-    Raises:
-        KeyboardInterrupt: if the user cancels with Ctrl-C.
-    """
-    print("minimal found several frontends: choose the one to use.\n")
-    width = max(map(len, frontends))
-    return questionary.select(
-        "Frontend",
-        choices=[Choice(f"{name:<{width}}  {description}", value=name) for name, description in frontends.items()],
-    ).unsafe_ask()
-
-
 def _stored_login() -> claude_auth.Credentials | None:
     try:
         return claude_auth.load()

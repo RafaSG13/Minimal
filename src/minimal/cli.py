@@ -1,7 +1,6 @@
 """Command-line entry point: parse options, build the :class:`~minimal.core.app.App`
-and open an interactive frontend (``console``, or one an installed package or extension adds). A turn can only
-be started from inside a frontend:
-there is no one-shot mode that runs the agent from the shell command line.
+and open the terminal UI. A turn can only be started from inside the UI: there is no
+one-shot mode that runs the agent from the shell command line.
 """
 
 from __future__ import annotations
@@ -15,19 +14,17 @@ from minimal import config
 from minimal.core.app import App
 from minimal.core.host import Host
 from minimal.core.session import TORN_NOTICE, Session, last_session, new_id, open_session
-from minimal.extensions import marketplace, migrate
-from minimal.extensions.loader import frontend_folder
+from minimal.extensions import marketplace
 from minimal.extensions.registry import Registry
 from minimal.providers import claude_auth, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui import setup
 from minimal.ui.commands import register_builtin_commands
-from minimal.ui.frontends import register_frontends, scan_frontends
 
 HELP = """minimal — minimal, extensible coding-agent harness
 
 Usage:
-  minimal [options]            interactive interface in the chosen frontend (runs setup first if no provider is chosen yet)
+  minimal [options]            the terminal UI (runs setup first if no provider is chosen yet)
   minimal --setup              choose the default provider, sign in or enter its key, choose the model
   minimal --login              sign in with a Claude Pro/Max subscription (browser)
   minimal --logout             forget the Claude login
@@ -43,16 +40,13 @@ Options:
                         (default $MINIMAL_PROVIDER, else the settings' provider)
   -m, --model <name>    model (default $MINIMAL_MODEL, else the settings' model, else the provider's default)
   -e, --ext <path>      load an extension file or folder (repeatable)
-  --ui <name>           frontend: console (plain line-by-line), tui (minimal-textual), or one added by another
-                        package or an extension. Default: the settings' ui; unset, the installed one, or a menu
-                        to choose (and save) one when there are several
   -y, --yes             do not ask for confirmation for write/edit/bash
   --trust-project       apply this project's extensions and trust-gated settings without /trust
   -h, --help            this help
 
 Settings:
-  ~/.minimal/settings.json         global: provider, model, theme, ui, prompt, permissions, extensions, marketplaces
-                                   (setup, /theme, /ext and the frontend menu save there)
+  ~/.minimal/settings.json         global: provider, model, theme, prompt, permissions, extensions, marketplaces
+                                   (setup, /theme and /ext save there)
   .minimal/settings.json           this project's settings, shared with it
   .minimal/settings.local.json     this project's personal settings; both beat the global file
                                    (/settings shows the files and where each value comes from)
@@ -68,8 +62,7 @@ Environment:
                                 model's tools and listed first by /ext
                                 (default https://github.com/RafaSG13/minimal-marketplace.git)
 
-Extensions are kept per frontend: ~/.minimal/extensions/<frontend>/ (console, textual) and
-.minimal/extensions/<frontend>/ in a project; only the running frontend's folder loads."""
+Extensions: ~/.minimal/extensions/ and ./.minimal/extensions/ in a project."""
 
 
 def main() -> None:
@@ -101,12 +94,6 @@ def main() -> None:
         sys.exit(2)
 
     cwd = os.getcwd()
-    migrate_extensions(cwd)
-    try:
-        opts.ui = resolve_ui(opts.ui, cwd)
-    except KeyboardInterrupt:
-        print("\nCancelled.", file=sys.stderr)
-        sys.exit(130)
     try:
         session = open_session(opts.session or (last_session(cwd) if opts.cont else None) or new_id(), cwd)
         session.lock()
@@ -120,7 +107,7 @@ def main() -> None:
 
 
 def _run(session: Session, opts: argparse.Namespace) -> None:
-    """Build the App on ``session``, start the provider and run the chosen frontend until it exits."""
+    """Build the App on ``session``, start the provider and run the terminal UI until it exits."""
     if session.torn_at is not None:
         print(f"warning: {session.id}: {TORN_NOTICE}", file=sys.stderr)
     app = App(
@@ -131,16 +118,8 @@ def _run(session: Session, opts: argparse.Namespace) -> None:
         trust_project=opts.trust_project,
         extra_extensions=opts.ext,
         register_commands=register_builtin_commands,
-        register_frontends=register_frontends,
-        ui=opts.ui,
     )
     app.reload_extensions()
-    ui = app.ui
-    frontend = app.registry.frontends.get(ui)
-    if frontend is None:
-        hint = "; install minimal-textual: https://github.com/RafaSG13/minimal-marketplace/tree/main/textual" if ui == "tui" else ""
-        print(f"unknown frontend {ui!r}; available: {', '.join(sorted(app.registry.frontends))}{hint}", file=sys.stderr)
-        sys.exit(2)
     try:
         config.apply_keys()
         start_provider(app, opts)
@@ -154,7 +133,9 @@ def _run(session: Session, opts: argparse.Namespace) -> None:
         sys.exit(1)
 
     try:
-        frontend.run(Host(app))
+        from minimal.ui.tui.app import run_tui  # imports Textual: only when the UI opens
+
+        run_tui(Host(app))
     finally:
         app.shutdown()
 
@@ -179,53 +160,6 @@ def ext_cli(args: list[str]) -> None:
     lines, ok = marketplace.check([Path(p) for p in paths], make_registry, install_deps)
     print("\n".join(lines))
     sys.exit(0 if ok else 1)
-
-
-def migrate_extensions(cwd: str) -> None:
-    """Move the old flat extension layout into per-frontend folders and tell the user what moved (:mod:`minimal.extensions.migrate`); a failure is a warning."""
-
-    def folders() -> list[str]:
-        registry = scan_frontends()
-        return [frontend_folder(registry, name) for name in registry.frontends]
-
-    try:
-        notices = [migrate.migrate_global(folders), migrate.project_notice(cwd)]
-    except OSError as e:
-        print(f"warning: could not check the extension folders for the old layout: {e}", file=sys.stderr)
-        return
-    for notice in notices:
-        if notice:
-            print(notice, file=sys.stderr)
-
-
-def resolve_ui(explicit: str | None, cwd: str) -> str:
-    """The frontend to run: ``--ui`` (``explicit``), else the ``ui`` setting, else what is installed.
-
-    Installed means ``console`` plus the frontends found by :func:`~minimal.ui.frontends.scan_frontends`. With one
-    besides ``console`` that one is used; with several, a menu asks and the choice is saved as ``ui`` in the global
-    settings; with none, ``console``.
-
-    Raises:
-        KeyboardInterrupt: if the user cancels the menu.
-    """
-    if explicit:
-        return explicit
-    saved = config.Settings(tuple(config.read_layers(cwd)[0])).ui
-    if saved:
-        return saved
-    available = scan_frontends().frontends
-    others = [name for name in available if name != "console"]
-    if not others:
-        return config.DEFAULT_UI
-    if len(others) == 1:
-        return others[0]
-    choice = setup.choose_frontend({name: spec.description for name, spec in available.items()})
-    try:
-        config.update_global({"ui": choice})
-        print(f"Saved {choice} as the default frontend (~/.minimal/settings.json). Change it with the `ui` setting or --ui.")
-    except (OSError, ValueError) as e:
-        print(f"warning: could not save the frontend choice ({e}); it will be asked again", file=sys.stderr)
-    return choice
 
 
 def start_provider(app: App, opts: argparse.Namespace) -> None:
@@ -273,22 +207,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace | None:
     parser.add_argument("-y", "--yes", action="store_true")
     parser.add_argument("--trust-project", action="store_true")
     parser.add_argument("-h", "--help", action="store_true")
-    parser.add_argument("--ui")
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--login", action="store_true")
     parser.add_argument("--logout", action="store_true")
+    help_text = HELP
 
     try:
         opts, unknown = parser.parse_known_args(argv)
     except SystemExit:  # malformed option, e.g. -s without a value
-        print(HELP)
+        print(help_text)
         sys.exit(2)
     if unknown:
         print(f"Unknown option: {unknown[0]}\n", file=sys.stderr)
-        print(HELP)
+        print(help_text)
         sys.exit(2)
     if opts.help:
-        print(HELP)
+        print(help_text)
         return None
     return opts
 

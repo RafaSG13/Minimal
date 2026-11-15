@@ -12,10 +12,12 @@ This module is versioned by :data:`API_VERSION`, which every extension declares 
 ``__api__`` (see :mod:`minimal.extensions.metadata`). Internal code never imports this module.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from minimal import API_VERSION, __version__
 from minimal.core.agent import USER_DENIED
-from minimal.core.app import ConsoleFrontend, ExitRepl, Frontend
-from minimal.core.host import Host, HostStatus
 from minimal.core.context import UI, Context
 from minimal.extensions.facade import (
     AfterResponseEvent,
@@ -36,7 +38,6 @@ from minimal.extensions.registry import (
     STYLES,
     THEME_COLORS,
     WIDGET_AREAS,
-    FrontendSpec,
     LogoSpec,
     PanelSpec,
     RendererSpec,
@@ -51,14 +52,16 @@ from minimal.tools.search import glob_regex
 from minimal import glyphs
 from minimal import glyphs as theme
 
+if TYPE_CHECKING:
+    from textual.content import Content
+
 __all__ = [
     "API_VERSION", "EVENTS", "STATUS_SIDES", "STYLES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
-    "AfterResponseEvent", "BeforeRequestEvent", "ConsoleFrontend", "Context", "ExitRepl", "Extension", "Frontend",
-    "FrontendSpec", "Host", "HostStatus", "LogoSpec", "PanelSpec", "Provider",
+    "AfterResponseEvent", "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "PanelSpec", "Provider",
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
     "ShutdownEvent", "Tool",
     "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",
-    "glob_regex", "glyphs", "result_text", "styled_line", "styled_lines", "theme",
+    "glob_regex", "glyphs", "logo_content", "result_text", "styled_line", "styled_lines", "theme",
 ]  # fmt: skip
 
 _SESSIONS = "ctx.sessions(), ctx.read_session() and ctx.new_session()"
@@ -74,12 +77,21 @@ REMOVED: dict[str, tuple[str, str]] = {
     "reload_summary": ("1.0", "ctx.reload()"),
     "run_agent": ("1.0", "ctx.run_agent()"),
     "tool_specs": ("1.0", "ctx.tools"),
-    "logo_content": ("2.0", "minimal_textual.logo_content (the minimal-textual package)"),
-    **{f"theme.{name}": ("2.0", f"minimal_textual.theme.{name} (the minimal-textual package)") for name in ("DEFAULT", "MINIMAL", "build", "available")},
+    **{
+        f"theme.{name}": ("2.0", f"minimal.ui.tui.theme.{name} (internal to the terminal UI, not part of the extension API)")
+        for name in ("DEFAULT", "MINIMAL", "build", "available")
+    },
 }
 """Names this module no longer has: ``name -> (API version that removed it, what to use instead)``.
 
 ``theme.<name>`` is an attribute of :data:`theme` (:mod:`minimal.glyphs`)."""
+
+
+def logo_content(spec: LogoSpec) -> Content:
+    """The pixel-art logo ``spec`` as Textual content (two art rows per row of half blocks)."""
+    from minimal.ui.tui.widgets import logo_content as render
+
+    return render(spec)
 
 
 def __getattr__(name: str) -> object:

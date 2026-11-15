@@ -16,7 +16,7 @@ from minimal.core import session as session_mod
 from minimal.core.agent import run_agent
 from minimal.core.app import App
 from minimal.core.session import Session
-from minimal import config
+from minimal import cli, config
 from minimal.extensions import loader
 from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import PanelSpec, Registry, TurnInterrupted, styled_line, styled_lines
@@ -593,7 +593,7 @@ class ReloadTest(unittest.TestCase):
         self.app = App(
             registry=self.registry, session=session, cwd=str(self.tmp), auto_approve=True, trust_project=True
         )
-        self.ext_dir = self.tmp / ".minimal" / "extensions" / "console"
+        self.ext_dir = self.tmp / ".minimal" / "extensions"
         self.ext_dir.mkdir(parents=True)
 
     def test_reload_picks_up_new_extension(self):
@@ -616,6 +616,39 @@ class ReloadTest(unittest.TestCase):
         (self.ext_dir / "broken.py").write_text("def register(minimal):\n  minimal.register_tool(\n")
         with self.assertRaisesRegex(RuntimeError, "broken.py: SyntaxError"):
             self.registry.tools["reload_extensions"].run({}, self.app.context)
+
+    def test_untrusted_project_extensions_live_flat_in_dot_minimal(self):
+        (self.ext_dir / "hello.py").write_text(HELLO_EXT.format(reply="v1"))
+        self.assertEqual(loader.project_extensions_dir(str(self.tmp)), self.tmp / ".minimal" / "extensions")
+        with mock.patch.object(config, "TRUST_FILE", self.tmp / "trusted.json"):
+            app = App(registry=Registry(), session=Session("u", self.tmp / "u.jsonl"), cwd=str(self.tmp), auto_approve=True)
+            app.reload_extensions()
+        self.assertNotIn("hello", app.registry.tools)
+        self.assertEqual(app.untrusted.root, self.tmp / ".minimal")
+        self.assertIn(str(self.tmp / ".minimal"), app.untrusted_notice())
+
+
+class InterfaceTest(unittest.TestCase):
+    def test_ui_option_is_gone(self):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as exit:
+                cli.parse_args(["--ui", "tui"])
+        self.assertEqual(exit.exception.code, 2)
+
+    def test_importing_the_api_does_not_import_textual(self):
+        code = "import sys, minimal.api; print(any(m.split('.')[0] == 'textual' for m in sys.modules))"
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), "False")
+
+    def test_removed_theme_names_say_where_they_went(self):
+        from minimal import glyphs
+
+        with self.assertRaisesRegex(
+            AttributeError, r"theme\.DEFAULT was removed in minimal API 2\.0.*minimal\.ui\.tui\.theme\.DEFAULT"
+        ):
+            glyphs.DEFAULT
+        with self.assertRaisesRegex(AttributeError, "no attribute 'nope'"):
+            glyphs.nope
 
 
 if __name__ == "__main__":

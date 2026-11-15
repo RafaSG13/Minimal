@@ -73,7 +73,6 @@ _TYPES = {
     "provider": (lambda v: isinstance(v, str), "a string"),
     "model": (lambda v: isinstance(v, str), "a string"),
     "theme": (lambda v: isinstance(v, str), "a string"),
-    "ui": (lambda v: isinstance(v, str), "a string"),
     "max_tokens": (
         _is_max_tokens,
         'a positive integer or an object mapping "provider" or "provider/model" to positive integers',
@@ -172,10 +171,6 @@ def _validate(raw: dict, scope: str) -> tuple[dict, list[str]]:
     return data, problems
 
 
-DEFAULT_UI = "console"
-"""The frontend used when no other is installed. ``minimal`` picks among the installed ones itself (:func:`minimal.cli.resolve_ui`)."""
-
-
 @dataclass(frozen=True)
 class Settings:
     """The effective settings: ``layers`` merged, with project trust applied.
@@ -206,11 +201,6 @@ class Settings:
     @property
     def theme(self) -> str | None:
         return self.scalar("theme")[0]
-
-    @property
-    def ui(self) -> str | None:
-        """The frontend to run (``console``, ``tui`` or one a package or extension registers); ``--ui`` wins over it."""
-        return self.scalar("ui")[0]
 
     def max_tokens_for(self, provider: str, model: str) -> int | None:
         """The ``max_tokens`` setting for ``model`` of ``provider``: the integer, or the object's

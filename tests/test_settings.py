@@ -137,7 +137,7 @@ class SettingsTest(unittest.TestCase):
         self.assertNotEqual(self.snapshot_digest(), before)
 
     def test_digest_without_risky_settings_is_the_files_digest(self):
-        ext = self.cwd / ".minimal" / "extensions" / "console" / "hello.py"
+        ext = self.cwd / ".minimal" / "extensions" / "hello.py"
         ext.parent.mkdir(parents=True)
         ext.write_text('__api__ = "2"\ndef register(minimal):\n    pass\n')
         self.write("project", {"model": "a"})

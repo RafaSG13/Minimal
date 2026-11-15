@@ -1,6 +1,5 @@
 import contextlib
 import hashlib
-import importlib.util
 import io
 import json
 import os
@@ -77,10 +76,9 @@ def register(minimal):
 '''
 
 
-def item(doc="An item.", frontend="", extra=""):
-    """The source of a valid marketplace item (API 2), declaring ``__frontend__`` if ``frontend`` is given."""
-    declared = f'__frontend__ = "{frontend}"\n' if frontend else ""
-    return f'"""{doc}"""\n\n__version__ = "1.0"\n__api__ = "2"\n{declared}{extra}\n\ndef register(minimal):\n    pass\n'
+def item(doc="An item.", extra=""):
+    """The source of a valid marketplace item (API 2)."""
+    return f'"""{doc}"""\n\n__version__ = "1.0"\n__api__ = "2"\n{extra}\n\ndef register(minimal):\n    pass\n'
 
 
 def git(*args, cwd=None):
@@ -131,7 +129,7 @@ class MarketplaceTest(unittest.TestCase):
         self.addCleanup(remove_tree, self.tmp)
         self.bare = self.tmp / "market.git"
         self.home_extensions = self.tmp / "global"
-        self.global_dir = self.home_extensions / "console"
+        self.global_dir = self.home_extensions
         env = {
             "GIT_AUTHOR_NAME": "t",
             "GIT_AUTHOR_EMAIL": "t@example.com",
@@ -163,13 +161,13 @@ class MarketplaceTest(unittest.TestCase):
         git("init", "--quiet", "--bare", "--initial-branch=main", str(self.bare))
         self.work = self.tmp / "work"
         git("clone", "--quiet", str(self.bare), str(self.work))
-        (self.work / "console" / "extensions").mkdir(parents=True)
+        (self.work / "extensions").mkdir(parents=True)
         git("checkout", "--quiet", "-b", "main", cwd=self.work)
         self.push_hello(HELLO)
 
     def push_hello(self, source):
         """Commit ``source`` as ``extensions/hello.py`` and push it to the marketplace."""
-        self.push_file("console/extensions/hello.py", source)
+        self.push_file("extensions/hello.py", source)
 
     def push_file(self, relative, source):
         """Commit ``source`` at ``relative`` in the marketplace and push it."""
@@ -274,7 +272,7 @@ class MarketplaceTest(unittest.TestCase):
         self.assertIn("Cancelled.", out)
 
     def test_picker_labels_and_skips_an_extension_for_another_api(self):
-        self.push_file("console/extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))
         ui, out = self.run_ext(
             {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["hello", "future"], "Install": "global", "Allow": True}
         )
@@ -287,7 +285,7 @@ class MarketplaceTest(unittest.TestCase):
         self.assertFalse((self.global_dir / "future.py").exists())
 
     def test_global_install_shows_the_scan_and_needs_a_yes(self):
-        self.push_file("console/extensions/risky.py", RISKY)
+        self.push_file("extensions/risky.py", RISKY)
         risky = self.global_dir / "risky.py"
         picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["risky"], "Install": "global"}
 
@@ -311,23 +309,23 @@ class MarketplaceTest(unittest.TestCase):
         self.assertIn("runs commands", out)
 
     def test_project_install_asks_nothing(self):
-        self.push_file("console/extensions/risky.py", RISKY)
+        self.push_file("extensions/risky.py", RISKY)
         picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["risky"], "Install": "project"}
         _, out = self.run_ext(picked)  # no "Allow" answer: asking would raise StopIteration
         self.assertIn("Installed risky at", out)
 
     def test_picker_offers_dependencies_after_installing(self):
-        self.push_file("console/extensions/deps.py", NEEDS_DEPS.replace("DEPS", '["unittest_no_such_pkg_zz"]'))
+        self.push_file("extensions/deps.py", NEEDS_DEPS.replace("DEPS", '["unittest_no_such_pkg_zz"]'))
         picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["deps"]}
         with mock.patch.object(marketplace, "install_dependencies") as install:
             ui, out = self.run_ext({**picked, "Install unittest_no_such_pkg_zz": False, "Install": "project"})
         install.assert_not_called()
-        self.assertTrue((self.tmp / ".minimal" / "extensions" / "console" / "deps.py").exists())
+        self.assertTrue((self.tmp / ".minimal" / "extensions" / "deps.py").exists())
         self.assertIn("Not installed: unittest_no_such_pkg_zz. deps will not load until they are installed.", out)
         self.assertTrue(ui.asked[-1][0].endswith("Needed by deps."), ui.asked)
 
     def test_model_tool_installs_globally_only_after_the_user_says_yes(self):
-        self.push_file("console/extensions/risky.py", RISKY)
+        self.push_file("extensions/risky.py", RISKY)
         ui = ScriptedFrontend({"Allow": False})
         app = App(
             registry=Registry(), session=Session("t", self.tmp / "t.jsonl"), cwd=str(self.tmp), auto_approve=True, frontend=ui
@@ -347,8 +345,8 @@ class MarketplaceTest(unittest.TestCase):
             self.assertIn("Installed risky", install.run({"name": "risky", "scope": "project"}, app.context))
 
     def test_categories_install_into_subfolders(self):
-        self.push_file("console/themes/ocean.py", OCEAN)
-        self.push_file("console/tools/hello.py", HELLO_TOOL)
+        self.push_file("themes/ocean.py", OCEAN)
+        self.push_file("tools/hello.py", HELLO_TOOL)
         ui, _ = self.run_ext(
             {"Marketplace": str(self.bare), "Category": "themes", "Themes": ["ocean"], "Install": "global", "Allow": True}
         )
@@ -401,7 +399,7 @@ class MarketplaceTest(unittest.TestCase):
         ).stdout.split()
         self.assertEqual(len(branches), 1)
         self.assertTrue(branches[0].startswith("publish/greet-"))
-        self.assertIn("console/extensions/greet.py", self.published_files())
+        self.assertIn("extensions/greet.py", self.published_files())
 
     def test_publish_rejects_invalid(self):
         no_register = self.tmp / "noreg.py"
@@ -420,8 +418,8 @@ class MarketplaceTest(unittest.TestCase):
             marketplace.publish(path, "hello")
 
     def test_extension_named_like_a_category_keeps_the_category_folder(self):
-        self.push_file("console/tools/hello.py", HELLO_TOOL)
-        self.push_file("console/extensions/tools.py", HELLO.replace("Say hello.", "Named tools."))
+        self.push_file("tools/hello.py", HELLO_TOOL)
+        self.push_file("extensions/tools.py", HELLO.replace("Say hello.", "Named tools."))
         marketplace.install("hello", category="tools")
         category = self.global_dir / "tools"
         self.assertEqual(marketplace.install("tools", category="extensions"), (self.global_dir / "tools.py", False))
@@ -478,7 +476,7 @@ class MarketplaceTest(unittest.TestCase):
 
     def test_listing_without_version_is_rejected_and_skipped(self):
         unversioned = '"""No version."""\n__api__ = "2"\n\n\ndef register(minimal):\n    pass\n'
-        self.push_file("console/extensions/plain.py", unversioned)
+        self.push_file("extensions/plain.py", unversioned)
         self.assertEqual([x.name for x in marketplace.search()], ["hello"])
         path = self.tmp / "plain.py"
         path.write_text(unversioned)
@@ -486,9 +484,9 @@ class MarketplaceTest(unittest.TestCase):
             marketplace.publish(path)
 
     def test_package_folder_installs_updates_and_uninstalls(self):
-        self.push_file("console/tools/pkg/__init__.py", PKG_INIT)
-        self.push_file("console/tools/pkg/helpers.py", 'REPLY = "v1"\n')
-        self.push_file("console/tools/pkg/prompt.txt", "v1\n")
+        self.push_file("tools/pkg/__init__.py", PKG_INIT)
+        self.push_file("tools/pkg/helpers.py", 'REPLY = "v1"\n')
+        self.push_file("tools/pkg/prompt.txt", "v1\n")
         dest, updated = marketplace.install("pkg")
         self.assertEqual((dest, updated), (self.global_dir / "tools" / "pkg", False))
         self.assertEqual((dest / "helpers.py").read_text(), 'REPLY = "v1"\n')
@@ -498,7 +496,7 @@ class MarketplaceTest(unittest.TestCase):
 
         [entry] = [e for e in marketplace.catalog(str(self.bare), str(self.tmp)) if e.listing.name == "pkg"]
         self.assertEqual((entry.installed, entry.outdated), (["global"], []))
-        self.push_file("console/tools/pkg/prompt.txt", "v2\n")  # a resource-only change is an update too
+        self.push_file("tools/pkg/prompt.txt", "v2\n")  # a resource-only change is an update too
         [entry] = [e for e in marketplace.catalog(str(self.bare), str(self.tmp)) if e.listing.name == "pkg"]
         self.assertEqual(entry.outdated, ["global"])
 
@@ -506,7 +504,7 @@ class MarketplaceTest(unittest.TestCase):
         self.assertFalse(dest.exists())
 
     def test_incompatible_listing_is_not_installed(self):
-        self.push_file("console/extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))
         [listing] = [x for x in marketplace.search() if x.name == "future"]
         self.assertFalse(listing.compatible)
         self.assertEqual(listing.api, "9")
@@ -531,7 +529,7 @@ class MarketplaceTest(unittest.TestCase):
         loaded, errors = load_extensions(registry, str(self.tmp), config.Settings())
         self.assertEqual((loaded, errors), ([self.global_dir / "hello.py"], []))  # the lock is not an extension
 
-        self.push_file("console/themes/ocean.py", OCEAN)
+        self.push_file("themes/ocean.py", OCEAN)
         marketplace.install("ocean")
         self.assertEqual(sorted(self.lock()), ["hello", "themes/ocean"])
         marketplace.uninstall("ocean", category="themes")
@@ -541,13 +539,13 @@ class MarketplaceTest(unittest.TestCase):
 
     def test_project_scope_has_its_own_lock(self):
         marketplace.install("hello", "project", str(self.tmp))
-        folder = self.tmp / ".minimal" / "extensions" / "console"
+        folder = self.tmp / ".minimal" / "extensions"
         self.assertEqual(self.lock(folder)["hello"]["commit"], self.head())
         self.assertFalse((self.global_dir / ".lock.json").exists())
         self.assertEqual(loader.extension_entries(folder), [folder / "hello.py"])  # the lock is not an extension
 
         # A copy installed from a local folder no longer comes from the marketplace.
-        marketplace.install_from(self.work / "console" / "extensions" / "hello.py", "project", str(self.tmp))
+        marketplace.install_from(self.work / "extensions" / "hello.py", "project", str(self.tmp))
         self.assertFalse((folder / ".lock.json").exists())
 
     def test_an_older_compatible_version_is_offered_and_installed(self):
@@ -560,7 +558,7 @@ class MarketplaceTest(unittest.TestCase):
         self.assertEqual((release.commit, release.newer.api), (compatible, "9"))
         entry = self.entry("hello")
         self.assertEqual((entry.listing.version, entry.release.commit), ("1.0", compatible))
-        self.assertIn("[latest for this minimal; newer needs API 9]", marketplace._ext_search({"query": "hello"}, None, "console"))
+        self.assertIn("[latest for this minimal; newer needs API 9]", marketplace._ext_search({"query": "hello"}, None))
 
         dest, updated = marketplace.install("hello")
         self.assertEqual((dest.read_text(), updated), (HELLO, False))
@@ -572,19 +570,19 @@ class MarketplaceTest(unittest.TestCase):
         self.assertIn("latest for this minimal (newer needs API 9)", label)
 
     def test_global_review_scans_the_older_version_it_installs(self):
-        self.push_file("console/extensions/risky.py", RISKY)
-        self.push_file("console/extensions/risky.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))  # HEAD: harmless, API 9
+        self.push_file("extensions/risky.py", RISKY)
+        self.push_file("extensions/risky.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))  # HEAD: harmless, API 9
         picked = {"Marketplace": str(self.bare), "Category": "extensions", "Extensions": ["risky"], "Install": "global"}
         _, out = self.run_ext({**picked, "Allow": False})
         self.assertIn("runs commands", out)  # the scan is of the API 2 version, not of HEAD
         self.assertFalse((self.global_dir / "risky.py").exists())
 
     def test_an_older_compatible_package_version_is_installed(self):
-        self.push_file("console/tools/pkg/__init__.py", PKG_INIT)
-        self.push_file("console/tools/pkg/helpers.py", 'REPLY = "v1"\n')
+        self.push_file("tools/pkg/__init__.py", PKG_INIT)
+        self.push_file("tools/pkg/helpers.py", 'REPLY = "v1"\n')
         old = self.head()
-        self.push_file("console/tools/pkg/__init__.py", PKG_INIT.replace('__api__ = "2"', '__api__ = "9"'))
-        self.push_file("console/tools/pkg/helpers.py", 'REPLY = "v2"\n')
+        self.push_file("tools/pkg/__init__.py", PKG_INIT.replace('__api__ = "2"', '__api__ = "9"'))
+        self.push_file("tools/pkg/helpers.py", 'REPLY = "v2"\n')
 
         dest, _ = marketplace.install("pkg")
         self.assertEqual((dest / "helpers.py").read_text(), 'REPLY = "v1"\n')
@@ -592,8 +590,8 @@ class MarketplaceTest(unittest.TestCase):
         self.assertEqual(self.entry("pkg").outdated, [])
 
     def test_an_extension_with_no_compatible_version_stays_listed_but_is_not_installed(self):
-        self.push_file("console/extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))
-        self.push_file("console/extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "8"'))
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "9"'))
+        self.push_file("extensions/future.py", HELLO.replace('__api__ = "2"', '__api__ = "8"'))
         [release] = marketplace.releases("future")
         self.assertEqual((release.listing.compatible, release.listing.api, release.commit), (False, "8", self.head()))
         with self.assertRaisesRegex(ValueError, "future: written for minimal API 8"):
@@ -660,12 +658,12 @@ class MarketplaceTest(unittest.TestCase):
         hello.write_text(HELLO + "# mine\n")
         ctx = SimpleNamespace(cwd=str(self.tmp), ui=SimpleNamespace(ask=lambda question: True))
         with self.assertRaisesRegex(ValueError, "hello has local changes in .*hello.py.*force"):
-            marketplace._ext_install({"name": "hello", "marketplace": str(self.bare)}, ctx, "console")
+            marketplace._ext_install({"name": "hello", "marketplace": str(self.bare)}, ctx)
         with self.assertRaisesRegex(ValueError, "local changes"):
             marketplace.install("hello")
         self.assertIn("# mine", hello.read_text())
 
-        out = marketplace._ext_install({"name": "hello", "marketplace": str(self.bare), "force": True}, ctx, "console")
+        out = marketplace._ext_install({"name": "hello", "marketplace": str(self.bare), "force": True}, ctx)
         self.assertTrue(out.startswith("Updated hello at"), out)
         self.assertEqual(hello.read_text(), HELLO)
         self.assertEqual(self.entry("hello").modified, [])
@@ -707,115 +705,82 @@ class MarketplaceTest(unittest.TestCase):
             marketplace.describe(path)
 
     def test_listing_without_api_is_skipped_by_search(self):
-        self.push_file("console/extensions/noapi.py", HELLO.replace('__api__ = "2"\n', ""))
+        self.push_file("extensions/noapi.py", HELLO.replace('__api__ = "2"\n', ""))
         self.assertEqual([x.name for x in marketplace.search()], ["hello"])
 
-    def push_folders(self):
-        """Items of three frontends, and files that are not items; ``console/extensions/hello.py`` is there from setUp."""
-        self.push_file("textual/widgets/gauge.py", item("A textual gauge.", "textual"))
-        self.push_file("textual/widgets/fancy.py", item("A fancy widget.", "textual"))
-        self.push_file("console/widgets/gauge.py", item("A console gauge."))  # the same name, a copy that may diverge
-        self.push_file("web/tools/probe.py", item("A web probe."))
-        # Not items: a frontend's package, tests and other languages' files, and the old layouts.
-        self.push_file("textual/src/minimal_textual/__init__.py", item("The package."))
-        self.push_file("textual/tests/widgets/test_x.py", item("A test."))
-        self.push_file("web/src/widgets/x.py", item("Source."))
-        self.push_file("web/package.json", "{}\n")
-        self.push_file("widgets/old.py", item("The old flat layout."))
-        self.push_file("shared/widgets/old.py", item("The old shared folder."))
+    def test_only_the_category_folders_are_listed(self):
+        self.push_file("widgets/gauge.py", item("A gauge."))
+        self.push_file("widgets/fancy.py", item("A fancy widget."))
+        # Not items: files outside the category folders, a nested folder, and a non-Python file.
+        self.push_file("src/pkg/__init__.py", item("The package."))
+        self.push_file("tests/widgets/test_x.py", item("A test."))
+        self.push_file("other/tools/probe.py", item("Elsewhere."))
+        self.push_file("go.mod", "module x\n")
 
-    def test_only_the_running_frontends_folder_is_listed(self):
-        self.push_folders()
-        console = marketplace.search()
-        self.assertEqual([(x.name, x.category, x.frontend) for x in console], [("hello", "extensions", ""), ("gauge", "widgets", "")])
-        textual = marketplace.search(folder="textual")
-        self.assertEqual([(x.name, x.category, x.frontend) for x in textual], [("fancy", "widgets", "textual"), ("gauge", "widgets", "textual")])
-        self.assertEqual([x.name for x in marketplace.search(folder="web")], ["probe"])
-        self.assertEqual(marketplace.search(folder="nope"), [])
-        self.assertEqual(marketplace.releases("fancy", folder="textual")[0].relpath, "textual/widgets/fancy.py")
-        self.assertEqual(marketplace.format_listing(textual[0]), "fancy 1.0 — A fancy widget.")
-        with self.assertRaisesRegex(ValueError, "invalid frontend folder"):
-            marketplace.search(folder="../web")
+        found = marketplace.search()
+        self.assertEqual([(x.name, x.category) for x in found], [("hello", "extensions"), ("fancy", "widgets"), ("gauge", "widgets")])
+        self.assertEqual(marketplace.releases("fancy")[0].relpath, "widgets/fancy.py")
+        self.assertEqual(marketplace.format_listing(found[1]), "fancy 1.0 — A fancy widget.")
 
         registry = Registry()
-        marketplace.register_marketplace_tools(registry, "textual")
+        marketplace.register_marketplace_tools(registry)
         ctx = SimpleNamespace(cwd=str(self.tmp), ui=SimpleNamespace(ask=lambda question: True))
         out = registry.tools["ext_search"].run({}, ctx)
         self.assertIn("widgets/fancy 1.0 — A fancy widget.", out)
-        for hidden in ("hello", "probe", "minimal_textual", "test_x", "widgets/old", "A console gauge"):
+        for hidden in ("probe", "test_x", "The package"):
             self.assertNotIn(hidden, out)
-        self.assertEqual([e.listing.name for e in marketplace.catalog(str(self.bare), str(self.tmp), "textual")], ["fancy", "gauge"])
+        self.assertEqual([e.listing.name for e in marketplace.catalog(str(self.bare), str(self.tmp))], ["hello", "fancy", "gauge"])
 
-    def test_install_goes_to_the_folder_of_the_running_frontend(self):
-        self.push_folders()
+    def test_the_model_tool_installs_into_the_category_folder(self):
+        self.push_file("widgets/fancy.py", item("A fancy widget."))
         registry = Registry()
-        marketplace.register_marketplace_tools(registry, "textual")
+        marketplace.register_marketplace_tools(registry)
         ctx = SimpleNamespace(cwd=str(self.tmp), ui=SimpleNamespace(ask=lambda question: True))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertIn("Installed fancy", registry.tools["ext_install"].run({"name": "fancy"}, ctx))
-        textual = self.home_extensions / "textual"
-        self.assertEqual((textual / "widgets" / "fancy.py").read_text(), item("A fancy widget.", "textual"))
-        self.assertEqual(sorted(self.lock(textual)), ["widgets/fancy"])
-        self.assertFalse(self.global_dir.exists())  # the console's folder is untouched
-        with self.assertRaisesRegex(ValueError, r"hello is not in the marketplace's textual/ folder"):
-            registry.tools["ext_install"].run({"name": "hello"}, ctx)
-        with self.assertRaisesRegex(ValueError, r"fancy is not in the marketplace's console/ folder"):
-            marketplace.install("fancy")
+        self.assertEqual((self.global_dir / "widgets" / "fancy.py").read_text(), item("A fancy widget."))
+        self.assertEqual(sorted(self.lock()), ["widgets/fancy"])
+        with self.assertRaisesRegex(ValueError, r"nope is not in the marketplace"):
+            registry.tools["ext_install"].run({"name": "nope"}, ctx)
 
-        # The same name in two frontends' folders is two items: each installs to its own folder.
-        marketplace.install("gauge", folder="textual")
-        marketplace.install("gauge", folder="console")
-        self.assertIn("A textual gauge", (textual / "widgets" / "gauge.py").read_text())
-        self.assertIn("A console gauge", (self.global_dir / "widgets" / "gauge.py").read_text())
         self.assertEqual(
-            [(s, c, p.name) for s, c, p in marketplace.installed(str(self.tmp), "textual")],
-            [("global", "widgets", "fancy.py"), ("global", "widgets", "gauge.py")],
+            [(s, c, p.name) for s, c, p in marketplace.installed(str(self.tmp))], [("global", "widgets", "fancy.py")]
         )
-        self.assertEqual(sorted(self.lock(textual)), ["widgets/fancy", "widgets/gauge"])
-        self.assertEqual(sorted(self.lock()), ["widgets/gauge"])
-        entry = next(e for e in marketplace.catalog(str(self.bare), str(self.tmp), "textual") if e.listing.name == "fancy")
+        entry = next(e for e in marketplace.catalog(str(self.bare), str(self.tmp)) if e.listing.name == "fancy")
         self.assertEqual((entry.installed, entry.outdated), (["global"], []))
 
-        marketplace.install("fancy", "project", str(self.tmp), folder="textual")
-        project = self.tmp / ".minimal" / "extensions" / "textual"
-        self.assertEqual(self.lock(project)["widgets/fancy"]["commit"], marketplace.releases("fancy", folder="textual")[0].commit)
-        self.assertEqual(marketplace.uninstall("fancy", "global", str(self.tmp), "widgets", "textual"), textual / "widgets" / "fancy.py")
-        self.assertEqual(sorted(self.lock(textual)), ["widgets/gauge"])
+        marketplace.install("fancy", "project", str(self.tmp))
+        project = self.tmp / ".minimal" / "extensions"
+        self.assertEqual(self.lock(project)["widgets/fancy"]["commit"], marketplace.releases("fancy")[0].commit)
+        self.assertEqual(marketplace.uninstall("fancy", "global", str(self.tmp), "widgets"), self.global_dir / "widgets" / "fancy.py")
+        self.assertFalse((self.global_dir / ".lock.json").exists())
 
-    def test_an_older_version_of_a_frontend_item_is_found_by_its_path(self):
-        self.push_file("textual/widgets/fancy.py", item("A fancy widget.", "textual", "# v1\n"))
+    def test_an_older_version_of_an_item_is_found_by_its_path(self):
+        self.push_file("widgets/fancy.py", item("A fancy widget.", extra="# v1\n"))
         old = self.head()
-        newer = item("A fancy widget.", "textual", "# v2\n").replace('__api__ = "2"', '__api__ = "9"')
-        self.push_file("textual/widgets/fancy.py", newer)
-        [release] = marketplace.releases("fancy", folder="textual")
+        newer = item("A fancy widget.", extra="# v2\n").replace('__api__ = "2"', '__api__ = "9"')
+        self.push_file("widgets/fancy.py", newer)
+        [release] = marketplace.releases("fancy")
         self.assertEqual((release.commit, release.newer.api), (old, "9"))
-        dest, _ = marketplace.install("fancy", folder="textual")
+        dest, _ = marketplace.install("fancy")
         self.assertIn("# v1", dest.read_text())
-        self.assertEqual(self.lock(self.home_extensions / "textual")["widgets/fancy"]["commit"], old)
+        self.assertEqual(self.lock()["widgets/fancy"]["commit"], old)
 
-    def test_publish_files_an_item_in_the_folder_of_the_running_frontend(self):
+    def test_publish_files_an_item_in_its_category_folder(self):
         real_git = shutil.which("git")
         local = self.tmp / "widgets" / "fancy.py"
         local.parent.mkdir()
-        local.write_text(item("A fancy widget.", "textual"))
+        local.write_text(item("A fancy widget."))
         with mock.patch.object(marketplace.shutil, "which", lambda cmd: real_git if cmd == "git" else None):
-            marketplace.publish(local, folder="textual")
-        self.assertEqual(self.published_files(), ["console/extensions/hello.py", "textual/widgets/fancy.py"])
-
-    def test_publish_refuses_an_item_of_another_frontend(self):
-        local = self.tmp / "fancy.py"
-        local.write_text(item("Textual only.", "textual"))
-        with self.assertRaisesRegex(ValueError, r"sets __frontend__ = 'textual'.*belongs in the marketplace's textual/ folder"):
-            marketplace.publish(local)  # published from the console
-        with self.assertRaisesRegex(ValueError, "invalid frontend folder"):
-            marketplace.publish(local, folder="../x")
+            marketplace.publish(local)
+        self.assertEqual(self.published_files(), ["extensions/hello.py", "widgets/fancy.py"])
 
 
 class CheckTest(unittest.TestCase):
     def test_marketplace_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            folder = root / "console" / "extensions"
+            folder = root / "extensions"
             folder.mkdir(parents=True)
             (folder / "hello.py").write_text(HELLO)
             (folder / "nodoc.py").write_text('__version__ = "1.0"\n__api__ = "2"\n\ndef register(minimal):\n    pass\n')
@@ -826,10 +791,10 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                f"FAIL console/extensions/future: written for minimal API 9, this minimal has API {API_VERSION}: install a version of it made for API 2",
-                "ok   console/extensions/hello 1.0",
-                "WARN console/extensions/needs: needs not_installed_anywhere",
-                "FAIL console/extensions/nodoc: add a module docstring; its first line is the marketplace description",
+                f"FAIL extensions/future: written for minimal API 9, this minimal has API {API_VERSION}: install a version of it made for API 2",
+                "ok   extensions/hello 1.0",
+                "WARN extensions/needs: needs not_installed_anywhere",
+                "FAIL extensions/nodoc: add a module docstring; its first line is the marketplace description",
             ],
         )
 
@@ -841,24 +806,6 @@ class CheckTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(line.startswith("FAIL "), line)
         self.assertIn("does_not_exist", line)
-
-    def test_check_fails_textual_import_without_frontend(self):
-        body = '"""Widget."""\n__version__ = "1.0"\n__api__ = "2"\n{}\nfrom textual.widgets import Static\n\n\ndef register(minimal):\n    pass\n'
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp, "widgets", "w.py")
-            path.parent.mkdir()
-            path.write_text(body.format(""))
-            lines, ok = marketplace.check([path])
-            self.assertEqual(
-                (lines, ok), (['FAIL widgets/w: imports textual without __frontend__ = "textual"'], False)
-            )
-            path.write_text(body.format('__frontend__ = "textual"'))
-            [line], ok = marketplace.check([path])
-        self.assertTrue(ok, line)
-        installed = importlib.util.find_spec("textual") is not None
-        self.assertEqual(
-            line, "ok   widgets/w 1.0" + ("" if installed else " (static checks only: textual is not installed)")
-        )
 
     def test_import_error_naming_a_missing_module_warns(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -890,110 +837,54 @@ class CheckTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(source)
 
-    def test_checkout_checks_the_items_of_every_frontend_folder_and_ignores_the_rest(self):
+    def test_checkout_checks_the_items_of_every_category_folder_and_ignores_the_rest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.write_checkout(
                 root,
                 {
-                    "console/extensions/hello.py": HELLO,
-                    "web/widgets/gauge.py": item("A gauge."),
-                    "textual/widgets/fancy.py": item("Fancy.", "textual", "from textual.widgets import Static\n"),
-                    "textual/widgets/pkg/__init__.py": item("A package.", "textual"),
-                    # Not items: a Python package, tests, another language's sources and a virtualenv.
-                    "textual/src/minimal_textual/__init__.py": "this is not python (",
-                    "textual/tests/widgets/test_x.py": "this is not python (",
-                    "textual/.venv/widgets/z.py": "this is not python (",
-                    "web/package.json": "{}\n",
-                    "web/src/widgets/x.py": "this is not python (",
+                    "extensions/hello.py": HELLO,
+                    "widgets/gauge.py": item("A gauge."),
+                    "tools/pkg/__init__.py": item("A package."),
+                    # Not items: outside the category folders, tests, and a virtualenv.
+                    "src/pkg/__init__.py": "this is not python (",
+                    "other/widgets/x.py": "this is not python (",
+                    ".venv/widgets/z.py": "this is not python (",
                     "README.md": "# marketplace\n",
                 },
             )
-            with mock.patch.object(marketplace, "_missing", return_value=True):
-                lines, ok = marketplace.check([root])
-        self.assertEqual(
-            lines,
-            [
-                "ok   console/extensions/hello 1.0",
-                "ok   textual/widgets/fancy 1.0 (static checks only: textual is not installed)",
-                "ok   textual/widgets/pkg 1.0 (static checks only: textual is not installed)",
-                "ok   web/widgets/gauge 1.0",
-            ],
-        )
+            lines, ok = marketplace.check([root])
+        self.assertEqual(lines, ["ok   extensions/hello 1.0", "ok   tools/pkg 1.0", "ok   widgets/gauge 1.0"])
         self.assertTrue(ok)
 
-    def test_a_textual_item_is_loaded_when_textual_is_importable(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            # No textual import of its own: this runs the same wherever textual really is.
-            self.write_checkout(root, {"textual/widgets/fancy.py": item("Fancy.", "textual")})
-            with mock.patch.object(marketplace, "_missing", return_value=False):
-                self.assertEqual(marketplace.check([root]), (["ok   textual/widgets/fancy 1.0"], True))
-
-    def test_static_checks_of_a_textual_item_still_fail_on_a_syntax_error_in_a_package_file(self):
+    def test_a_syntax_error_in_a_package_file_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.write_checkout(
                 root,
                 {
-                    "textual/widgets/pkg/__init__.py": item("A package.", "textual", "from . import more\n"),
-                    "textual/widgets/pkg/more.py": "def broken(:\n",
+                    "widgets/pkg/__init__.py": item("A package.", extra="from . import more\n"),
+                    "widgets/pkg/more.py": "def broken(:\n",
                 },
             )
-            with mock.patch.object(marketplace, "_missing", return_value=True):
-                [line], ok = marketplace.check([root])
+            [line], ok = marketplace.check([root])
         self.assertFalse(ok)
-        self.assertTrue(line.startswith("FAIL textual/widgets/pkg: SyntaxError"), line)
+        self.assertTrue(line.startswith("FAIL widgets/pkg: SyntaxError"), line)
 
-    def test_an_item_that_sets_a_frontend_must_be_in_that_frontends_folder(self):
+    def test_a_name_may_exist_in_every_category_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.write_checkout(
-                root,
-                {
-                    "textual/widgets/a.py": item("No frontend."),  # fine: the folder says it
-                    "textual/widgets/b.py": item("Another frontend.", "web"),
-                    "console/widgets/c.py": item("A textual one in the console.", "textual"),
-                    "web/widgets/d.py": item("With a toolkit.", extra="import textual\n"),
-                    "web/widgets/e.py": item("Its own.", "web"),
-                },
-            )
-            with mock.patch.object(marketplace, "_missing", return_value=True):
-                lines, ok = marketplace.check([root])
-        self.assertFalse(ok)
-        self.assertEqual(
-            lines,
-            [
-                "FAIL console/widgets/c: it sets __frontend__ = 'textual' but is in console/; move it to textual/ or fix __frontend__",
-                "ok   textual/widgets/a 1.0",
-                "FAIL textual/widgets/b: it sets __frontend__ = 'web' but is in textual/; move it to web/ or fix __frontend__",
-                'FAIL web/widgets/d: imports textual without __frontend__ = "textual"',
-                "ok   web/widgets/e 1.0",
-            ],
-        )
-
-    def test_a_single_item_path_has_no_folder_rule(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_checkout(root, {"console/widgets/a.py": item("A textual one.", "textual")})
-            with mock.patch.object(marketplace, "_missing", return_value=True):
-                self.assertEqual(
-                    marketplace.check([root / "console" / "widgets" / "a.py"]),
-                    (["ok   widgets/a 1.0 (static checks only: textual is not installed)"], True),
-                )
-
-    def test_a_name_may_exist_in_every_frontend_folder(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_checkout(root, {"console/tools/dup.py": item("Console."), "web/tools/dup.py": item("Web.")})
-            self.assertEqual(marketplace.check([root]), (["ok   console/tools/dup 1.0", "ok   web/tools/dup 1.0"], True))
+            self.write_checkout(root, {"extensions/dup.py": item("Extension."), "tools/dup.py": item("Tool.")})
+            self.assertEqual(marketplace.check([root]), (["ok   extensions/dup 1.0", "ok   tools/dup 1.0"], True))
 
     def test_a_folder_without_a_category_folder_is_not_a_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.write_checkout(Path(tmp), {"hello.py": HELLO, "shared/old.txt": "x", "web/package.json": "{}\n"})
+            self.write_checkout(Path(tmp), {"hello.py": HELLO, "shared/old.txt": "x"})
             [line], ok = marketplace.check([Path(tmp)])
         self.assertFalse(ok)
-        self.assertIn("not a marketplace checkout (no <frontend>/<category>/ folder)", line)
+        self.assertIn(
+            "not an extension, and not a marketplace checkout (no extensions/, themes/, tools/ or widgets/ folder)", line
+        )
 
 
 NEEDS_DEPS = '''"""Needs packages."""
@@ -1016,14 +907,14 @@ class DependenciesTest(unittest.TestCase):
 
     def test_malformed_dependencies_fail_the_check(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp, "console", "extensions")
+            root = Path(tmp, "extensions")
             root.mkdir(parents=True)
             (root / "option.py").write_text(NEEDS_DEPS.replace("DEPS", '["--index-url=evil"]'))
             (root / "url.py").write_text(NEEDS_DEPS.replace("DEPS", '["pkg @ https://example.com/pkg.zip"]'))
             (root / "string.py").write_text(NEEDS_DEPS.replace("DEPS", '"x"'))
             lines, ok = marketplace.check([Path(tmp)])
         self.assertFalse(ok)
-        expected = 'FAIL console/extensions/{}: __dependencies__ must be a list of package requirements such as "termaid>=0.3"; got {}'
+        expected = 'FAIL extensions/{}: __dependencies__ must be a list of package requirements such as "termaid>=0.3"; got {}'
         self.assertEqual(
             lines,
             [

@@ -330,27 +330,8 @@ class LogoSpec:
     align: str = "center"
 
 
-@dataclass
-class FrontendSpec:
-    """A user interface minimal can run in, chosen with ``--ui`` or the ``ui`` setting (see :meth:`Registry.register_frontend`).
-
-    Attributes:
-        name: Unique name; registering the same name again replaces it.
-        run: Called as ``run(host)`` with the :class:`~minimal.core.host.Host`; returns when the user quits.
-        description: One line for ``minimal --help`` and the error that lists the frontends.
-        toolkit: The UI toolkit it draws with (``"textual"``), or ``""`` for none. The frontend's folder
-            (:func:`~minimal.extensions.loader.frontend_folder`) is its toolkit, else its name: it names the
-            extension folders that load under it, and extensions whose ``__frontend__`` is another folder do not.
-    """
-
-    name: str
-    run: Callable[[Any], None]
-    description: str = ""
-    toolkit: str = ""
-
-
 class Registry:
-    """Collects tools, commands, providers, prompt additions, event handlers, widgets, status segments, themes, the logo and frontends.
+    """Collects tools, commands, providers, prompt additions, event handlers, widgets, status segments, themes, the logo, panels and renderers.
 
     Attributes:
         tools: Tools offered to the model, by name, in registration order.
@@ -363,8 +344,7 @@ class Registry:
         status: Status-line segments for the terminal UI, by name.
         themes: Colour themes for the terminal UI, by name.
         logo: Pixel art for the welcome header, or ``None`` for the built-in wordmark.
-        frontends: User interfaces, by name (``console`` is built in; ``tui`` comes from the minimal-textual package).
-        panels: Styled-text panels any frontend can draw, by name.
+        panels: Styled-text panels for the terminal UI, by name.
         renderers: Transcript block renderers, by kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``).
     """
 
@@ -378,7 +358,6 @@ class Registry:
         self.status: dict[str, StatusSpec] = {}
         self.themes: dict[str, ThemeSpec] = {}
         self.logo: LogoSpec | None = None
-        self.frontends: dict[str, FrontendSpec] = {}
         self.panels: dict[str, PanelSpec] = {}
         self.renderers: dict[str, RendererSpec] = {}
         self._handlers: dict[str, list[EventHandler]] = {}
@@ -400,7 +379,6 @@ class Registry:
         self.status.clear()
         self.themes.clear()
         self.logo = None
-        self.frontends.clear()
         self.panels.clear()
         self.renderers.clear()
         self._handlers.clear()
@@ -456,25 +434,6 @@ class Registry:
             raise ValueError("register_builtin_command: run is required")
         self.builtin_commands[name] = Command(run, description, terminal, builtin=True)
 
-    def register_frontend(
-        self, name: str, run: Callable[[Any], None], description: str = "", toolkit: str = ""
-    ) -> None:
-        """Add a user interface, run as ``run(host)`` when ``--ui name`` (or the ``ui`` setting) picks it.
-
-        ``run`` installs its :class:`~minimal.core.app.Frontend` with ``host.attach(frontend)`` and
-        drives minimal through the :class:`~minimal.core.host.Host` until the user quits.
-        ``toolkit`` names the UI toolkit it draws with (``"textual"``) and with it the folder of extensions
-        that load under this frontend (its name if empty); extensions with another ``__frontend__`` do not.
-
-        Raises:
-            ValueError: if ``name`` is empty, ``run`` is not callable or ``toolkit`` is not a string.
-        """
-        if not name or not callable(run):
-            raise ValueError("register_frontend: name and run are required")
-        if not isinstance(toolkit, str):
-            raise ValueError("register_frontend: toolkit must be a string")
-        self.frontends[name] = FrontendSpec(name, run, description, toolkit)
-
     def register_widget(
         self, name: str, create: Callable[[Any], Any], area: str = "sidebar"
     ) -> None:
@@ -493,8 +452,7 @@ class Registry:
         after each tool result is shown (``{"kind": "tool_result", "call": dict,
         "result": dict}``, where ``result`` is the ``tool_result`` block).
 
-        The extension must set ``__frontend__ = "textual"``: the widget is a Textual widget. A
-        :meth:`register_panel` draws in any frontend.
+        The widget is a Textual widget; a :meth:`register_panel` needs no Textual code.
 
         Raises:
             ValueError: if ``name`` is empty, ``create`` is not callable or ``area`` is unknown.
@@ -637,7 +595,7 @@ class Registry:
         ``" "`` and ``"."`` are transparent. Two pixel rows make one terminal
         row (drawn with half blocks), so pixels are roughly square. ``colors``
         maps every other character to ``#rrggbb`` or a theme variable
-        (``$accent``, ``$foreground``, ``$muted``, … see ``minimal_textual.theme``),
+        (``$accent``, ``$foreground``, ``$muted``, … see ``minimal.ui.tui.theme``),
         so the art can follow ``/theme``. Lines wider than the terminal are clipped.
         ``align`` places the logo and the header text under it: ``"left"``,
         ``"center"`` (default) or ``"right"``.
