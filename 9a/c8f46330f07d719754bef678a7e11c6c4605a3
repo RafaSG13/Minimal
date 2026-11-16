@@ -1,0 +1,30 @@
+.github/workflows/ci.yml
+  h_e81853c41416fb 23-24
+README.md
+  h_e81853c41416fb 336
+pyproject.toml
+  h_e81853c41416fb 27-31
+src/minimal/core/app.py
+  h_e81853c41416fb 459,464
+src/minimal/providers/base.py
+  h_e81853c41416fb 34,128-130,138-154
+src/minimal/providers/gemini.py
+  h_e81853c41416fb 269-270
+src/minimal/providers/openai.py
+  h_e81853c41416fb 192-193
+tests/test_providers.py
+  h_e81853c41416fb 2,6,9-11,13,309-332
+uv.lock
+  h_e81853c41416fb 994-1005,1017-1020,1024
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "9ac8f46330f07d719754bef678a7e11c6c4605a3",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
