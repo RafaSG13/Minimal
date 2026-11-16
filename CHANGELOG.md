@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+### Breaking
+
+- Extension API 2.0: the theme names of `minimal.api.theme` (`DEFAULT`, `MINIMAL`, `build`, `available`) were removed:
+  the colour themes are internal to the terminal UI (`minimal.ui.tui.theme`), and importing the old names says so
+  (`minimal.api.REMOVED`). Removing names is a major version, so extensions declare `__api__ = "2"`; those written for
+  API 1 stop loading until a version for 2 is installed.
 
 ### Added
 
@@ -20,10 +27,6 @@
 - The Textual UI stays part of minimal (`textual` is a dependency) and is its only interface: `minimal` always opens it.
   `cli` imports Textual only when the UI opens, so `minimal --help` and `--login` do not load it. Extensions live flat
   in `~/.minimal/extensions/` and `./.minimal/extensions/`, and the marketplace is flat (`<category>/`), as in 0.4.
-- **Breaking, extension API 2.0:** the theme names of `minimal.api.theme` (`DEFAULT`, `MINIMAL`, `build`, `available`)
-  were removed: the colour themes are internal to the terminal UI (`minimal.ui.tui.theme`), and importing the old names
-  says so (`minimal.api.REMOVED`). Removing names is a major version, so extensions declare `__api__ = "2"`; those
-  written for API 1 stop loading until a version for 2 is installed.
 - A status segment's `render(ctx)` may return styled text (a string, a `(text, style)` tuple or a list of them); the
   terminal UI still accepts a `textual.content.Content`. `extensions/example.py` uses a panel instead of a widget.
 - `edit` and `write` refuse a file that changed on disk since the model last read, wrote or edited it in this session

@@ -13,7 +13,7 @@ Packages, from the bottom up; a package imports only from the ones above it in t
 Extensions import only from :mod:`minimal.api`.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 API_VERSION = "2.0"
 """Version of :mod:`minimal.api`, separate from :data:`__version__`: ``MAJOR.MINOR``.
