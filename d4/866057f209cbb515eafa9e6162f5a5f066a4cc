@@ -1,0 +1,24 @@
+src/minimal/api.py
+  h_e81853c41416fb 49,62-63
+src/minimal/core/app.py
+  h_e81853c41416fb 460-463
+src/minimal/extensions/audit.py
+  h_e81853c41416fb 45
+src/minimal/providers/__init__.py
+  h_e81853c41416fb 19,25
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 381-495
+tests/test_providers.py
+  h_e81853c41416fb 158-161,163-164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d4866057f209cbb515eafa9e6162f5a5f066a4cc",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
