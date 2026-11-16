@@ -159,7 +159,7 @@ class Extension:
         id: ``name`` or ``category/name`` (``tools/subagent``): the key of its settings
             and of ``extensions.disabled``.
         path: The ``.py`` file or package folder.
-        scope: ``"global"``, ``"project"`` or ``"cli"`` (``--ext``).
+        scope: ``"global"``, ``"project"``, ``"cli"`` (``--ext``) or ``"bundled"`` (shipped inside minimal).
         version: Its ``__version__``; ``""`` if unset.
     """
 

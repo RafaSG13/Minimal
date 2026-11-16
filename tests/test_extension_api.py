@@ -101,6 +101,29 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("ValueError: unknown event 'bogus'", errors[0])
 
+    def test_marketplace_tools_are_a_bundled_extension_the_user_can_disable(self):
+        tools = ("ext_search", "ext_install", "ext_publish")
+        loaded, errors = self.app.reload_extensions()
+        self.assertEqual((loaded, errors), ([], []))  # a reload reports the user's extensions, not the bundled ones
+        self.assertTrue(all(name in self.app.registry.tools for name in tools))
+        self.assertIn("ext_search, ext_install and ext_publish", self.app.system_prompt())
+
+        config.SETTINGS_FILE.write_text(json.dumps({"extensions": {"disabled": ["marketplace_tools"]}}))
+        self.assertEqual(self.app.reload_extensions(), ([], []))
+        self.assertFalse(any(name in self.app.registry.tools for name in tools))
+        self.assertNotIn("ext_search", self.app.system_prompt())
+
+    def test_a_user_extension_can_replace_a_bundled_tool_by_name(self):
+        self.extension(
+            "mine.py",
+            """
+            def register(minimal):
+                minimal.register_tool("ext_search", lambda input, ctx: "mine", "My search.")
+            """,
+        )
+        self.assertEqual(self.app.reload_extensions()[1], [])
+        self.assertEqual(self.app.registry.tools["ext_search"].run({}, self.app.context), "mine")
+
     def test_add_provider_registers_a_ready_made_spec_and_validates_it(self):
         self.extension(
             "ollama.py",

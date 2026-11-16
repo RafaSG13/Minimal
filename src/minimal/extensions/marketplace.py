@@ -1162,7 +1162,8 @@ def _known_marketplace(url: str | None) -> str | None:
     return url
 
 
-def _ext_search(input: dict, ctx: Any) -> str:
+def ext_search_tool(input: dict, ctx: Any) -> str:
+    """The model's ``ext_search``: one line per matching extension of every marketplace (registered by ``marketplace_tools``)."""
     category = input.get("category")
     if category:
         loader.category_dir(
@@ -1188,7 +1189,8 @@ def _ext_search(input: dict, ctx: Any) -> str:
     return "\n".join(lines) or "No extensions found."
 
 
-def _ext_install(input: dict, ctx: Any) -> str:
+def ext_install_tool(input: dict, ctx: Any) -> str:
+    """The model's ``ext_install`` (registered by ``marketplace_tools``)."""
     name, category = input["name"], input.get("category")
     url = _known_marketplace(input.get("marketplace"))
     if url is None:
@@ -1218,114 +1220,12 @@ def _ext_install(input: dict, ctx: Any) -> str:
     return f"{done} {msg + ' ' if msg else ''}Call reload_extensions to activate it."
 
 
-def _ext_publish(input: dict, ctx: Any) -> str:
+def ext_publish_tool(input: dict, ctx: Any) -> str:
+    """The model's ``ext_publish`` (registered by ``marketplace_tools``)."""
     url = _known_marketplace(input.get("marketplace")) or marketplace_url()
     return publish(
         Path(ctx.cwd, input["path"]),
         input.get("name"),
         url=url,
         category=input.get("category"),
-    )
-
-
-_CATEGORY_SCHEMA = {
-    "type": "string",
-    "enum": list(loader.CATEGORIES),
-    "description": "extensions (general), themes (colour themes), tools (tools for you) or widgets (UI components)",
-}
-
-_MARKETPLACE_SCHEMA = {
-    "type": "string",
-    "description": "Marketplace URL, as listed by ext_search",
-}
-
-
-def register_marketplace_tools(registry: Registry) -> None:
-    """Add ``ext_search``, ``ext_install`` and ``ext_publish`` to ``registry``."""
-    registry.register_tool(
-        name="ext_search",
-        run=_ext_search,
-        description=(
-            "Search every configured minimal extension marketplace. Returns one line per extension: "
-            "category/name, version and description, prefixed by the marketplace when there are several. "
-            "Check it before writing a new extension; one may already exist."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Words to match in the name or description; empty lists everything",
-                },
-                "category": _CATEGORY_SCHEMA,
-            },
-        },
-    )
-    registry.register_tool(
-        name="ext_install",
-        run=_ext_install,
-        description=(
-            "Install an extension from a marketplace into the global (default) or project extensions folder, "
-            "in the subfolder of its category: the newest version written for this minimal's API. It is not "
-            "active until you call reload_extensions. An installed copy with local changes is not overwritten "
-            "unless force is true."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Extension name, as listed by ext_search",
-                },
-                "scope": {
-                    "type": "string",
-                    "enum": ["global", "project"],
-                    "description": "global (every project, default) or project (this folder only)",
-                },
-                "category": {
-                    **_CATEGORY_SCHEMA,
-                    "description": "Needed only if the name is in several categories",
-                },
-                "marketplace": {
-                    **_MARKETPLACE_SCHEMA,
-                    "description": "Needed only if several marketplaces have the name",
-                },
-                "force": {
-                    "type": "boolean",
-                    "description": "Overwrite an installed copy that has local changes (default false)",
-                },
-            },
-            "required": ["name"],
-        },
-        confirm=True,
-    )
-    registry.register_tool(
-        name="ext_publish",
-        run=_ext_publish,
-        description=(
-            "Publish an extension file or package folder to a marketplace: pushes a new branch and opens a pull "
-            "request. It must define register(minimal), start with a docstring (its first line is the description) "
-            "and set __version__. It goes in the category of its folder (for example "
-            "~/.minimal/extensions/themes) unless one is given; in the marketplace it is filed under <category>/."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The extension file or package folder",
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Name to publish under (default: the file name)",
-                },
-                "category": _CATEGORY_SCHEMA,
-                "marketplace": {
-                    **_MARKETPLACE_SCHEMA,
-                    "description": "Where to publish (default: $MINIMAL_MARKETPLACE or the default)",
-                },
-            },
-            "required": ["path"],
-        },
-        confirm=True,
     )

@@ -15,7 +15,7 @@ from minimal.core.app import App, ConsoleFrontend
 from minimal.core.host import Host
 from minimal.core.session import TORN_NOTICE, Session, last_session, new_id, open_session
 from minimal.extensions import marketplace
-from minimal.extensions.loader import load_extensions
+from minimal.extensions.loader import load_bundled, load_extensions
 from minimal.extensions.registry import Registry
 from minimal.providers import login_provider, register_builtin_providers
 from minimal.tools.builtin import register_builtin_tools
@@ -217,7 +217,7 @@ def ext_cli(args: list[str]) -> None:
         registry = Registry()
         register_builtin_tools(registry)
         register_builtin_providers(registry)
-        marketplace.register_marketplace_tools(registry)
+        load_bundled(registry, config.Settings(()), os.getcwd())
         register_builtin_commands(registry)
         return registry
 

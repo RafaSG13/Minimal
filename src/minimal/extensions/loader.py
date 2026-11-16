@@ -49,6 +49,9 @@ GLOBAL_EXTENSIONS_DIR = Path.home() / ".minimal" / "extensions"
 CATEGORIES = ("extensions", "themes", "tools", "widgets")
 """Marketplace categories: ``extensions`` live in an extensions folder itself, the others in a subfolder."""
 
+BUNDLED_DIR = Path(__file__).resolve().parent.parent / "bundled"
+"""First-party extensions shipped inside minimal: loaded before every other one (:func:`load_bundled`)."""
+
 
 def global_extensions_dir() -> Path:
     """Extensions loaded in every project."""
@@ -362,6 +365,27 @@ def load_sources(
     return loaded, errors
 
 
+def load_bundled(registry: Registry, settings: config.Settings, cwd: str) -> list[str]:
+    """Load minimal's own extensions (:data:`BUNDLED_DIR`) into ``registry``, except the ``disabled`` ones.
+
+    They are first-party code that ships with minimal, so they need no ``/trust``, are not part of the
+    ``loaded`` list a reload reports, and are turned off like any extension, by id in ``extensions.disabled``.
+
+    Returns:
+        One ``"<path>: <ErrorType>: <message>"`` line per one that failed, plus one per setting it rejected.
+    """
+    errors: list[str] = []
+    sources: list[tuple[ExtensionSource, str]] = []
+    for path in category_entries(BUNDLED_DIR, "extensions")[0]:
+        if ext_id(path) in settings.disabled:
+            continue
+        try:
+            sources += [(s, "bundled") for s in read_extensions([path])]
+        except OSError as e:
+            errors.append(f"{path}: {type(e).__name__}: {e}")
+    return errors + load_sources(registry, sources, settings, cwd)[1]
+
+
 def load_extensions(
     registry: Registry,
     cwd: str,
@@ -369,7 +393,7 @@ def load_extensions(
     extra: Iterable[str | Path] = (),
     project: Iterable[ExtensionSource] = (),
 ) -> tuple[list[Path], list[str]]:
-    """Load every extension found and let it register into ``registry``.
+    """Load minimal's bundled extensions (:func:`load_bundled`), then every extension found, into ``registry``.
 
     Args:
         registry: What each extension's ``register(minimal)`` registers into.
@@ -384,7 +408,7 @@ def load_extensions(
         ``(loaded, errors)`` as from :func:`load_sources`, plus ``"<path>: not found"``
         for a missing ``extra`` entry and one error per ``x.py``/``x/`` clash.
     """
-    errors: list[str] = []
+    errors: list[str] = load_bundled(registry, settings, cwd)
     sources: list[tuple[ExtensionSource, str]] = []
     disabled = settings.disabled
     global_dir = global_extensions_dir()
