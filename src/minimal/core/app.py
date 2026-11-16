@@ -457,7 +457,10 @@ class App:
         """
         spec = self.registry.providers.get(name)
         if spec is None:
-            raise ValueError(f"unknown provider: {name} (available: {', '.join(self.registry.providers)})")
+            raise ValueError(
+                f"unknown provider: {name} (available: {', '.join(self.registry.providers)}; "
+                "an extension can add one: /ext, or `minimal ext install <name>`)"
+            )
         problem = spec.missing_sdk() or spec.missing_credentials()
         if problem:
             raise ValueError(problem)

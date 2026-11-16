@@ -13,7 +13,6 @@ from minimal.extensions.registry import Registry
 from minimal.providers import login_provider
 from minimal.providers.anthropic import AnthropicProvider
 from minimal.providers.base import ProviderSpec, Usage
-from minimal.providers.claude import CLAUDE_CODE_IDENTITY, ClaudeProvider
 from minimal.providers.gemini import read_stream, to_interaction_input, to_reply
 from minimal.providers.openai import OpenAIProvider, openai_compatible, read_chunks, to_chat_messages
 
@@ -156,13 +155,13 @@ class AnthropicRequestTest(unittest.TestCase):
         self.assertTrue(all(set(m) == {"role", "content"} for m in sent["messages"]))
         self.assertEqual(sent["system"], "s")
 
-    def test_claude_sends_identity_block_first(self):
+    def test_identity_is_sent_as_its_own_first_system_block(self):
+        class Subclass(AnthropicProvider):
+            identity = "Who I am."
+
         sent, client = self.capture()
-        ClaudeProvider(client=client).stream(model="m", system="s", messages=HISTORY, tools=[], on_text=None)
-        self.assertEqual(
-            sent["system"],
-            [{"type": "text", "text": CLAUDE_CODE_IDENTITY}, {"type": "text", "text": "s"}],
-        )
+        Subclass(client=client).stream(model="m", system="s", messages=HISTORY, tools=[], on_text=None)
+        self.assertEqual(sent["system"], [{"type": "text", "text": "Who I am."}, {"type": "text", "text": "s"}])
 
     def test_usage_counts_cached_tokens_as_input(self):
         usage = NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=100, cache_creation_input_tokens=None)

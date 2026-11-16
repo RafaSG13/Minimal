@@ -46,6 +46,7 @@ from minimal.extensions.registry import (
     styled_line,
     styled_lines,
 )
+from minimal.providers.anthropic import AnthropicProvider
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage, result_text
 from minimal.providers.openai import openai_compatible
 from minimal.tools.search import glob_regex
@@ -58,7 +59,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "API_VERSION", "EVENTS", "STATUS_SIDES", "STYLES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
-    "AfterResponseEvent", "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "PanelSpec", "Provider",
+    "AfterResponseEvent", "AnthropicProvider", "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "PanelSpec",
+    "Provider",
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
     "ShutdownEvent", "Tool",
     "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",

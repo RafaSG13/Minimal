@@ -42,7 +42,7 @@ _IMPORTS = {
         "poplib", "imaplib", "telnetlib", "xmlrpc", "websocket", "websockets", "paramiko",
     ),
     "dynamic": ("importlib", "ctypes", "cffi", "marshal", "pickle", "runpy"),
-    "secrets": ("minimal.config", "minimal.providers.claude_auth", "keyring"),
+    "secrets": ("minimal.config", "keyring"),
 }  # fmt: skip
 
 _CALLS = {

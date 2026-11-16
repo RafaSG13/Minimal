@@ -16,13 +16,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from minimal.providers import anthropic, claude, gemini, openai
+from minimal.providers import anthropic, gemini, openai
 from minimal.providers.base import ProviderSpec
 
 if TYPE_CHECKING:
     from minimal.extensions.registry import Registry
 
-BUILTIN_PROVIDERS = (anthropic.SPEC, claude.SPEC, gemini.SPEC, openai.SPEC)
+BUILTIN_PROVIDERS = (anthropic.SPEC, gemini.SPEC, openai.SPEC)
 
 
 def register_builtin_providers(registry: Registry) -> None:
