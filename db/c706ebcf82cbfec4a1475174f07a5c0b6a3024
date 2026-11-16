@@ -1,0 +1,22 @@
+README.md
+  h_e81853c41416fb 315
+docs/extensions.md
+  h_e81853c41416fb 299,302
+scripts/logo.py
+  h_e81853c41416fb 1-5,10-11,13,101,119,122
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 605
+tests/test_logo.py
+  h_e81853c41416fb 8-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "dbc706ebcf82cbfec4a1475174f07a5c0b6a3024",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
