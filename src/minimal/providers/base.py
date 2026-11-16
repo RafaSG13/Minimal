@@ -31,6 +31,7 @@ it reads it; every other provider rebuilds the turn from ``content``.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
@@ -124,6 +125,14 @@ class ProviderSpec:
             Setup saves a key entered by the user under the first one, so list the
             name the SDK prefers first.
         description: One line shown by ``/provider``.
+        sdk: Top-level module of the SDK :attr:`create` imports, when it is an optional dependency
+            (``"openai"``). Empty if there is none to check.
+        install: What the user installs to get :attr:`sdk` (``"mnml-agent[openai]"``); shown when it is missing.
+        login: Signs the user in (a browser flow, a device code…), blocking and printing its instructions to the
+            terminal; raises ``ValueError`` (a message for the user) if it fails. Providers authenticated by an
+            ``env_keys`` key leave it ``None``. With it, ``minimal --login [name]``, ``/login`` and setup offer to sign in.
+        logout: Forgets the sign-in (``minimal --logout [name]``, ``/logout``).
+        account: Who is signed in: an email or any short text, or ``None`` if nobody is. Setup shows it.
     """
 
     name: str
@@ -131,6 +140,26 @@ class ProviderSpec:
     default_model: str
     env_keys: tuple[str, ...] = ()
     description: str = ""
+    sdk: str = ""
+    install: str = ""
+    login: Callable[[], None] | None = None
+    logout: Callable[[], None] | None = None
+    account: Callable[[], str | None] | None = None
+
+    def missing_sdk(self) -> str | None:
+        """Return an error message if the optional SDK (:attr:`sdk`) is not installed, else ``None``."""
+        if not self.sdk:
+            return None
+        try:
+            if importlib.util.find_spec(self.sdk) is not None:
+                return None
+        except (ImportError, ValueError):  # a dotted name whose parent package is missing
+            pass
+        hint = self.install or self.sdk
+        return (
+            f"The {self.name} provider needs the {self.sdk} package, which is not installed: run "
+            f"`uv tool install --force '{hint}'` (or `pip install '{hint}'`)."
+        )
 
     def missing_credentials(self) -> str | None:
         """Return an error message if no credential variable is set, else ``None``."""

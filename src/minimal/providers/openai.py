@@ -16,11 +16,12 @@ user ``tool_result``            ``tool`` message (``tool_call_id``, ``content``)
 ==============================  =============================================
 
 The output-token limit is sent only when the request options set one (``max_tokens``), as
-``max_completion_tokens`` to OpenAI itself and as ``max_tokens`` when ``OPENAI_BASE_URL`` points
-elsewhere: the name of that parameter differs between servers. Usage is requested in the stream
-(``stream_options``), which the server must support.
+``max_completion_tokens`` to OpenAI itself and as ``max_tokens`` when ``OPENAI_BASE_URL`` (or the
+``base_url`` of :func:`openai_compatible`) points elsewhere: the name of that parameter differs between
+servers. Usage is requested in the stream (``stream_options``), which the server must support.
 
-Credentials: ``OPENAI_API_KEY`` (read by the SDK; local servers accept any value).
+Credentials: ``OPENAI_API_KEY`` (read by the SDK; local servers accept any value). A provider made by
+:func:`openai_compatible` reads its own variable, or needs none.
 """
 
 from __future__ import annotations
@@ -34,15 +35,25 @@ from minimal.providers.base import ProviderSpec, Reply, TextCallback, Usage, res
 
 
 class OpenAIProvider:
-    """Streams replies from an OpenAI-compatible Chat Completions API."""
+    """Streams replies from an OpenAI-compatible Chat Completions API.
 
-    name = "openai"
+    Args:
+        client: An ``openai.OpenAI``-like client; default: one built from the arguments below.
+        name: The provider's name.
+        base_url: The server; default: ``$OPENAI_BASE_URL``, else OpenAI.
+        api_key: The key; default: ``$OPENAI_API_KEY``.
+    """
 
-    def __init__(self, client: Any = None) -> None:
+    def __init__(
+        self, client: Any = None, *, name: str = "openai", base_url: str | None = None, api_key: str | None = None
+    ) -> None:
+        self.name = name
+        self.base_url = base_url
         if client is None:
             import openai
 
-            client = openai.OpenAI()
+            kwargs: dict[str, Any] = {k: v for k, v in (("base_url", base_url), ("api_key", api_key)) if v is not None}
+            client = openai.OpenAI(**kwargs)
         self.client = client
 
     def list_models(self) -> list[str]:
@@ -75,7 +86,7 @@ class OpenAIProvider:
                 for t in tools
             ]
         if options.get("max_tokens") is not None:
-            official = not os.environ.get("OPENAI_BASE_URL")
+            official = not (self.base_url or os.environ.get("OPENAI_BASE_URL"))
             kwargs["max_completion_tokens" if official else "max_tokens"] = options["max_tokens"]
         if options.get("temperature") is not None:
             kwargs["temperature"] = options["temperature"]
@@ -189,4 +200,43 @@ SPEC = ProviderSpec(
     default_model="gpt-5.5",
     env_keys=("OPENAI_API_KEY",),
     description="OpenAI-compatible Chat Completions (OpenAI; OpenRouter, Ollama, LM Studio via OPENAI_BASE_URL)",
+    sdk="openai",
+    install="mnml-agent[openai]",
 )
+
+
+def openai_compatible(
+    name: str, base_url: str, default_model: str, *, key_env: str | None = None, description: str = ""
+) -> ProviderSpec:
+    """A :class:`ProviderSpec` for one more OpenAI-compatible server, next to ``openai`` and to each other.
+
+    Register it with ``minimal.add_provider(openai_compatible(...))``. Unlike ``openai``, which reads
+    ``OPENAI_BASE_URL`` and ``OPENAI_API_KEY`` once per process, each one has its own server and key.
+
+    Args:
+        name: Name for ``--provider`` and ``/provider``.
+        base_url: The server's API root, e.g. ``"http://localhost:11434/v1"`` (Ollama).
+        default_model: Model used when none is given.
+        key_env: Environment variable holding the key. ``None``: the server needs none (a local one).
+        description: One line shown by ``/provider``.
+
+    Raises:
+        ValueError: if ``name``, ``base_url`` or ``default_model`` is empty.
+    """
+    if not (name and base_url and default_model):
+        raise ValueError("openai_compatible: name, base_url and default_model are required")
+
+    def create() -> OpenAIProvider:
+        # The SDK refuses an empty key, but a local server ignores whatever it is sent.
+        key = os.environ.get(key_env, "") if key_env else "not-needed"
+        return OpenAIProvider(name=name, base_url=base_url, api_key=key)
+
+    return ProviderSpec(
+        name=name,
+        create=create,
+        default_model=default_model,
+        env_keys=(key_env,) if key_env else (),
+        description=description or f"OpenAI-compatible server at {base_url}",
+        sdk="openai",
+        install="mnml-agent[openai]",
+    )

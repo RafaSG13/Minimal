@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Breaking
+
+- The `claude` provider (a Claude Pro/Max subscription through a browser login) is no longer built in: it is the
+  marketplace item `claude_subscription`. Install it with `minimal ext install claude_subscription` (or `/ext`), then
+  `minimal --login claude`. A login saved in `~/.minimal/claude-auth.json` moves to the item's data folder the first
+  time it is used; `provider: "claude"` in settings keeps working once the item is installed. `minimal.providers.claude`
+  and `minimal.providers.claude_auth` are gone.
+- `gemini` and `openai` are extras: `uv tool install 'mnml-agent[gemini]'`, `'mnml-agent[openai]'` or
+  `'mnml-agent[all]'`. `anthropic` stays a dependency. Picking a provider whose package is missing says what to install.
+- `minimal --login` and `--logout` take an optional provider name and act on any provider that has a login; with none
+  installed they say so. `/login` and `/logout` do the same for the current provider.
+- `python -m minimal.extensions.logo` is `scripts/logo.py` of the repository (`uv run scripts/logo.py IMAGE`): the
+  converter is not part of the installed package.
+
+### Added
+
+- Extension API 2.1 (additions only: every extension for API 2 keeps working). `minimal.add_provider(spec)` registers a
+  ready-made `ProviderSpec`, and `minimal.api.openai_compatible(name, base_url, default_model, key_env=None)` builds
+  one for an OpenAI-compatible server with its own URL and key (or none, for a local one): Ollama, OpenRouter and the
+  `openai` provider can all be registered at once. `ProviderSpec` gains `sdk` and `install` (the optional package it
+  imports and what installs it), and `login`, `logout` and `account` for providers that sign in instead of using a key.
+  `minimal.api.AnthropicProvider` is exported to subclass.
+- `minimal ext install [--project] [<category>/]<name>` installs one marketplace item from the command line (a global
+  install shows the static scan and asks first, as `/ext` does), so a provider that is not built in can be added before
+  the first start.
+
+### Changed
+
+- Setup asks through the `Frontend` (numbered lists on a console) and reads the key hidden with `getpass`;
+  `questionary` is no longer a dependency. A provider whose package is not installed is shown as needing it.
+- The model's `ext_search`, `ext_install` and `ext_publish` tools are registered by a bundled extension,
+  `marketplace_tools`, loaded like any other before the rest (scope `bundled`, not listed as loaded by a reload). Put
+  `marketplace_tools` in `extensions.disabled` to remove the tools and the sentence about them in the system prompt;
+  `/ext` is unaffected.
+- An unknown provider's error says an extension can add one.
+- A key saved in setup still wins over the same variable in the shell; docs/settings.md and the setup message now say
+  so.
+- CI installs the extras (`uv sync --locked --all-extras`).
+
 ## 0.5.0
 
 ### Breaking

@@ -266,4 +266,6 @@ SPEC = ProviderSpec(
     default_model="gemini-3.8-flash",
     env_keys=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     description="Google Gemini models via the Interactions API (free tier available)",
+    sdk="google.genai",
+    install="mnml-agent[gemini]",
 )

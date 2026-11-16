@@ -34,7 +34,6 @@ from minimal.extensions.loader import (
     project_extensions_dir,
     read_project_snapshot,
 )
-from minimal.extensions.marketplace import register_marketplace_tools
 from minimal.extensions.registry import Command, CommandRun, Registry, Tool
 from minimal.providers import register_builtin_providers
 from minimal.providers.base import Provider
@@ -114,8 +113,7 @@ SELF_EXTEND_PROMPT = (
     "'error') shows a notice; ctx.use_provider(name, model=None) switches provider; ctx.queue_user_message(text) "
     "sends text as the user's next message once the current turn ends; "
     "ctx.cancelled and ctx.check_cancelled() notice an interrupt. "
-    "After writing or editing an extension, call reload_extensions and fix any reported errors. "
-    "Share and reuse extensions with ext_search, ext_install and ext_publish."
+    "After writing or editing an extension, call reload_extensions and fix any reported errors."
 )
 
 
@@ -397,7 +395,7 @@ class App:
         return self.trust_project or config.load_trusted().get(project.key) == project.digest
 
     def reload_extensions(self) -> tuple[list[Path], list[str]]:
-        """Rebuild the registry: built-ins (tools, providers, commands), marketplace tools, then every extension from disk.
+        """Rebuild the registry: built-ins (tools, providers, commands), then every extension: the bundled ones, then those on disk.
 
         The registry is cleared in place, so a turn in progress sees the new
         tools on its next model request. The current provider instance keeps
@@ -430,7 +428,6 @@ class App:
         register_builtin_tools(self.registry)
         register_builtin_providers(self.registry)
         self._register_builtins()
-        register_marketplace_tools(self.registry)
         project = snapshot.sources if snapshot is not None and trusted else ()
         loaded, errors = load_extensions(self.registry, self.cwd, self.settings, self.extra_extensions, project=project)
         if read_error:
@@ -456,12 +453,15 @@ class App:
         The conversation is kept: history is stored in the provider-neutral format.
 
         Raises:
-            ValueError: if the provider is unknown or its credentials are missing.
+            ValueError: if the provider is unknown, its optional SDK is not installed or its credentials are missing.
         """
         spec = self.registry.providers.get(name)
         if spec is None:
-            raise ValueError(f"unknown provider: {name} (available: {', '.join(self.registry.providers)})")
-        problem = spec.missing_credentials()
+            raise ValueError(
+                f"unknown provider: {name} (available: {', '.join(self.registry.providers)}; "
+                "an extension can add one: /ext, or `minimal ext install <name>`)"
+            )
+        problem = spec.missing_sdk() or spec.missing_credentials()
         if problem:
             raise ValueError(problem)
         self.provider = spec.create()

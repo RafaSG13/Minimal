@@ -378,5 +378,120 @@ class ScopeFenceTest(BundledExtensionTest):
         self.assertEqual(planted.read_text(), before)
 
 
+CLAUDE = MARKETPLACE / "extensions" / "claude_subscription.py"
+
+
+@unittest.skipUnless(CLAUDE.is_file(), "the marketplace checkout has no claude_subscription item yet")
+class ClaudeSubscriptionTest(BundledExtensionTest):
+    def setUp(self):
+        super().setUp()
+        for patcher in (
+            mock.patch.object(config, "HOME_DIR", self.tmp / "home"),
+            mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.app = self.make_app("extensions/claude_subscription.py", session_mod.open_session("s"), [])
+        self.ext = sys.modules[loader.module_name(CLAUDE)]
+        self.legacy = self.tmp / "legacy" / "claude-auth.json"
+        patcher = mock.patch.object(self.ext, "LEGACY_AUTH_FILE", self.legacy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.spec = self.app.registry.providers["claude"]
+
+    def test_registers_a_provider_with_a_login_and_no_key(self):
+        self.assertEqual((self.spec.env_keys, self.spec.missing_credentials()), ((), None))
+        self.assertTrue(all(hook is not None for hook in (self.spec.login, self.spec.logout, self.spec.account)))
+        self.assertIsNone(self.spec.account())
+        with self.assertRaisesRegex(ValueError, "minimal --login claude"):
+            self.spec.create()
+
+    def test_login_round_trip(self):
+        import base64
+        import hashlib
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        ext, seen = self.ext, {}
+
+        def open_browser(url):
+            query = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+            seen.update(query)
+            self.assertEqual(query["code"], "true")
+            self.assertEqual(query["code_challenge_method"], "S256")
+            callback = query["redirect_uri"]
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(f"{callback}?code=abc&state=wrong", timeout=5)
+            self.assertEqual(caught.exception.code, 400)
+            caught.exception.close()
+            with urllib.request.urlopen(f"{callback}?code=abc&state={query['state']}", timeout=5) as response:
+                self.assertEqual(response.status, 200)
+            return True
+
+        token_request = mock.Mock(
+            return_value={"access_token": "a", "refresh_token": "r", "expires_in": 3600, "account": {"email_address": "u@x"}}
+        )
+        with mock.patch.object(ext, "_token_request", token_request), contextlib.redirect_stdout(io.StringIO()):
+            creds = ext.login(open_browser=open_browser, timeout=5)
+
+        body = token_request.call_args.args[0]
+        self.assertEqual((body["grant_type"], body["code"], body["state"]), ("authorization_code", "abc", seen["state"]))
+        self.assertEqual(body["redirect_uri"], seen["redirect_uri"])
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(body["code_verifier"].encode()).digest()).rstrip(b"=")
+        self.assertEqual(challenge.decode(), seen["code_challenge"])
+        self.assertEqual((creds.email, ext.load(), self.spec.account()), ("u@x", creds, "u@x"))
+        stored = ext.auth_file()
+        self.assertEqual(stored.parent, self.tmp / "home" / "data" / "global" / "claude_subscription")
+        self.assertEqual(stored.stat().st_mode & 0o777, 0o600)
+
+    def test_token_provider_refreshes_only_when_expired_and_logout_forgets_the_login(self):
+        import time
+
+        ext = self.ext
+        provider = ext.TokenProvider()
+        ext.save(ext.Credentials("old", "r", int(time.time()) + 3600))
+        token_request = mock.Mock(return_value={"access_token": "new", "expires_in": 3600})
+        with mock.patch.object(ext, "_token_request", token_request):
+            self.assertEqual(provider().token, "old")
+            token_request.assert_not_called()
+            ext.save(ext.Credentials("old", "r", int(time.time()) - 1))
+            self.assertEqual(provider().token, "new")
+        token_request.assert_called_once_with(
+            {"grant_type": "refresh_token", "client_id": ext.CLIENT_ID, "refresh_token": "r"},
+            {"anthropic-beta": "oauth-2025-04-20"},
+        )
+        self.assertEqual((ext.load().access, ext.load().refresh), ("new", "r"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.spec.logout()
+        self.assertIsNone(self.spec.account())
+        with self.assertRaisesRegex(RuntimeError, "Not logged in"):
+            provider()
+
+    def test_a_login_kept_by_an_older_minimal_moves_into_the_data_folder(self):
+        ext = self.ext
+        self.legacy.parent.mkdir(parents=True)
+        self.legacy.write_text(json.dumps({"access": "a", "refresh": "r", "expires_at": 1, "email": "old@x"}))
+        self.assertEqual(self.spec.account(), "old@x")
+        self.assertFalse(self.legacy.exists())
+        self.assertTrue(ext.auth_file().is_file())
+
+    def test_the_provider_sends_the_claude_code_identity_first(self):
+        sent = {}
+
+        def stream(**kwargs):
+            sent.update(kwargs)
+            final = SimpleNamespace(content=[], stop_reason="end_turn", usage=None)
+            return nullcontext(SimpleNamespace(text_stream=iter(()), get_final_message=lambda: final))
+
+        provider = self.ext.ClaudeProvider(client=SimpleNamespace(messages=SimpleNamespace(stream=stream)))
+        provider.stream(model="m", system="s", messages=[], tools=[], on_text=None)
+        self.assertEqual(
+            sent["system"],
+            [{"type": "text", "text": self.ext.CLAUDE_CODE_IDENTITY}, {"type": "text", "text": "s"}],
+        )
+        self.assertEqual(provider.name, "claude")
+
+
 if __name__ == "__main__":
     unittest.main()

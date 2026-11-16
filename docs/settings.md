@@ -10,7 +10,7 @@ minimal reads its settings from up to three JSON files, lowest first:
 
 Then come the environment (`MINIMAL_PROVIDER`, `MINIMAL_MODEL`) and the command line (`--provider`, `-m`), which beat every file. Missing files are skipped. `/settings` lists the files and every effective value with the scope it comes from. Prompt, permission and extension settings are re-read on `/reload`; the provider, model and theme are read at startup.
 
-Secrets and state stay out of settings: API keys in `~/.minimal/keys.json`, the Claude login in `~/.minimal/claude-auth.json`, trust decisions in `~/.minimal/trusted.json`, sessions in `~/.minimal/sessions/`.
+Secrets and state stay out of settings: API keys in `~/.minimal/keys.json` (a key saved there beats the same variable in your shell, which is why setup warns that it is used instead of the environment), the logins of providers that extensions add in their own data folder (`~/.minimal/data/global/<id>/`), trust decisions in `~/.minimal/trusted.json`, sessions in `~/.minimal/sessions/`.
 
 ## Keys
 
@@ -33,7 +33,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 
 - **`prompt.files`** are read relative to the working directory and added to the system prompt as `Project instructions (<name>)`. Missing files are skipped. Files set by the project or local layer must stay inside the project; others are ignored.
 - **`max_tokens`** is the output-token limit of each model request. `{"max_tokens": 16000}` applies to every model; `{"max_tokens": {"anthropic": 16000, "openai/gpt-5.5": 32000}}` picks by `provider/model` first, then by provider, and leaves the rest at their default.
-- **`extensions.disabled`** lists ids (`compact`, `tools/subagent`, see [extensions](extensions.md#layout-and-where-to-save)) not to load from `~/.minimal/extensions` or `.minimal/extensions`. Extensions passed with `--ext` always load.
+- **`extensions.disabled`** lists ids (`compact`, `tools/subagent`, see [extensions](extensions.md#layout-and-where-to-save)) not to load from `~/.minimal/extensions` or `.minimal/extensions`, and the id of a bundled extension: `marketplace_tools` removes the model's `ext_search`, `ext_install` and `ext_publish`. Extensions passed with `--ext` always load.
 - **`extensions.settings`** holds the values an extension declares with `declare_settings` ([extensions](extensions.md#settings)).
 
 A file that is not valid JSON is left out entirely. An unknown key, a value of the wrong type, an invalid permission rule, or a global-only key in a project file is dropped. Each problem is reported by `/reload` and `/settings` with the file's path, and the rest still applies.

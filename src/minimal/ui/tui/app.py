@@ -54,7 +54,7 @@ REPLAY_LIMIT = 200
 def _outside_event_loop() -> Iterator[None]:
     """Hide Textual's running loop from synchronous code run on the UI thread.
 
-    Terminal commands (``/setup``'s questionary menus) call ``asyncio.run``,
+    A terminal command (``terminal=True``, such as ``/setup``) may use a prompt toolkit that calls ``asyncio.run``,
     which refuses to start while a loop is running in the thread. The UI loop
     is blocked for the whole command anyway, so a nested loop is safe; running
     the command on the UI thread also keeps Ctrl-C working for it.

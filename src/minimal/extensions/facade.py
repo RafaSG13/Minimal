@@ -34,7 +34,7 @@ from typing import Any, TypedDict
 from minimal import config
 from minimal.extensions.metadata import Metadata
 from minimal.extensions.registry import CommandRun, EventHandler, Registry, Tool, ToolRun, check_event
-from minimal.providers.base import Provider, Reply, Usage
+from minimal.providers.base import Provider, ProviderSpec, Reply, Usage
 
 
 class ToolCallEvent(TypedDict):
@@ -159,7 +159,7 @@ class Extension:
         id: ``name`` or ``category/name`` (``tools/subagent``): the key of its settings
             and of ``extensions.disabled``.
         path: The ``.py`` file or package folder.
-        scope: ``"global"``, ``"project"`` or ``"cli"`` (``--ext``).
+        scope: ``"global"``, ``"project"``, ``"cli"`` (``--ext``) or ``"bundled"`` (shipped inside minimal).
         version: Its ``__version__``; ``""`` if unset.
     """
 
@@ -290,6 +290,14 @@ class Extension:
     ) -> None:
         """Add a model integration; see :meth:`Registry.register_provider`."""
         self._registry.register_provider(name, create, default_model, env_keys, description)
+
+    def add_provider(self, spec: ProviderSpec) -> None:
+        """Add a ready-made :class:`~minimal.providers.base.ProviderSpec`, e.g. ``openai_compatible(...)``.
+
+        Raises:
+            ValueError: if ``name`` or ``default_model`` is empty or ``create`` is not callable.
+        """
+        self._registry.add_provider(spec)
 
     def append_system_prompt(self, text: str) -> None:
         """Add a paragraph to the end of the system prompt."""

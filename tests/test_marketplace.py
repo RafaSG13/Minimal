@@ -517,6 +517,32 @@ class MarketplaceTest(unittest.TestCase):
         [listing] = marketplace.search("hello")
         self.assertEqual((listing.api, listing.problem, listing.compatible), ("2", None, True))
 
+    def run_ext_cli(self, args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exit:
+            cli.ext_cli(args)
+        return exit.exception.code, out.getvalue(), err.getvalue()
+
+    def test_cli_ext_install_puts_an_item_in_the_project_and_records_it(self):
+        project = self.tmp / "project"
+        project.mkdir()
+        previous = os.getcwd()
+        self.addCleanup(os.chdir, previous)
+        os.chdir(project)
+        code, out, _ = self.run_ext_cli(["install", "--project", "hello"])
+        self.assertEqual(code, 0)
+        installed = project / ".minimal" / "extensions" / "hello.py"
+        self.assertEqual(installed.read_text(), HELLO)
+        self.assertTrue(out.startswith("Installed ") and out.split(";")[0].endswith("/.minimal/extensions/hello.py"))
+        self.assertIn("hello", json.loads((project / ".minimal" / "extensions" / ".lock.json").read_text()))
+
+    def test_cli_ext_install_of_an_unknown_item_fails_with_a_message(self):
+        code, _, err = self.run_ext_cli(["install", "--project", "nothing_like_it"])
+        self.assertEqual(code, 1)
+        self.assertIn("no item named nothing_like_it", err)
+        self.assertEqual(self.run_ext_cli(["install"])[0], 2)
+        self.assertEqual(self.run_ext_cli(["install", "--global", "hello"])[0], 2)
+
     def test_install_records_a_lock_entry_and_uninstall_removes_it(self):
         marketplace.install("hello")
         digest = hashlib.sha256(HELLO.encode()).hexdigest()
@@ -558,7 +584,7 @@ class MarketplaceTest(unittest.TestCase):
         self.assertEqual((release.commit, release.newer.api), (compatible, "9"))
         entry = self.entry("hello")
         self.assertEqual((entry.listing.version, entry.release.commit), ("1.0", compatible))
-        self.assertIn("[latest for this minimal; newer needs API 9]", marketplace._ext_search({"query": "hello"}, None))
+        self.assertIn("[latest for this minimal; newer needs API 9]", marketplace.ext_search_tool({"query": "hello"}, None))
 
         dest, updated = marketplace.install("hello")
         self.assertEqual((dest.read_text(), updated), (HELLO, False))
@@ -658,17 +684,17 @@ class MarketplaceTest(unittest.TestCase):
         hello.write_text(HELLO + "# mine\n")
         ctx = SimpleNamespace(cwd=str(self.tmp), ui=SimpleNamespace(ask=lambda question: True))
         with self.assertRaisesRegex(ValueError, "hello has local changes in .*hello.py.*force"):
-            marketplace._ext_install({"name": "hello", "marketplace": str(self.bare)}, ctx)
+            marketplace.ext_install_tool({"name": "hello", "marketplace": str(self.bare)}, ctx)
         with self.assertRaisesRegex(ValueError, "local changes"):
             marketplace.install("hello")
         self.assertIn("# mine", hello.read_text())
 
-        out = marketplace._ext_install({"name": "hello", "marketplace": str(self.bare), "force": True}, ctx)
+        out = marketplace.ext_install_tool({"name": "hello", "marketplace": str(self.bare), "force": True}, ctx)
         self.assertTrue(out.startswith("Updated hello at"), out)
         self.assertEqual(hello.read_text(), HELLO)
         self.assertEqual(self.entry("hello").modified, [])
         schema = Registry()
-        marketplace.register_marketplace_tools(schema)
+        loader.load_bundled(schema, config.Settings(), str(self.tmp))
         self.assertEqual(schema.tools["ext_install"].input_schema["properties"]["force"]["type"], "boolean")
 
     def test_a_copy_without_a_lock_entry_is_compared_by_bytes(self):
@@ -723,7 +749,7 @@ class MarketplaceTest(unittest.TestCase):
         self.assertEqual(marketplace.format_listing(found[1]), "fancy 1.0 — A fancy widget.")
 
         registry = Registry()
-        marketplace.register_marketplace_tools(registry)
+        loader.load_bundled(registry, config.Settings(), str(self.tmp))
         ctx = SimpleNamespace(cwd=str(self.tmp), ui=SimpleNamespace(ask=lambda question: True))
         out = registry.tools["ext_search"].run({}, ctx)
         self.assertIn("widgets/fancy 1.0 — A fancy widget.", out)
@@ -734,7 +760,7 @@ class MarketplaceTest(unittest.TestCase):
     def test_the_model_tool_installs_into_the_category_folder(self):
         self.push_file("widgets/fancy.py", item("A fancy widget."))
         registry = Registry()
-        marketplace.register_marketplace_tools(registry)
+        loader.load_bundled(registry, config.Settings(), str(self.tmp))
         ctx = SimpleNamespace(cwd=str(self.tmp), ui=SimpleNamespace(ask=lambda question: True))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertIn("Installed fancy", registry.tools["ext_install"].run({"name": "fancy"}, ctx))

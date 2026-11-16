@@ -20,11 +20,13 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=2.3.0",
-    "google-genai>=2.34.0",
-    "openai>=3.49.0",
-    "questionary>=2",
     "textual>=8.2",
 ]
+
+[project.optional-dependencies]
+gemini = ["google-genai>=2.34.0"]
+openai = ["openai>=3.49.0"]
+all = ["google-genai>=2.34.0", "openai>=3.49.0"]
 
 [project.urls]
 Homepage = "https://github.com/RafaSG13/Minimal"

@@ -1,14 +1,20 @@
 import os
+import tempfile
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace as NS
+from pathlib import Path
 from unittest import mock
 
+from minimal import cli
+from minimal.core.app import App
+from minimal.core.session import Session
+from minimal.extensions.registry import Registry
+from minimal.providers import login_provider
 from minimal.providers.anthropic import AnthropicProvider
-from minimal.providers.base import Usage
-from minimal.providers.claude import CLAUDE_CODE_IDENTITY, ClaudeProvider
+from minimal.providers.base import ProviderSpec, Usage
 from minimal.providers.gemini import read_stream, to_interaction_input, to_reply
-from minimal.providers.openai import OpenAIProvider, read_chunks, to_chat_messages
+from minimal.providers.openai import OpenAIProvider, openai_compatible, read_chunks, to_chat_messages
 
 GEMINI_STEPS = [
     {"type": "thought", "signature": "sig1"},
@@ -149,13 +155,13 @@ class AnthropicRequestTest(unittest.TestCase):
         self.assertTrue(all(set(m) == {"role", "content"} for m in sent["messages"]))
         self.assertEqual(sent["system"], "s")
 
-    def test_claude_sends_identity_block_first(self):
+    def test_identity_is_sent_as_its_own_first_system_block(self):
+        class Subclass(AnthropicProvider):
+            identity = "Who I am."
+
         sent, client = self.capture()
-        ClaudeProvider(client=client).stream(model="m", system="s", messages=HISTORY, tools=[], on_text=None)
-        self.assertEqual(
-            sent["system"],
-            [{"type": "text", "text": CLAUDE_CODE_IDENTITY}, {"type": "text", "text": "s"}],
-        )
+        Subclass(client=client).stream(model="m", system="s", messages=HISTORY, tools=[], on_text=None)
+        self.assertEqual(sent["system"], [{"type": "text", "text": "Who I am."}, {"type": "text", "text": "s"}])
 
     def test_usage_counts_cached_tokens_as_input(self):
         usage = NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=100, cache_creation_input_tokens=None)
@@ -301,3 +307,127 @@ class ListModelsTest(unittest.TestCase):
         names = ["models/gemini-x", "models/embedding-001", "models/gemini-a"]
         client = NS(models=NS(list=lambda: [NS(name=n) for n in names]))
         self.assertEqual(GeminiProvider(client).list_models(), ["gemini-a", "gemini-x"])
+
+
+class OptionalSdkTest(unittest.TestCase):
+    def spec(self, **kwargs):
+        return ProviderSpec(name="p", create=lambda: None, default_model="m", **kwargs)
+
+    def test_missing_sdk_names_the_package_and_how_to_install_it(self):
+        message = self.spec(sdk="no_such_sdk_for_minimal", install="mnml-agent[p]").missing_sdk()
+        self.assertIn("no_such_sdk_for_minimal", message)
+        self.assertIn("'mnml-agent[p]'", message)
+
+    def test_installed_or_undeclared_sdk_is_not_missing(self):
+        self.assertIsNone(self.spec(sdk="json", install="x").missing_sdk())
+        self.assertIsNone(self.spec().missing_sdk())
+
+    def test_dotted_sdk_with_a_missing_parent_is_missing(self):
+        self.assertIsNotNone(self.spec(sdk="no_such_parent.child").missing_sdk())
+
+    def test_use_provider_refuses_a_provider_whose_sdk_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = App(registry=Registry(), session=Session("u", Path(tmp) / "u.jsonl"), cwd=tmp, auto_approve=True)
+            app.registry.add_provider(self.spec(sdk="no_such_sdk_for_minimal", install="mnml-agent[p]"))
+            with self.assertRaisesRegex(ValueError, "mnml-agent\\[p\\]"):
+                app.use_provider("p")
+
+
+class OpenAICompatibleTest(unittest.TestCase):
+    """``openai_compatible``: one more server with its own URL and key, built through a fake ``openai`` module."""
+
+    def fake_sdk(self):
+        built = []
+
+        class Client:
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+                self.sent = []
+                self.chat = NS(completions=NS(create=self.create))
+
+            def create(self, **kwargs):
+                self.sent.append(kwargs)
+                return nullcontext([chunk(delta(content="ok"), finish_reason="stop")])
+
+        patcher = mock.patch.dict("sys.modules", {"openai": NS(OpenAI=Client)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return built
+
+    def test_each_server_keeps_its_own_url_and_key(self):
+        built = self.fake_sdk()
+        with mock.patch.dict(os.environ, {"OPENAI_BASE_URL": "http://elsewhere", "OPENROUTER_KEY": "sk-or"}):
+            router = openai_compatible("router", "https://router.example/v1", "m1", key_env="OPENROUTER_KEY")
+            ollama = openai_compatible("ollama", "http://localhost:11434/v1", "llama")
+            self.assertEqual(router.env_keys, ("OPENROUTER_KEY",))
+            self.assertEqual(ollama.env_keys, ())
+            self.assertEqual((router.create().name, ollama.create().name), ("router", "ollama"))
+        self.assertEqual(
+            built,
+            [
+                {"base_url": "https://router.example/v1", "api_key": "sk-or"},
+                {"base_url": "http://localhost:11434/v1", "api_key": "not-needed"},
+            ],
+        )
+
+    def test_output_limit_uses_max_tokens_for_a_custom_server(self):
+        self.fake_sdk()
+        provider = openai_compatible("local", "http://localhost:1/v1", "m").create()
+        provider.stream(model="m", system="s", messages=[], tools=[], on_text=None, options={"max_tokens": 99})
+        sent = provider.client.sent[0]
+        self.assertEqual(sent["max_tokens"], 99)
+        self.assertNotIn("max_completion_tokens", sent)
+
+    def test_requires_name_url_and_model(self):
+        for args in (("", "http://x", "m"), ("n", "", "m"), ("n", "http://x", "")):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                openai_compatible(*args)
+
+
+class LoginProviderTest(unittest.TestCase):
+    def specs(self, **logins):
+        specs = {"key": ProviderSpec(name="key", create=lambda: None, default_model="m", env_keys=("K",))}
+        for name, login in logins.items():
+            specs[name] = ProviderSpec(name=name, create=lambda: None, default_model="m", login=login)
+        return specs
+
+    def test_the_named_provider_wins(self):
+        specs = self.specs(one=print, two=print)
+        self.assertEqual(login_provider(specs, "two", current="one").name, "two")
+
+    def test_the_current_provider_is_next_then_the_only_one(self):
+        self.assertEqual(login_provider(self.specs(one=print, two=print), current="two").name, "two")
+        self.assertEqual(login_provider(self.specs(one=print), current="key").name, "one")
+
+    def test_ambiguous_missing_or_wrong_providers_say_what_to_do(self):
+        with self.assertRaisesRegex(ValueError, "Name one: one, two"):
+            login_provider(self.specs(one=print, two=print))
+        with self.assertRaisesRegex(ValueError, "no installed provider offers a login"):
+            login_provider(self.specs())
+        with self.assertRaisesRegex(ValueError, "key signs in with a key"):
+            login_provider(self.specs(one=print), "key")
+        with self.assertRaisesRegex(ValueError, "unknown provider: nope"):
+            login_provider(self.specs(one=print), "nope")
+
+
+class SignInOrOutTest(unittest.TestCase):
+    def run_cli(self, login, logout, calls):
+        sub = ProviderSpec(
+            name="sub", create=lambda: None, default_model="m",
+            login=lambda: calls.append("login"), logout=lambda: calls.append("logout"),
+        )
+        with (
+            mock.patch.object(cli, "register_builtin_providers", lambda registry: registry.add_provider(sub)),
+            mock.patch.object(cli, "load_extensions"),
+        ):
+            cli.sign_in_or_out(NS(login=login, logout=logout, ext=[]))
+
+    def test_logout_runs_before_login_on_the_only_provider_with_a_login(self):
+        calls = []
+        self.run_cli(login="", logout="sub", calls=calls)
+        self.assertEqual(calls, ["logout", "login"])
+
+    def test_only_the_requested_action_runs(self):
+        calls = []
+        self.run_cli(login=None, logout="", calls=calls)
+        self.assertEqual(calls, ["logout"])

@@ -1,10 +1,16 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pillow>=10"]
+# ///
 """Turn an image into a header-logo extension (see :meth:`minimal.extensions.registry.Registry.register_logo`).
 
 The image is cropped to its opaque area, shrunk to the requested width and
 reduced to a few colours; pixel art small enough keeps its exact colours.
-Needs Pillow, which minimal does not depend on::
+A standalone script (not part of the installed package): ``uv run`` installs
+Pillow for it from the metadata above::
 
-    uv run --with pillow python -m minimal.extensions.logo IMAGE [-w 24] [-c 16] [--nearest] [-o FILE]
+    uv run scripts/logo.py IMAGE [-w 24] [-c 16] [--nearest] [-o FILE]
 
 Without ``-o`` the extension source is printed; save it in an extensions
 folder (e.g. ``~/.minimal/extensions/widgets/logo.py``) and ``/reload``.
@@ -92,7 +98,7 @@ def extension_source(art: list[str], colors: dict[str, str], description: str) -
 def main(argv: list[str] | None = None) -> None:
     """Command line: convert an image and print or write the extension."""
     parser = argparse.ArgumentParser(
-        prog="python -m minimal.extensions.logo", description="Turn an image into a minimal header-logo extension."
+        prog="logo.py", description="Turn an image into a minimal header-logo extension."
     )
     parser.add_argument("image")
     parser.add_argument(
@@ -110,10 +116,10 @@ def main(argv: list[str] | None = None) -> None:
     try:
         art, colors = convert(args.image, args.width, args.colors, args.nearest)
     except ImportError:
-        print("minimal.extensions.logo needs Pillow: uv run --with pillow python -m minimal.extensions.logo IMAGE", file=sys.stderr)
+        print("logo.py needs Pillow: run it with `uv run scripts/logo.py IMAGE`", file=sys.stderr)
         sys.exit(1)
     except (ValueError, OSError) as e:
-        print(f"minimal.extensions.logo: {e}", file=sys.stderr)
+        print(f"logo.py: {e}", file=sys.stderr)
         sys.exit(1)
     source = extension_source(art, colors, f"Header logo converted from {Path(args.image).name}.")
     if args.output is None:
