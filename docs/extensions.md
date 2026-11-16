@@ -296,10 +296,10 @@ Without a logo, the welcome header is a left-aligned wordmark, `─●─  m i n
 
 `art` is a list of equal-length strings, one character per pixel (`" "` or `"."` transparent); `colors` maps every other character to `#rrggbb` or a theme variable such as `$accent` or `$foreground`, so the logo can follow `/theme`. Two pixel rows make one terminal row, drawn with half blocks (`▀▄█`) in truecolor. The last logo loaded wins. The marketplace's `widgets/logo.py` is a gradient pixel-art M with the `minimal` wordmark; its colours are constants at the top of the file. `LogoSpec` and `logo_content` (in `minimal.api`) render a logo outside the header.
 
-To make a logo from any image (pixel art or a picture), convert it with Pillow, which minimal does not depend on:
+To make a logo from any image (pixel art or a picture), convert it with `scripts/logo.py` from the minimal repository (a standalone script, not part of the installed package; `uv run` fetches Pillow for it):
 
 ```bash
-uv run --with pillow python -m minimal.extensions.logo logo.png -w 24 -o ~/.minimal/extensions/widgets/logo.py   # then /reload
+uv run scripts/logo.py logo.png -w 24 -o ~/.minimal/extensions/widgets/logo.py   # then /reload
 ```
 
 `-w` is the width in pixels (one terminal column each; images only shrink), `-c` the most colours to keep (default 16; pixel art with no more keeps its exact colours), `--nearest` resizes without smoothing. Without `-o` the extension is printed.

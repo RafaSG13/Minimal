@@ -602,7 +602,7 @@ class Registry:
 
         A later call replaces an earlier one: with several logo extensions the
         last one loaded wins (the project folder after the global one,
-        alphabetical within a folder). ``python -m minimal.extensions.logo IMAGE`` turns an
+        alphabetical within a folder). ``scripts/logo.py IMAGE`` in the repository turns an
         image into a logo extension.
 
         Raises:

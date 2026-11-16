@@ -3,8 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from minimal.extensions.logo import convert, extension_source
 from minimal.extensions.registry import Registry
+
+_SPEC = importlib.util.spec_from_file_location("logo_script", Path(__file__).parent.parent / "scripts" / "logo.py")
+_logo = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_logo)
+convert, extension_source = _logo.convert, _logo.extension_source
 
 
 @unittest.skipUnless(importlib.util.find_spec("PIL"), "needs Pillow")

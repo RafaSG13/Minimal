@@ -289,7 +289,6 @@ src/minimal/         packages from the bottom up; each imports only from the one
     loader.py        finds extension files and package folders, imports them and calls their register(minimal)
     audit.py         static scan of extension source for /trust: what a file can do
     marketplace.py   git-based marketplaces: list, search, install, publish, `minimal ext check` (~/.minimal/marketplace cache)
-    logo.py          python -m minimal.extensions.logo: turns an image into a header-logo extension (needs Pillow)
   tools/
     common.py        output clipping, which paths are read without asking
     files.py         read, write, edit
@@ -313,6 +312,7 @@ src/minimal/         packages from the bottom up; each imports only from the one
   api.py             the only module extensions import from: Extension, Context, event types, glyphs, …
 extensions/
   example.py         example extension (tool, command, guardrail with a setting, prompt note, sidebar widget)
+scripts/logo.py      standalone image -> header-logo extension converter (`uv run scripts/logo.py IMAGE`; not in the wheel)
 tests/               unittest suite (see Development)
 ```
 
