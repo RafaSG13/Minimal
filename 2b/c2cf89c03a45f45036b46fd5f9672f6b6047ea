@@ -1,0 +1,28 @@
+docs/extensions.md
+  h_e81853c41416fb 3,148,357,367,375-376
+src/minimal/__init__.py
+  h_e81853c41416fb 18
+src/minimal/api.py
+  h_e81853c41416fb 50,65
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 37,294-301
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 637-643
+src/minimal/providers/openai.py
+  h_e81853c41416fb 19-21,23-24,38,40-45,47-51,55-56,89,206-242
+tests/test_extension_api.py
+  h_e81853c41416fb 104-118
+tests/test_providers.py
+  h_e81853c41416fb 16,333-383
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "2bc2cf89c03a45f45036b46fd5f9672f6b6047ea",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
