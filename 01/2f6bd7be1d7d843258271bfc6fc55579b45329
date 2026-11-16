@@ -1,0 +1,14 @@
+CHANGELOG.md
+  h_e81853c41416fb 3-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "012f6bd7be1d7d843258271bfc6fc55579b45329",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
