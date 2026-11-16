@@ -634,7 +634,13 @@ class Registry:
         self.logo = LogoSpec(list(art), dict(colors), align)
 
     def add_provider(self, spec: ProviderSpec) -> None:
-        """Register a ready-made ``ProviderSpec``, replacing any with the same name."""
+        """Register a ready-made ``ProviderSpec``, replacing any with the same name.
+
+        Raises:
+            ValueError: if ``name`` or ``default_model`` is empty or ``create`` is not callable.
+        """
+        if not spec.name or not spec.default_model or not callable(spec.create):
+            raise ValueError("add_provider: name, create and default_model are required")
         self.providers[spec.name] = spec
 
     def register_provider(

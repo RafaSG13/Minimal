@@ -101,6 +101,21 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("ValueError: unknown event 'bogus'", errors[0])
 
+    def test_add_provider_registers_a_ready_made_spec_and_validates_it(self):
+        self.extension(
+            "ollama.py",
+            """
+            from minimal.api import ProviderSpec, openai_compatible
+            def register(minimal):
+                minimal.add_provider(openai_compatible("ollama", "http://localhost:11434/v1", "llama"))
+                minimal.add_provider(ProviderSpec(name="", create=lambda: None, default_model="m"))
+            """,
+        )
+        _, errors = self.app.reload_extensions()
+        self.assertEqual(self.app.registry.providers["ollama"].default_model, "llama")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("ValueError: add_provider: name, create and default_model are required", errors[0])
+
     def test_declare_settings_merges_and_reports(self):
         self.extension(
             "tuned.py",

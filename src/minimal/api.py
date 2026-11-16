@@ -47,6 +47,7 @@ from minimal.extensions.registry import (
     styled_lines,
 )
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage, result_text
+from minimal.providers.openai import openai_compatible
 from minimal.tools.search import glob_regex
 
 from minimal import glyphs
@@ -61,7 +62,7 @@ __all__ = [
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
     "ShutdownEvent", "Tool",
     "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",
-    "glob_regex", "glyphs", "logo_content", "result_text", "styled_line", "styled_lines", "theme",
+    "glob_regex", "glyphs", "logo_content", "openai_compatible", "result_text", "styled_line", "styled_lines", "theme",
 ]  # fmt: skip
 
 _SESSIONS = "ctx.sessions(), ctx.read_session() and ctx.new_session()"

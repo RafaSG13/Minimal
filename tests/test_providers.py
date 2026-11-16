@@ -13,7 +13,7 @@ from minimal.providers.anthropic import AnthropicProvider
 from minimal.providers.base import ProviderSpec, Usage
 from minimal.providers.claude import CLAUDE_CODE_IDENTITY, ClaudeProvider
 from minimal.providers.gemini import read_stream, to_interaction_input, to_reply
-from minimal.providers.openai import OpenAIProvider, read_chunks, to_chat_messages
+from minimal.providers.openai import OpenAIProvider, openai_compatible, read_chunks, to_chat_messages
 
 GEMINI_STEPS = [
     {"type": "thought", "signature": "sig1"},
@@ -330,3 +330,54 @@ class OptionalSdkTest(unittest.TestCase):
             app.registry.add_provider(self.spec(sdk="no_such_sdk_for_minimal", install="mnml-agent[p]"))
             with self.assertRaisesRegex(ValueError, "mnml-agent\\[p\\]"):
                 app.use_provider("p")
+
+
+class OpenAICompatibleTest(unittest.TestCase):
+    """``openai_compatible``: one more server with its own URL and key, built through a fake ``openai`` module."""
+
+    def fake_sdk(self):
+        built = []
+
+        class Client:
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+                self.sent = []
+                self.chat = NS(completions=NS(create=self.create))
+
+            def create(self, **kwargs):
+                self.sent.append(kwargs)
+                return nullcontext([chunk(delta(content="ok"), finish_reason="stop")])
+
+        patcher = mock.patch.dict("sys.modules", {"openai": NS(OpenAI=Client)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return built
+
+    def test_each_server_keeps_its_own_url_and_key(self):
+        built = self.fake_sdk()
+        with mock.patch.dict(os.environ, {"OPENAI_BASE_URL": "http://elsewhere", "OPENROUTER_KEY": "sk-or"}):
+            router = openai_compatible("router", "https://router.example/v1", "m1", key_env="OPENROUTER_KEY")
+            ollama = openai_compatible("ollama", "http://localhost:11434/v1", "llama")
+            self.assertEqual(router.env_keys, ("OPENROUTER_KEY",))
+            self.assertEqual(ollama.env_keys, ())
+            self.assertEqual((router.create().name, ollama.create().name), ("router", "ollama"))
+        self.assertEqual(
+            built,
+            [
+                {"base_url": "https://router.example/v1", "api_key": "sk-or"},
+                {"base_url": "http://localhost:11434/v1", "api_key": "not-needed"},
+            ],
+        )
+
+    def test_output_limit_uses_max_tokens_for_a_custom_server(self):
+        self.fake_sdk()
+        provider = openai_compatible("local", "http://localhost:1/v1", "m").create()
+        provider.stream(model="m", system="s", messages=[], tools=[], on_text=None, options={"max_tokens": 99})
+        sent = provider.client.sent[0]
+        self.assertEqual(sent["max_tokens"], 99)
+        self.assertNotIn("max_completion_tokens", sent)
+
+    def test_requires_name_url_and_model(self):
+        for args in (("", "http://x", "m"), ("n", "", "m"), ("n", "http://x", "")):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                openai_compatible(*args)

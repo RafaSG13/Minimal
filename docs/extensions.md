@@ -1,6 +1,6 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers minimal API 2.0 ([API versions](#api-versions)).
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes, widgets, status-line segments, colour themes and a header logo. This guide covers minimal API 2.1 ([API versions](#api-versions)).
 
 ```python
 """Greets the user."""
@@ -145,6 +145,7 @@ def backoff(event):
 | ------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `append_system_prompt(text)`                                        | A paragraph at the end of the system prompt                   |
 | `register_provider(name, create, default_model, env_keys=(), description="")` | A model integration: `create()` returns a `Provider` (see the README's "Adding a provider") |
+| `add_provider(spec)`                                                | A ready-made `ProviderSpec`; with `openai_compatible(name, base_url, default_model, *, key_env=None, description="")` it adds one more OpenAI-compatible server (Ollama, OpenRouter, vLLM…) with its own URL and key, next to `openai` and each other. `key_env=None` means no key (a local server). Needs the `openai` package (`mnml-agent[openai]`) |
 | `register_widget(name, create, area="sidebar")`                     | A terminal UI widget ([Widgets](#widgets))                    |
 | `register_status(name, render, side="right")`                       | A status-line segment ([Status segments](#status-segments))   |
 | `register_panel(name, render, area="sidebar", live=None, interval=0)` | Styled text in the terminal UI ([Panels](#panels))          |
@@ -353,6 +354,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `__version__`, `API_VERSION`                                | minimal's version, and the version of this API ([API versions](#api-versions)) |
 | `Extension`, `Context`, `UI`, `Tool`                        | The objects described above                                       |
 | `Provider`, `ProviderSpec`, `Reply`, `Usage`, `result_text` | Providers and replies; `result_text(content)` is a reply's text   |
+| `openai_compatible`                                         | `openai_compatible(name, base_url, default_model, *, key_env=None, description="")` returns a `ProviderSpec` for an OpenAI-compatible server |
 | `TurnInterrupted`                                           | Raised when the user interrupts                                   |
 | `USER_DENIED`                                               | The text of a tool result the user declined                       |
 | `ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`, `SessionStartEvent`, `SessionSwitchEvent`, `TurnStartEvent`, `BeforeRequestEvent`, `AfterResponseEvent`, `ShutdownEvent`, `ProviderErrorEvent` | Event payload types |
@@ -362,13 +364,15 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.0`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.1`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
 API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response`, `shutdown` and `provider_error`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
 API 1.3 (1.2 was never released) added `register_panel` and `register_renderer` (and `PanelSpec`, `RendererSpec`, `STYLES`, `styled_line`, `styled_lines` in `minimal.api`), the `end` live event, styled-text status segments and `minimal.api.glyphs`; importing `minimal.api` no longer imports Textual. An extension using any of them declares `__api__ = "1.3"`.
 
 API 2.0 removed the theme names of `minimal.api.theme` (`DEFAULT`, `MINIMAL`, `build`, `available`): the colour themes are internal to the terminal UI (`minimal.ui.tui.theme`). They are in `REMOVED`. Everything else is unchanged, but a major version refuses every extension written for the old one, so extensions declare `__api__ = "2"` (nothing else in them needs to change unless they used those names).
+
+API 2.1 added `minimal.add_provider(spec)` and `minimal.api.openai_compatible(...)` (several OpenAI-compatible servers at once), and the `ProviderSpec` fields `sdk` and `install` (the optional package a provider imports and what to install when it is missing). An extension using any of them declares `__api__ = "2.1"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 
