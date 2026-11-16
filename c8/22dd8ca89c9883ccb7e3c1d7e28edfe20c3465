@@ -1,0 +1,52 @@
+.minimal/extensions/go/.lock.json
+  h_e81853c41416fb 1-16
+.minimal/extensions/go/widgets/context_gauge.py
+  h_e81853c41416fb 1-59
+.minimal/extensions/go/widgets/session_outline.py
+  h_e81853c41416fb 1-59
+CHANGELOG.md
+  h_e81853c41416fb 11-12,31,34,49,54,61-62,66
+README.md
+  h_e81853c41416fb 17,24,43,60,80-81,83,85,92,114,129,203,248,291,384
+docs/extensions.md
+  h_e81853c41416fb 25,37,60,317,326,328,330,369
+docs/serve.md
+  h_e81853c41416fb 3,16,23,94
+docs/settings.md
+  h_e81853c41416fb 24
+extensions/example.py
+  h_e81853c41416fb 3
+src/minimal/cli.py
+  h_e81853c41416fb 25,48-50,73
+src/minimal/config.py
+  h_e81853c41416fb 212
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 18,63-64
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 3,10,1095
+src/minimal/extensions/metadata.py
+  h_e81853c41416fb 8
+src/minimal/extensions/migrate.py
+  h_e81853c41416fb 95-96,178
+src/minimal/ui/frontends.py
+  h_e81853c41416fb 13-14,35,51
+tests/test_frontends.py
+  h_e81853c41416fb 294,304-305,309-313
+tests/test_marketplace.py
+  h_e81853c41416fb 718,722-723,733,738,900,903,907-908,920,955,957-958,969-971,988-989,993
+tests/test_migrate.py
+  h_e81853c41416fb 53-54,60-61,133,136
+tests/test_serve.py
+  h_e81853c41416fb 466,470,501
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c822dd8ca89c9883ccb7e3c1d7e28edfe20c3465",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
