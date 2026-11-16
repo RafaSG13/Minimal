@@ -6,9 +6,11 @@ from types import SimpleNamespace as NS
 from pathlib import Path
 from unittest import mock
 
+from minimal import cli
 from minimal.core.app import App
 from minimal.core.session import Session
 from minimal.extensions.registry import Registry
+from minimal.providers import login_provider
 from minimal.providers.anthropic import AnthropicProvider
 from minimal.providers.base import ProviderSpec, Usage
 from minimal.providers.claude import CLAUDE_CODE_IDENTITY, ClaudeProvider
@@ -381,3 +383,52 @@ class OpenAICompatibleTest(unittest.TestCase):
         for args in (("", "http://x", "m"), ("n", "", "m"), ("n", "http://x", "")):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 openai_compatible(*args)
+
+
+class LoginProviderTest(unittest.TestCase):
+    def specs(self, **logins):
+        specs = {"key": ProviderSpec(name="key", create=lambda: None, default_model="m", env_keys=("K",))}
+        for name, login in logins.items():
+            specs[name] = ProviderSpec(name=name, create=lambda: None, default_model="m", login=login)
+        return specs
+
+    def test_the_named_provider_wins(self):
+        specs = self.specs(one=print, two=print)
+        self.assertEqual(login_provider(specs, "two", current="one").name, "two")
+
+    def test_the_current_provider_is_next_then_the_only_one(self):
+        self.assertEqual(login_provider(self.specs(one=print, two=print), current="two").name, "two")
+        self.assertEqual(login_provider(self.specs(one=print), current="key").name, "one")
+
+    def test_ambiguous_missing_or_wrong_providers_say_what_to_do(self):
+        with self.assertRaisesRegex(ValueError, "Name one: one, two"):
+            login_provider(self.specs(one=print, two=print))
+        with self.assertRaisesRegex(ValueError, "no installed provider offers a login"):
+            login_provider(self.specs())
+        with self.assertRaisesRegex(ValueError, "key signs in with a key"):
+            login_provider(self.specs(one=print), "key")
+        with self.assertRaisesRegex(ValueError, "unknown provider: nope"):
+            login_provider(self.specs(one=print), "nope")
+
+
+class SignInOrOutTest(unittest.TestCase):
+    def run_cli(self, login, logout, calls):
+        sub = ProviderSpec(
+            name="sub", create=lambda: None, default_model="m",
+            login=lambda: calls.append("login"), logout=lambda: calls.append("logout"),
+        )
+        with (
+            mock.patch.object(cli, "register_builtin_providers", lambda registry: registry.add_provider(sub)),
+            mock.patch.object(cli, "load_extensions"),
+        ):
+            cli.sign_in_or_out(NS(login=login, logout=logout, ext=[]))
+
+    def test_logout_runs_before_login_on_the_only_provider_with_a_login(self):
+        calls = []
+        self.run_cli(login="", logout="sub", calls=calls)
+        self.assertEqual(calls, ["logout", "login"])
+
+    def test_only_the_requested_action_runs(self):
+        calls = []
+        self.run_cli(login=None, logout="", calls=calls)
+        self.assertEqual(calls, ["logout"])

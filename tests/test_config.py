@@ -90,18 +90,69 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(self.start(), ("a", "a-picked"))
         run_setup.assert_called_once()
 
-    def test_setup_offers_the_provider_default_when_no_model_is_saved(self):
-        config.update_global({"provider": "a"})
-        answer = mock.Mock(unsafe_ask=mock.Mock(return_value="a"))
+    def run_setup(self, answers, getpass_answers=("pasted",)):
+        """``setup.run_setup`` on the app's registry, answering ``choose``/``ask_text`` from ``answers`` in order."""
+        asked = []
+
+        class Frontend:
+            def choose(self, title, options):
+                asked.append((title, options))
+                value = answers.pop(0)
+                return value(options) if callable(value) else value
+
+            def ask_text(self, title):
+                asked.append((title, None))
+                return answers.pop(0)
+
         with (
-            mock.patch.object(setup, "_stored_login", return_value=None),
-            mock.patch.object(setup.questionary, "select", return_value=answer),
-            mock.patch.object(setup.questionary, "text", side_effect=lambda _title, default, validate: mock.Mock(
-                unsafe_ask=mock.Mock(return_value=default))),
+            mock.patch.object(setup.getpass, "getpass", side_effect=list(getpass_answers)),
             mock.patch("sys.stdout"),
         ):
-            self.assertEqual(setup.run_setup(self.app.registry), ("a", "a-default"))
+            return setup.run_setup(self.app.registry, Frontend()), asked
+
+    def test_setup_offers_the_provider_default_when_no_model_is_saved(self):
+        config.update_global({"provider": "a"})
+        result, asked = self.run_setup(["a", None])  # provider a, Enter at the model question
+        self.assertEqual(result, ("a", "a-default"))
         self.assertEqual(config.load_global(), {"provider": "a", "model": "a-default"})
+        self.assertIn("Enter for a-default", asked[-1][0])
+
+    def test_setup_saves_a_typed_model_and_a_pasted_key(self):
+        result, _ = self.run_setup(["b", "b-custom"])  # provider b (no key yet: asks for one hidden), model
+        self.assertEqual(result, ("b", "b-custom"))
+        self.assertEqual(config.load_keys(), {"B_KEY": "pasted"})
+        self.assertEqual(config.load_global(), {"provider": "b", "model": "b-custom"})
+
+    def test_setup_cancelled_by_an_empty_answer_saves_nothing(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_setup([None])
+        self.assertEqual(config.load_global(), {})
+
+    def test_setup_signs_in_to_a_provider_with_a_login_and_offers_to_keep_it(self):
+        state = {"who": None, "logins": 0}
+
+        def login():
+            state["who"], state["logins"] = "me@example.com", state["logins"] + 1
+
+        self.app.registry.add_provider(
+            ProviderSpec(
+                name="sub", create=object, default_model="sub-default", login=login, account=lambda: state["who"]
+            )
+        )
+        _, asked = self.run_setup(["sub", None])
+        self.assertEqual(state["logins"], 1)
+        self.assertIn("needs login", dict(asked[0][1])["sub"])
+        result, asked = self.run_setup(["sub", "keep", None])  # logged in now: keep the login
+        self.assertEqual((result, state["logins"]), (("sub", "sub-default"), 1))
+        self.assertIn("me@example.com", dict(asked[1][1])["keep"])
+
+    def test_setup_asks_again_when_the_chosen_provider_lacks_its_sdk(self):
+        self.app.registry.add_provider(
+            ProviderSpec(name="c", create=object, default_model="c-default", sdk="no_such_sdk_for_minimal", install="mnml-agent[c]")
+        )
+        result, asked = self.run_setup(["c", "a", None])
+        self.assertEqual(result[0], "a")
+        self.assertIn("needs mnml-agent[c]", dict(asked[0][1])["c"])
 
 
 class PromptFileTest(unittest.TestCase):

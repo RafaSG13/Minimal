@@ -534,7 +534,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("m i n i m a l", str(app.query_one("Header .wordmark", Static).render()))
 
     async def test_terminal_command_can_run_its_own_event_loop(self):
-        # /setup's questionary menus call asyncio.run on the UI thread.
+        # A terminal command (e.g. an extension's prompt toolkit) may call asyncio.run on the UI thread.
         async def answer():
             return 42
 

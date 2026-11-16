@@ -517,6 +517,32 @@ class MarketplaceTest(unittest.TestCase):
         [listing] = marketplace.search("hello")
         self.assertEqual((listing.api, listing.problem, listing.compatible), ("2", None, True))
 
+    def run_ext_cli(self, args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exit:
+            cli.ext_cli(args)
+        return exit.exception.code, out.getvalue(), err.getvalue()
+
+    def test_cli_ext_install_puts_an_item_in_the_project_and_records_it(self):
+        project = self.tmp / "project"
+        project.mkdir()
+        previous = os.getcwd()
+        self.addCleanup(os.chdir, previous)
+        os.chdir(project)
+        code, out, _ = self.run_ext_cli(["install", "--project", "hello"])
+        self.assertEqual(code, 0)
+        installed = project / ".minimal" / "extensions" / "hello.py"
+        self.assertEqual(installed.read_text(), HELLO)
+        self.assertTrue(out.startswith("Installed ") and out.split(";")[0].endswith("/.minimal/extensions/hello.py"))
+        self.assertIn("hello", json.loads((project / ".minimal" / "extensions" / ".lock.json").read_text()))
+
+    def test_cli_ext_install_of_an_unknown_item_fails_with_a_message(self):
+        code, _, err = self.run_ext_cli(["install", "--project", "nothing_like_it"])
+        self.assertEqual(code, 1)
+        self.assertIn("no item named nothing_like_it", err)
+        self.assertEqual(self.run_ext_cli(["install"])[0], 2)
+        self.assertEqual(self.run_ext_cli(["install", "--global", "hello"])[0], 2)
+
     def test_install_records_a_lock_entry_and_uninstall_removes_it(self):
         marketplace.install("hello")
         digest = hashlib.sha256(HELLO.encode()).hexdigest()

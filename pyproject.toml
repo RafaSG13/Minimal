@@ -20,7 +20,6 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=2.3.0",
-    "questionary>=2",
     "textual>=8.2",
 ]
 

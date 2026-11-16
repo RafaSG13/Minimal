@@ -31,7 +31,7 @@ from minimal.core.session import (
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
 from minimal.extensions.registry import Registry
-from minimal.providers import claude_auth
+from minimal.providers import login_provider
 from minimal.ui import setup
 
 
@@ -156,18 +156,22 @@ def _tools(args: str, ctx: Context) -> None:
 
 def _login(args: str, ctx: Context) -> None:
     app = _app(ctx)
+    spec = login_provider(app.registry.providers, args.strip() or None, app.provider_name)
+    assert spec.login is not None
     try:
-        claude_auth.login()
+        spec.login()
     except KeyboardInterrupt:  # run_command only catches Exception; keep the UI alive
         print("\nLogin cancelled.")
         return
-    keep_model = app.provider_name in ("claude", "anthropic")  # same model names; gemini's would be invalid
-    app.use_provider("claude", app.model if keep_model else None)
+    app.use_provider(spec.name, app.model if app.provider_name == spec.name else None)
     print(f"Provider: {app.provider_name} · model {app.model}")
 
 
 def _logout(args: str, ctx: Context) -> None:
-    claude_auth.logout()
+    spec = login_provider(_app(ctx).registry.providers, args.strip() or None, _app(ctx).provider_name)
+    if spec.logout is None:
+        raise ValueError(f"{spec.name} has no logout")
+    spec.logout()
 
 
 def _setup(args: str, ctx: Context) -> None:
@@ -175,7 +179,7 @@ def _setup(args: str, ctx: Context) -> None:
     if not setup.can_run():
         raise ValueError("setup needs a terminal")
     try:
-        name, model = setup.run_setup(app.registry)
+        name, model = setup.run_setup(app.registry, app.frontend)
     except KeyboardInterrupt:  # run_command only catches Exception; keep the UI alive
         print("\nSetup cancelled.")
         return
@@ -459,8 +463,8 @@ def register_builtin_commands(registry: Registry) -> None:
         ("extensions", _ext, ext, False),
         ("quit", _exit, "quit", False),
         ("setup", _setup, "choose and save the default provider, its login or key, and the model", True),
-        ("login", _login, "sign in with a Claude Pro/Max subscription in the browser", True),
-        ("logout", _logout, "forget the Claude login", False),
+        ("login", _login, "sign in to a provider that uses a login (a subscription, an account): /login [provider]", True),
+        ("logout", _logout, "forget a provider's login: /logout [provider]", False),
         ("exit", _exit, "quit", False),
     ):
         registry.register_builtin_command(name, run, description, terminal)

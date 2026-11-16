@@ -128,6 +128,11 @@ class ProviderSpec:
         sdk: Top-level module of the SDK :attr:`create` imports, when it is an optional dependency
             (``"openai"``). Empty if there is none to check.
         install: What the user installs to get :attr:`sdk` (``"mnml-agent[openai]"``); shown when it is missing.
+        login: Signs the user in (a browser flow, a device code…), blocking and printing its instructions to the
+            terminal; raises ``ValueError`` (a message for the user) if it fails. Providers authenticated by an
+            ``env_keys`` key leave it ``None``. With it, ``minimal --login [name]``, ``/login`` and setup offer to sign in.
+        logout: Forgets the sign-in (``minimal --logout [name]``, ``/logout``).
+        account: Who is signed in: an email or any short text, or ``None`` if nobody is. Setup shows it.
     """
 
     name: str
@@ -137,6 +142,9 @@ class ProviderSpec:
     description: str = ""
     sdk: str = ""
     install: str = ""
+    login: Callable[[], None] | None = None
+    logout: Callable[[], None] | None = None
+    account: Callable[[], str | None] | None = None
 
     def missing_sdk(self) -> str | None:
         """Return an error message if the optional SDK (:attr:`sdk`) is not installed, else ``None``."""
