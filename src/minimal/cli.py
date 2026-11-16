@@ -34,8 +34,8 @@ Usage:
                                (exit status 1 if any fails; runs without a terminal or a provider);
                                --install-deps first installs their missing __dependencies__
   minimal ext install [--project] [<category>/]<name>
-                               install one item of the default marketplace (globally, after a scan you confirm,
-                               or into this project); how to add a provider that is not built in
+                               install one item of the default marketplace, globally (after a scan you confirm)
+                               or into this project: how to add a provider that is not built in, before the first start
 
 Options:
   -c, --continue        resume the last session of this directory

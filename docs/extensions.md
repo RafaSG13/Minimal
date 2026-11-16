@@ -22,13 +22,16 @@ def register(minimal):
 
 ## Layout and where to save
 
-Extensions load from three places:
+Extensions load from these places, the first one before the others:
 
 | Place                       | Scope     | Notes                                                              |
 | --------------------------- | --------- | ------------------------------------------------------------------ |
+| inside minimal (`bundled/`) | `bundled` | First-party extensions that ship with minimal; `extensions.disabled` turns them off; a reload does not list them as loaded; no `/trust` needed |
 | `~/.minimal/extensions/`    | `global`  | Always loaded                                                      |
 | `./.minimal/extensions/`    | `project` | Loaded only once the project is trusted (see [Trust](#trust))      |
 | `minimal -e <path>`         | `cli`     | A file or folder; repeatable; never skipped by `extensions.disabled` |
+
+The one bundled extension is `marketplace_tools`: the model's `ext_search`, `ext_install` and `ext_publish` tools and the sentence in the system prompt that mentions them. List `marketplace_tools` in `extensions.disabled` to turn them off, or register a tool of the same name in your own extension to replace one.
 
 The model's system prompt tells it which folders those are, so what it writes loads next time. Within a folder, its own entries load first, then those in its `themes/`, `tools/` and `widgets/` subfolders (where the marketplace installs those categories), alphabetically within a folder. Names starting with `_` or `.` are skipped.
 
@@ -355,6 +358,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `Extension`, `Context`, `UI`, `Tool`                        | The objects described above                                       |
 | `Provider`, `ProviderSpec`, `Reply`, `Usage`, `result_text` | Providers and replies; `result_text(content)` is a reply's text   |
 | `openai_compatible`                                         | `openai_compatible(name, base_url, default_model, *, key_env=None, description="")` returns a `ProviderSpec` for an OpenAI-compatible server |
+| `AnthropicProvider`                                         | The Anthropic Messages provider, to subclass: set `name`, and `identity` (a first system block) for a provider that reaches Claude another way (the marketplace's `claude_subscription`), and build it with your own `client` |
 | `TurnInterrupted`                                           | Raised when the user interrupts                                   |
 | `USER_DENIED`                                               | The text of a tool result the user declined                       |
 | `ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`, `SessionStartEvent`, `SessionSwitchEvent`, `TurnStartEvent`, `BeforeRequestEvent`, `AfterResponseEvent`, `ShutdownEvent`, `ProviderErrorEvent` | Event payload types |
@@ -372,7 +376,7 @@ API 1.3 (1.2 was never released) added `register_panel` and `register_renderer` 
 
 API 2.0 removed the theme names of `minimal.api.theme` (`DEFAULT`, `MINIMAL`, `build`, `available`): the colour themes are internal to the terminal UI (`minimal.ui.tui.theme`). They are in `REMOVED`. Everything else is unchanged, but a major version refuses every extension written for the old one, so extensions declare `__api__ = "2"` (nothing else in them needs to change unless they used those names).
 
-API 2.1 added `minimal.add_provider(spec)` and `minimal.api.openai_compatible(...)` (several OpenAI-compatible servers at once), and the `ProviderSpec` fields `sdk` and `install` (the optional package a provider imports and what to install when it is missing). An extension using any of them declares `__api__ = "2.1"`.
+API 2.1 added `minimal.add_provider(spec)` and `minimal.api.openai_compatible(...)` (several OpenAI-compatible servers at once), `minimal.api.AnthropicProvider`, and the `ProviderSpec` fields `sdk` and `install` (the optional package a provider imports and what to install when it is missing) and `login`, `logout` and `account` (a provider that signs in with a browser or an account instead of a key: `minimal --login [provider]`, `/login`, `/logout` and setup call them; `login()` blocks and prints its instructions, raises `ValueError` with a message for the user if it fails, and `account()` returns who is signed in or `None`). An extension using any of them declares `__api__ = "2.1"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

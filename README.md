@@ -55,14 +55,26 @@ Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
 
 ### Install the `minimal` command
 
-The package is `mnml-agent`; the command it installs is `minimal`.
+The package is `mnml-agent`; the command it installs is `minimal`. The Anthropic SDK comes with it; Gemini and OpenAI-compatible servers need theirs, which are extras:
 
 ```bash
-uv tool install mnml-agent
+uv tool install mnml-agent                  # Anthropic (API key)
+uv tool install 'mnml-agent[all]'           # also Gemini and OpenAI-compatible servers
+uv tool install 'mnml-agent[openai]'        # or just one extra: [gemini], [openai]
 minimal
 ```
 
 Installed extensions live in `~/.minimal/extensions/` (and a project's `.minimal/extensions/`); see [docs/extensions.md](docs/extensions.md#marketplace).
+
+### Upgrading from 0.5
+
+0.6 slims the core; the extension API goes from 2.0 to 2.1 (additions only, so every extension for API 2 keeps working):
+
+1. **Gemini or OpenAI-compatible servers:** reinstall with the extra, `uv tool install --force 'mnml-agent[gemini]'` (or `[openai]`, `[all]`). Without it, picking the provider says what to install.
+2. **Claude Pro/Max subscription:** the `claude` provider is no longer built in. Run `minimal ext install claude_subscription` (it shows a scan of the code and asks), then `minimal --login claude`. Your saved login in `~/.minimal/claude-auth.json` moves into the item's data folder the first time it is used; `provider: "claude"` in your settings keeps working. `minimal --login` and `--logout` now take a provider name when more than one has a login.
+3. Setup asks with numbered lists instead of arrow-key menus (the key you paste is still hidden), and `questionary` is no longer a dependency.
+4. The model's `ext_search`, `ext_install` and `ext_publish` tools come from the bundled `marketplace_tools` extension; list it in `extensions.disabled` to turn them off.
+5. The image-to-logo converter is `scripts/logo.py` of this repository (`uv run scripts/logo.py IMAGE`), no longer `python -m minimal.extensions.logo`.
 
 ### Upgrading from 0.4
 
@@ -82,7 +94,7 @@ uv run minimal          # first run: setup, then the terminal UI
 uv tool install --editable .   # optional: `minimal` everywhere, tracking this checkout
 ```
 
-On the first start, setup asks (arrow keys) for the default provider, its credentials (a browser login for `claude`; for an API-key provider, the key from the environment or a new one) and the model, then saves the choice in `~/.minimal/settings.json`. It runs again whenever the saved provider can no longer start (for example after `minimal --logout`), and on demand with `minimal --setup` or `/setup`. Without a terminal (a pipe, CI) there is no setup: save a choice first or pass `--provider`.
+On the first start, setup asks (numbered lists) for the default provider, its credentials (a login for a provider that has one; for an API-key provider, the key from the environment or a new one, typed hidden) and the model, then saves the choice in `~/.minimal/settings.json`. It runs again whenever the saved provider can no longer start (for example after `minimal --logout`), and on demand with `minimal --setup` or `/setup`. Without a terminal (a pipe, CI) there is no setup: save a choice first or pass `--provider`.
 
 ---
 
@@ -94,11 +106,12 @@ minimal -c                       # resume the last session of this directory
 minimal -s <id>                  # open (or create) a specific session
 minimal -e extensions/example.py # load an extension file or folder (repeatable)
 minimal --setup                  # change the default provider, login/key or model
-minimal --login                  # sign in with a Claude Pro/Max subscription
-minimal --logout                 # forget the Claude login
+minimal --login [provider]       # sign in to a provider that uses a login (e.g. claude, from the marketplace)
+minimal --logout [provider]      # forget that login
 minimal -y                       # skip tool confirmations
 minimal --trust-project          # apply ./.minimal extensions and trust-gated settings without /trust
 minimal ext check [--install-deps] <path>...   # validate extension files, package folders or a marketplace checkout
+minimal ext install [--project] <name>         # install one marketplace item (a global one shows its scan first)
 ```
 
 If an `AGENTS.md` exists in the current directory, it is added to the system prompt (`prompt.files` in [settings](#settings) changes which files). minimal needs a terminal, and a turn can only be started from inside its interface: there is no one-shot `minimal -p "prompt"` mode that runs the agent straight from the shell.
@@ -116,9 +129,10 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | Provider            | `--provider` | Credentials                                                                                                      | Default model       |
 | ------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------- | ------------------- |
 | Anthropic           | `anthropic`  | `ANTHROPIC_API_KEY` or a key saved in setup                                                                      | `claude-sonnet-5-5` |
-| Claude subscription | `claude`     | Browser login in setup, `minimal --login` or `/login`                                                            | `claude-sonnet-5-5` |
-| Google Gemini       | `gemini`     | `GEMINI_API_KEY` / `GOOGLE_API_KEY` or a key saved in setup ([get one](https://aistudio.google.com/docs/api-key), free tier) | `gemini-3.8-flash`  |
-| OpenAI-compatible   | `openai`     | `OPENAI_API_KEY` or a key saved in setup; `OPENAI_BASE_URL` points it at OpenRouter, Ollama, LM Studio (local servers accept any key) | `gpt-5.5`           |
+| Google Gemini       | `gemini`     | `GEMINI_API_KEY` / `GOOGLE_API_KEY` or a key saved in setup ([get one](https://aistudio.google.com/docs/api-key), free tier); needs `mnml-agent[gemini]` | `gemini-3.8-flash`  |
+| OpenAI-compatible   | `openai`     | `OPENAI_API_KEY` or a key saved in setup; `OPENAI_BASE_URL` points it at OpenRouter, Ollama, LM Studio (local servers accept any key); needs `mnml-agent[openai]` | `gpt-5.5`           |
+
+More providers come from extensions. The marketplace's `claude_subscription` adds `claude`, a Claude Pro/Max subscription through a browser login (`minimal ext install claude_subscription`, then `minimal --login claude`). For several OpenAI-compatible servers at once, an extension registers each with `minimal.add_provider(openai_compatible("ollama", "http://localhost:11434/v1", "llama3.3"))` (see [docs/extensions.md](docs/extensions.md)).
 
 **Resolution order.** Provider: `--provider` → `MINIMAL_PROVIDER` → `provider` in [settings](#settings). Model: `-m` → `MINIMAL_MODEL` → `model` in settings (if the provider is the settings' one) → the provider's default. Keys entered in setup are saved in `~/.minimal/keys.json` and take precedence over environment variables. They are removed from the environment of `bash` commands; export a key in your shell instead (and remove it from `keys.json`) if commands need it.
 
@@ -138,7 +152,7 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 | `/settings`                  | Show the settings files and each effective setting with where it comes from |
 | `/trust`                     | Scan this project's extensions and trust-gated settings, then choose whether to trust and apply them |
 | `/ext …`                     | Install, update, remove, list and publish extensions (also `/extensions`)  |
-| `/setup`, `/login`, `/logout`| Change the saved default, sign in to Claude, forget the login              |
+| `/setup`, `/login`, `/logout`| Change the saved default, sign in to a provider that uses a login (`/login [provider]`), forget that login |
 | `/exit`                      | Quit (also `/quit` and `Ctrl+Q`)                                           |
 
 `/setup` and `/login` run with the UI suspended, in the plain terminal. `/setup` changes the saved default; `/provider` only affects the current session.
@@ -278,10 +292,9 @@ src/minimal/         packages from the bottom up; each imports only from the one
   providers/
     base.py          Provider interface, Reply, Usage, canonical message format
     anthropic.py     Claude via the Anthropic Messages API (API key)
-    claude.py        Claude via a Pro/Max subscription (browser login)
-    claude_auth.py   browser login (OAuth PKCE) and token storage (~/.minimal/claude-auth.json)
     gemini.py        Gemini via the Google Interactions API
     openai.py        OpenAI-compatible servers via the Chat Completions API
+  bundled/           first-party extensions shipped inside minimal, loaded like any other (marketplace_tools: ext_search, ext_install, ext_publish)
   extensions/
     registry.py      internal Registry, Tool, Command, WidgetSpec: tools, commands, providers, hooks, widgets, themes, logo
     facade.py        Extension: what an extension's register(minimal) receives (decorators, declare_settings)
@@ -326,7 +339,7 @@ A provider is a class with a `name` and a `stream(*, model, system, messages, to
 2. Stream the response, calling `on_text(chunk)` for text as it arrives.
 3. Return `Reply(content=[text/tool_use blocks], stop_reason="tool_use" | "end_turn" | ..., provider_data=...)`.
 
-Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or from an extension with `minimal.register_provider(...)`. `providers/gemini.py` is a complete example, including the history conversion.
+Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or from an extension with `minimal.register_provider(...)` or `minimal.add_provider(spec)`; a provider that signs in instead of using a key sets `ProviderSpec.login`, `logout` and `account` (`minimal --login`, `/login` and setup use them), and one whose SDK is optional sets `sdk` and `install`. `providers/gemini.py` is a complete example, including the history conversion.
 
 ---
 
@@ -344,8 +357,7 @@ CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` 
 | Test file             | What's covered                                                                                   |
 | --------------------- | ------------------------------------------------------------------------------------------------ |
 | `test_smoke.py`       | Tools, extensions, hot reload, the agent loop with a fake provider, interruption, sessions, logo validation, the flat project folder, `minimal.api` without Textual |
-| `test_providers.py`   | Provider conversions (Gemini and OpenAI history/streaming, Anthropic/Claude requests, token usage) |
-| `test_claude_auth.py` | Browser login round trip, token refresh                                                          |
+| `test_providers.py`   | Provider conversions (Gemini and OpenAI history/streaming, Anthropic requests, token usage), optional SDKs, OpenAI-compatible servers, which provider a login acts on |
 | `test_config.py`      | Saved keys, how the startup provider is chosen                                                   |
 | `test_settings.py`    | Settings layers and precedence, validation errors, trust-gated keys, prompt files |
 | `test_permissions.py` | Allow/deny rules for bash, paths and extension tools; deny with `-y`; shell operators             |
