@@ -1,11 +1,16 @@
 import os
+import tempfile
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace as NS
+from pathlib import Path
 from unittest import mock
 
+from minimal.core.app import App
+from minimal.core.session import Session
+from minimal.extensions.registry import Registry
 from minimal.providers.anthropic import AnthropicProvider
-from minimal.providers.base import Usage
+from minimal.providers.base import ProviderSpec, Usage
 from minimal.providers.claude import CLAUDE_CODE_IDENTITY, ClaudeProvider
 from minimal.providers.gemini import read_stream, to_interaction_input, to_reply
 from minimal.providers.openai import OpenAIProvider, read_chunks, to_chat_messages
@@ -301,3 +306,27 @@ class ListModelsTest(unittest.TestCase):
         names = ["models/gemini-x", "models/embedding-001", "models/gemini-a"]
         client = NS(models=NS(list=lambda: [NS(name=n) for n in names]))
         self.assertEqual(GeminiProvider(client).list_models(), ["gemini-a", "gemini-x"])
+
+
+class OptionalSdkTest(unittest.TestCase):
+    def spec(self, **kwargs):
+        return ProviderSpec(name="p", create=lambda: None, default_model="m", **kwargs)
+
+    def test_missing_sdk_names_the_package_and_how_to_install_it(self):
+        message = self.spec(sdk="no_such_sdk_for_minimal", install="mnml-agent[p]").missing_sdk()
+        self.assertIn("no_such_sdk_for_minimal", message)
+        self.assertIn("'mnml-agent[p]'", message)
+
+    def test_installed_or_undeclared_sdk_is_not_missing(self):
+        self.assertIsNone(self.spec(sdk="json", install="x").missing_sdk())
+        self.assertIsNone(self.spec().missing_sdk())
+
+    def test_dotted_sdk_with_a_missing_parent_is_missing(self):
+        self.assertIsNotNone(self.spec(sdk="no_such_parent.child").missing_sdk())
+
+    def test_use_provider_refuses_a_provider_whose_sdk_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = App(registry=Registry(), session=Session("u", Path(tmp) / "u.jsonl"), cwd=tmp, auto_approve=True)
+            app.registry.add_provider(self.spec(sdk="no_such_sdk_for_minimal", install="mnml-agent[p]"))
+            with self.assertRaisesRegex(ValueError, "mnml-agent\\[p\\]"):
+                app.use_provider("p")

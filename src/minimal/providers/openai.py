@@ -189,4 +189,6 @@ SPEC = ProviderSpec(
     default_model="gpt-5.5",
     env_keys=("OPENAI_API_KEY",),
     description="OpenAI-compatible Chat Completions (OpenAI; OpenRouter, Ollama, LM Studio via OPENAI_BASE_URL)",
+    sdk="openai",
+    install="mnml-agent[openai]",
 )

@@ -20,7 +20,8 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --locked
+      # The extras too: mypy resolves the optional provider SDKs, and the tests run with them installed.
+      - run: uv sync --locked --all-extras
       - run: uv run ruff check
       - run: uv run mypy
       # After ruff, which would lint the checkout: tests/test_bundled_extensions.py loads its items.

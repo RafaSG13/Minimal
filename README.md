@@ -333,7 +333,7 @@ Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or f
 ## Development
 
 ```bash
-uv sync
+uv sync --all-extras     # the gemini and openai SDKs too (mypy needs them); plain `uv sync` skips them
 uv run ruff check
 uv run mypy
 uv run coverage run -m unittest discover -s tests && uv run coverage report

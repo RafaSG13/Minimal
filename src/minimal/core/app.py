@@ -456,12 +456,12 @@ class App:
         The conversation is kept: history is stored in the provider-neutral format.
 
         Raises:
-            ValueError: if the provider is unknown or its credentials are missing.
+            ValueError: if the provider is unknown, its optional SDK is not installed or its credentials are missing.
         """
         spec = self.registry.providers.get(name)
         if spec is None:
             raise ValueError(f"unknown provider: {name} (available: {', '.join(self.registry.providers)})")
-        problem = spec.missing_credentials()
+        problem = spec.missing_sdk() or spec.missing_credentials()
         if problem:
             raise ValueError(problem)
         self.provider = spec.create()

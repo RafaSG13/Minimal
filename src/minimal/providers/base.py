@@ -31,6 +31,7 @@ it reads it; every other provider rebuilds the turn from ``content``.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
@@ -124,6 +125,9 @@ class ProviderSpec:
             Setup saves a key entered by the user under the first one, so list the
             name the SDK prefers first.
         description: One line shown by ``/provider``.
+        sdk: Top-level module of the SDK :attr:`create` imports, when it is an optional dependency
+            (``"openai"``). Empty if there is none to check.
+        install: What the user installs to get :attr:`sdk` (``"mnml-agent[openai]"``); shown when it is missing.
     """
 
     name: str
@@ -131,6 +135,23 @@ class ProviderSpec:
     default_model: str
     env_keys: tuple[str, ...] = ()
     description: str = ""
+    sdk: str = ""
+    install: str = ""
+
+    def missing_sdk(self) -> str | None:
+        """Return an error message if the optional SDK (:attr:`sdk`) is not installed, else ``None``."""
+        if not self.sdk:
+            return None
+        try:
+            if importlib.util.find_spec(self.sdk) is not None:
+                return None
+        except (ImportError, ValueError):  # a dotted name whose parent package is missing
+            pass
+        hint = self.install or self.sdk
+        return (
+            f"The {self.name} provider needs the {self.sdk} package, which is not installed: run "
+            f"`uv tool install --force '{hint}'` (or `pip install '{hint}'`)."
+        )
 
     def missing_credentials(self) -> str | None:
         """Return an error message if no credential variable is set, else ``None``."""
