@@ -1,0 +1,22 @@
+CHANGELOG.md
+  h_e81853c41416fb 5-43
+README.md
+  h_e81853c41416fb 58,61-63,69-78,97,109-110,114,132-135,155,297,342,360
+docs/extensions.md
+  h_e81853c41416fb 25,29,34-35,361,379
+docs/settings.md
+  h_e81853c41416fb 13,36
+src/minimal/cli.py
+  h_e81853c41416fb 37-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "8f4fb668a7a1afd9bf7a20f48909f40d27e13751",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
