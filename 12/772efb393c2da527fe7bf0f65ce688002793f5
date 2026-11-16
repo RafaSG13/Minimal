@@ -1,0 +1,22 @@
+README.md
+  h_e81853c41416fb 63,128,289
+src/minimal/__init__.py
+  h_e81853c41416fb 10
+src/minimal/cli.py
+  h_e81853c41416fb 2-3,23,25,79,96,105-109,117,122-123,134,140,157,261-262,267,277-279,284,288,291
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 63-64
+src/minimal/ui/__init__.py
+  h_e81853c41416fb 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "12772efb393c2da527fe7bf0f65ce688002793f5",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
