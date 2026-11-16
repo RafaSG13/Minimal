@@ -1,0 +1,28 @@
+src/minimal/bundled/marketplace_tools.py
+  h_e81853c41416fb 1-115
+src/minimal/cli.py
+  h_e81853c41416fb 18,220
+src/minimal/core/app.py
+  h_e81853c41416fb 116,398
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 162
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 52-54,368-388,396,411
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 1165-1166,1192-1193,1223-1224
+tests/test_extension_api.py
+  h_e81853c41416fb 104-126
+tests/test_marketplace.py
+  h_e81853c41416fb 587,687,692,697,752,763
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "70c4406d6f615e92c4d444672a40fbd1afa44df9",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
