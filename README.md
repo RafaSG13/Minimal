@@ -57,15 +57,10 @@ Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
 
 The package is `mnml-agent`; the command it installs is `minimal`.
 
-> [!IMPORTANT]
-> The newest release on PyPI (0.4.0) has extension API 1, so it cannot install anything from the current marketplace. Until 0.5 is published, install from git:
-
 ```bash
-uv tool install "mnml-agent @ git+https://github.com/RafaSG13/Minimal"
+uv tool install mnml-agent
 minimal
 ```
-
-Once 0.5 is on PyPI, `uv tool install mnml-agent` does the same.
 
 Installed extensions live in `~/.minimal/extensions/` (and a project's `.minimal/extensions/`); see [docs/extensions.md](docs/extensions.md#marketplace).
 
