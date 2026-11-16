@@ -1,0 +1,74 @@
+.github/workflows/ci.yml
+  h_e81853c41416fb 23,50,52-64
+.github/workflows/release.yml
+  h_e81853c41416fb 24
+CHANGELOG.md
+  h_e81853c41416fb 17-22,26-32
+README.md
+  h_e81853c41416fb 49,63,67-68,74,76,283,308-310,338
+docs/extensions.md
+  h_e81853c41416fb 56,60-61,153-154,157,229-241,258-259,262-283,315-316,403,409-410
+extensions/example.py
+  h_e81853c41416fb 1,13-14,41-42
+pyproject.toml
+  h_e81853c41416fb 28-30
+src/minimal/__init__.py
+  h_e81853c41416fb 18
+src/minimal/api.py
+  h_e81853c41416fb 37,42-43,46-47,56,58-60,62
+src/minimal/cli.py
+  h_e81853c41416fb 23,123,126
+src/minimal/config.py
+  h_e81853c41416fb 175-178
+src/minimal/core/app.py
+  h_e81853c41416fb 88-89,92-102,338-339,359,368-369,375,437,447-450,455
+src/minimal/core/context.py
+  h_e81853c41416fb 199
+src/minimal/core/host.py
+  h_e81853c41416fb 22-31,109-113,130-139
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 256-273,276-277,279
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 332-337,341-345,353-354,356-365,371-380,390-391,406-407,439,443-445,448,455
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 67,96-97,295,1111-1113
+src/minimal/extensions/metadata.py
+  h_e81853c41416fb 8-9,16,18,35-36,87,96,100-122
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 134-179,249-283,291-292,341-342,348,366-367,381-382,403-404,458-460,465-466,469,473-475,495-497,514-517,530-595
+src/minimal/ui/commands.py
+  h_e81853c41416fb 210,219,335-336,442
+src/minimal/ui/frontends.py
+  h_e81853c41416fb 5,20-23,28-30,35-41,62-63
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 7-8,25,43,46-47,182,224-225,272,274,307,314,361,366,374-380,385-408,468-473,589-590
+src/minimal/ui/tui/markdown.py
+  h_e81853c41416fb 1-141
+src/minimal/ui/tui/widgets.py
+  h_e81853c41416fb 8,21-28,51-70,222-227,230,237-240,276,279-283,287-289,334-395
+tests/test_extension_api.py
+  h_e81853c41416fb 15,20,99-122
+tests/test_frontends.py
+  h_e81853c41416fb 19,69-79,103-115
+tests/test_marketplace.py
+  h_e81853c41416fb 3,721-735
+tests/test_security.py
+  h_e81853c41416fb 2,439
+tests/test_smoke.py
+  h_e81853c41416fb 22,449-491
+tests/test_tui.py
+  h_e81853c41416fb 1,3,10-14,25,27,253-357
+uv.lock
+  h_e81853c41416fb 993-996,1014,1016
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "6aaec3c0051055815736cfb78d09f7cc2e062e53",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
