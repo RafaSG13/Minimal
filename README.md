@@ -51,7 +51,7 @@ Use Claude through an API key or a Pro/Max subscription, Gemini through the free
 
 ## Quick Install
 
-Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
+Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv), or [Homebrew](https://brew.sh) (macOS and Linux), which brings both.
 
 ### Install the `minimal` command
 
@@ -63,6 +63,15 @@ uv tool install 'mnml-agent[all]'           # also Gemini and OpenAI-compatible 
 uv tool install 'mnml-agent[openai]'        # or just one extra: [gemini], [openai]
 minimal
 ```
+
+With Homebrew (Python and uv come as dependencies; the Anthropic provider only):
+
+```bash
+brew install rafasg13/tap/minimal
+minimal
+```
+
+Add Gemini or OpenAI to that install with `uv pip install --python "$(brew --prefix minimal)/libexec/bin/python" google-genai openai`; repeat it after each `brew upgrade minimal`, which builds a fresh environment. Or use `uv tool install 'mnml-agent[all]'` instead.
 
 Installed extensions live in `~/.minimal/extensions/` (and a project's `.minimal/extensions/`); see [docs/extensions.md](docs/extensions.md#marketplace).
 
