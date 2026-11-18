@@ -207,8 +207,8 @@ class MarketplaceTest(unittest.TestCase):
         [entry] = [e for e in marketplace.catalog(str(self.bare), str(self.tmp)) if e.listing.name == name]
         return entry
 
-    def run_ext(self, answers):
-        """Run ``/ext`` or ``/extensions`` with scripted dialog answers; return the frontend and the printed output."""
+    def run_ext(self, answers, command="/ext"):
+        """Run ``/ext`` (or ``command``) with scripted dialog answers; return the frontend and the printed output."""
         ui = ScriptedFrontend(answers)
         app = App(
             registry=Registry(),
@@ -221,8 +221,34 @@ class MarketplaceTest(unittest.TestCase):
         )
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            app.run_command("/ext")
+            app.run_command(command)
         return ui, out.getvalue()
+
+    def test_tags_are_read_matched_by_search_and_shown(self):
+        self.push_file("extensions/guard.py", item("Block things.", '__tags__ = ["safety", "git"]'))
+        [guard] = marketplace.search("safety")
+        self.assertEqual((guard.name, guard.tags), ("guard", ("safety", "git")))
+        self.assertEqual([x.name for x in marketplace.search("GIT")], ["guard"])
+        self.assertEqual(marketplace.format_listing(guard), "guard 1.0 — Block things. [safety, git]")
+        self.assertEqual(marketplace.format_listing(marketplace.search("hello")[0]), "hello 1.0 — Say hello.")
+
+        bad = self.tmp / "bad.py"
+        for value in ('["Safety"]', '"safety"', "[1]", "[x]"):
+            bad.write_text(item("Bad tags.", f"__tags__ = {value}"))
+            with self.assertRaisesRegex(ValueError, "__tags__ must be a list of lowercase tags"):
+                marketplace.describe(bad)
+
+    def test_ext_search_command_lists_matches_from_every_marketplace(self):
+        self.push_file("extensions/guard.py", item("Block things.", '__tags__ = ["safety"]'))
+        with mock.patch.object(marketplace, "DEFAULT_URL", str(self.bare)):
+            _, out = self.run_ext({}, "/ext search safety")
+            self.assertEqual(out.strip(), "extensions/guard 1.0 — Block things. [safety]")
+            _, out = self.run_ext({}, "/ext search nothing-like-this")
+            self.assertEqual(out.strip(), "No extensions found.")
+            _, out = self.run_ext({}, "/ext search safety themes")
+            self.assertEqual(out.strip(), "No extensions found.")
+            _, out = self.run_ext({}, "/ext search")
+            self.assertIn("usage: /ext [list|search <query> [category]|publish <path> [name]]", out)
 
     def test_search_and_install(self):
         listings = marketplace.search("hello")
@@ -386,6 +412,44 @@ class MarketplaceTest(unittest.TestCase):
             marketplace.remove_marketplace(marketplace.DEFAULT_URL)
         marketplace.remove_marketplace(url)
         self.assertNotIn(url, marketplace.marketplaces())
+
+    def test_named_marketplace_is_shown_and_resolved_by_name(self):
+        other = self.tmp / "other.git"
+        git("init", "--quiet", "--bare", "--initial-branch=main", str(other))
+        clone = self.tmp / "other_work"
+        git("clone", "--quiet", str(other), str(clone))
+        (clone / "extensions").mkdir()
+        (clone / "extensions" / "team_item.py").write_text(item("In team."))
+        git("checkout", "--quiet", "-b", "main", cwd=clone)
+        git("add", ".", cwd=clone)
+        git("commit", "--quiet", "-m", "add", cwd=clone)
+        git("push", "--quiet", "origin", "main", cwd=clone)
+        url = marketplace.add_marketplace(str(other), name=" team ")
+        self.assertEqual(config.load_global()["marketplaces"], [{"name": "team", "url": url}])
+        self.assertEqual(marketplace.names(), {marketplace.DEFAULT_URL: marketplace.DEFAULT_NAME, url: "team"})
+        self.assertEqual((marketplace.label(url), marketplace.label(str(self.bare))), ("team", str(self.bare)))
+        self.assertEqual((marketplace.resolve("team"), marketplace.resolve(url)), (url, url))
+        self.assertEqual(marketplace.resolve(marketplace.DEFAULT_NAME), marketplace.DEFAULT_URL)
+        with self.assertRaisesRegex(ValueError, "unknown marketplace"):
+            marketplace.resolve("nope")
+
+        third = self.tmp / "third.git"
+        git("init", "--quiet", "--bare", str(third))
+        with self.assertRaisesRegex(ValueError, "team is already a marketplace name"):
+            marketplace.add_marketplace(str(third), name="team")
+        with self.assertRaisesRegex(ValueError, "already a marketplace name"):
+            marketplace.add_marketplace(str(third), name=marketplace.DEFAULT_NAME)
+        with self.assertRaisesRegex(ValueError, "not a valid marketplace name"):
+            marketplace.add_marketplace(str(third), name="a b")
+        self.assertEqual(marketplace.marketplaces()[-1], url)  # nothing was saved by the failures
+
+        found = marketplace.ext_search_tool({"query": "team_item"}, None).splitlines()
+        lines = [line for line in found if "team_item" in line]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("team extensions/team_item "), lines)
+
+        marketplace.remove_marketplace(url)  # a named entry can be removed by url
+        self.assertEqual(config.load_global()["marketplaces"], [])
 
     def test_publish_pushes_branch(self):
         path = self.tmp / "greet.py"

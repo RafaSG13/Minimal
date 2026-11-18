@@ -83,6 +83,17 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.model, "m")
         self.assertEqual(errors, [f"{path}: marketplaces is only read from ~/.minimal/settings.json"])
 
+    def test_marketplaces_accept_urls_and_name_url_objects_only(self):
+        mixed = ["https://a.example/m.git", {"name": "team", "url": "https://b.example/m.git"}]
+        self.write("global", {"marketplaces": mixed})
+        settings, errors = self.settings()
+        self.assertEqual((errors, settings.marketplaces), ([], mixed))
+
+        path = self.write("global", {"marketplaces": [{"name": "team"}]})
+        settings, errors = self.settings()
+        self.assertEqual(settings.marketplaces, [])
+        self.assertEqual(errors, [f"{path}: marketplaces must be a list of URLs or {{name, url}} objects"])
+
     def test_wrong_types_and_unknown_keys_are_dropped(self):
         path = self.write("global", {"$schema": "x", "theme": 3, "colour": "red", "prompt": {"files": "AGENTS.md"}})
         settings, errors = self.settings()

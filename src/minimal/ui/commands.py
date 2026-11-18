@@ -275,7 +275,7 @@ def _untrusted_mark(settings: config.Settings, layer: config.Layer, key: str) ->
     return " (not trusted: /trust)" if key in config.RISKY and layer.scope != "global" and not settings.trusted else ""
 
 
-EXT_USAGE = "/ext [list|publish <path> [name]]"
+EXT_USAGE = "/ext [list|search <query> [category]|publish <path> [name]]"
 
 _ADD = "\x00add"
 _REMOVE = "\x00remove"
@@ -294,6 +294,9 @@ def _ext(args: str, ctx: Context) -> None:
             print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled}".rstrip())
         if not rows:
             print("(none)")
+    elif words[0] == "search" and 2 <= len(words) <= 3:
+        lines = marketplace.search_lines(words[1], words[2] if len(words) > 2 else None)
+        print("\n".join(lines) if lines else "No extensions found.")
     elif words[0] == "publish" and 2 <= len(words) <= 3:
         print(marketplace.publish(Path(app.cwd, words[1]), words[2] if len(words) > 2 else None))
     else:
@@ -305,18 +308,19 @@ CATEGORY_LABELS = {"extensions": "Extensions", "themes": "Themes", "tools": "Too
 
 
 def _marketplace_label(url: str) -> str:
-    label = url
+    name = marketplace.names().get(url)
+    text = url if name is None else f"{name} ({url})"
     if url == marketplace.DEFAULT_URL:
-        label += " (default)"
+        text += " (default)"
     if url == os.environ.get("MINIMAL_MARKETPLACE"):
-        label += " ($MINIMAL_MARKETPLACE)"
-    return label
+        text += " ($MINIMAL_MARKETPLACE)"
+    return text
 
 
 def _pick_marketplace(app: App) -> str | None:
     """Ask for a marketplace, letting the user add or remove saved ones; ``None`` if cancelled."""
     while True:
-        saved = config.load_global().get("marketplaces", [])
+        saved = marketplace.saved_marketplaces()
         options = [(url, _marketplace_label(url)) for url in marketplace.marketplaces()]
         options.append((_ADD, "+ Add a marketplace…"))
         if saved:
@@ -326,15 +330,16 @@ def _pick_marketplace(app: App) -> str | None:
             url = app.frontend.ask_text("Add a marketplace (git URL or local path)")
             if url is None:
                 continue
+            name = app.frontend.ask_text("Name for this marketplace (optional)")
             try:
-                return marketplace.add_marketplace(url)
+                return marketplace.add_marketplace(url, name)
             except (ValueError, RuntimeError) as e:
                 print(f"Could not add {url}: {e}", file=sys.stderr)
         elif choice == _REMOVE:
-            url = app.frontend.choose("Remove a saved marketplace", [(u, u) for u in saved])
+            url = app.frontend.choose("Remove a saved marketplace", [(u, _marketplace_label(u)) for u in saved])
             if url is not None:
                 marketplace.remove_marketplace(url)
-                print(f"Removed marketplace {url}")
+                print(f"Removed marketplace {_marketplace_label(url)}")
         else:
             return choice
 
