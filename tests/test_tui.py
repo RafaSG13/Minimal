@@ -275,8 +275,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             self.assertEqual(events, ["end"])
             renders.clear()
-            await pilot.pause(0.3)
-            self.assertGreater(renders.count(2), 2)
+            await self.wait_until(pilot, lambda: renders.count(2) > 2)  # a loaded runner may take longer than 0.3 s
             self.assertNotIn(1, renders)
 
     async def test_failing_panel_is_hidden_and_reported_once(self):
