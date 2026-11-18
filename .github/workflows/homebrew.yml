@@ -29,7 +29,8 @@ jobs:
     steps:
       - name: Without the token there is nothing to push with
         if: env.HOMEBREW_TAP_TOKEN == ''
-        run: echo "::warning::HOMEBREW_TAP_TOKEN is not set: the formula was not updated (RELEASING.md has the manual steps)"
+        run: |
+          echo "::warning::HOMEBREW_TAP_TOKEN is not set, so the formula was not updated (RELEASING.md has the manual steps)"
       - if: env.HOMEBREW_TAP_TOKEN != ''
         uses: actions/checkout@v7
         with:
