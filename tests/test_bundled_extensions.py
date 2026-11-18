@@ -205,6 +205,51 @@ class SubagentTest(BundledExtensionTest):
         self.assertEqual(results, {"h1": "v2", "b1": "bye"})
 
 
+class AskUserTest(BundledExtensionTest):
+    def setUp(self):
+        super().setUp()
+        self.registry = Registry()
+        _, errors = load_extensions(
+            self.registry, str(self.tmp), config.Settings(), extra=[MARKETPLACE / "tools" / "ask_user.py"]
+        )
+        self.assertEqual(errors, [])
+        self.calls = []
+        self.reply = None
+        ui = SimpleNamespace(
+            ask_text=lambda question: self.calls.append(("ask_text", question)) or self.reply,
+            choose=lambda title, options: self.calls.append(("choose", title, options)) or self.reply,
+        )
+        self.ctx = SimpleNamespace(ui=ui)
+
+    def ask(self, **inp):
+        return self.registry.tools["ask_user"].run(inp, self.ctx)
+
+    def test_open_question_returns_the_typed_answer(self):
+        self.reply = "use postgres"
+        self.assertEqual(self.ask(question="  Which database? "), "use postgres")
+        self.assertEqual(self.calls, [("ask_text", "Which database?")])
+
+    def test_options_are_cleaned_and_the_chosen_one_returned(self):
+        self.reply = "b"
+        answer = self.ask(question="Pick", options=["a", " b ", "", "a", "  ", 3, "c"])
+        self.assertEqual(answer, "b")
+        self.assertEqual(self.calls, [("choose", "Pick", [("a", "a"), ("b", "b"), ("c", "c")])])
+
+    def test_options_are_capped_at_nine(self):
+        self.reply = "0"
+        self.ask(question="Pick", options=[str(i) for i in range(12)])
+        self.assertEqual(len(self.calls[0][2]), 9)
+
+    def test_no_answer_is_an_error_the_model_can_act_on(self):
+        with self.assertRaisesRegex(ValueError, "no answer"):
+            self.ask(question="Which database?")
+
+    def test_empty_question_is_an_error_and_asks_nothing(self):
+        with self.assertRaisesRegex(ValueError, "non-empty question"):
+            self.ask(question="   ")
+        self.assertEqual(self.calls, [])
+
+
 class CompactTest(BundledExtensionTest):
     def setUp(self):
         super().setUp()
