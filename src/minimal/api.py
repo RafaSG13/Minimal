@@ -18,11 +18,15 @@ from typing import TYPE_CHECKING
 
 from minimal import API_VERSION, __version__
 from minimal.core.agent import USER_DENIED
+from minimal.core.agents import AGENT_STATUSES, MAIN_AGENT, AgentInfo, AgentResult
 from minimal.core.context import UI, Context
 from minimal.extensions.facade import (
     AfterResponseEvent,
+    AgentEndEvent,
+    AgentStartEvent,
     BeforeRequestEvent,
     Extension,
+    ModeChangeEvent,
     ProviderErrorEvent,
     SessionStartEvent,
     SessionSwitchEvent,
@@ -34,12 +38,15 @@ from minimal.extensions.facade import (
 )
 from minimal.extensions.registry import (
     EVENTS,
+    PROMPT_SECTIONS,
     STATUS_SIDES,
     STYLES,
     THEME_COLORS,
     WIDGET_AREAS,
     LogoSpec,
+    ModeSpec,
     PanelSpec,
+    PromptText,
     RendererSpec,
     Tool,
     TurnInterrupted,
@@ -58,9 +65,11 @@ if TYPE_CHECKING:
     from textual.content import Content
 
 __all__ = [
-    "API_VERSION", "EVENTS", "STATUS_SIDES", "STYLES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
-    "AfterResponseEvent", "AnthropicProvider", "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "PanelSpec",
-    "Provider",
+    "AGENT_STATUSES", "API_VERSION", "EVENTS", "MAIN_AGENT", "PROMPT_SECTIONS", "STATUS_SIDES", "STYLES",
+    "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
+    "AfterResponseEvent", "AgentEndEvent", "AgentInfo", "AgentResult", "AgentStartEvent", "AnthropicProvider",
+    "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "ModeChangeEvent", "ModeSpec", "PanelSpec",
+    "PromptText", "Provider",
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
     "ShutdownEvent", "Tool",
     "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",

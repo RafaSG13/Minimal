@@ -178,10 +178,13 @@ class Settings:
     Args:
         layers: From :func:`read_layers`, lowest first.
         trusted: Whether the project's trust-gated keys (:data:`RISKY`) apply.
+        project_trusted: Whether the user trusted the project: ``/trust`` accepted what it asks to be trusted
+            for, or ``--trust-project``. Unlike ``trusted`` it is false for a project that asks for nothing.
     """
 
     layers: tuple[Layer, ...] = ()
     trusted: bool = False
+    project_trusted: bool = False
 
     def scalar(self, key: str) -> tuple[Any, str | None]:
         """``(value, scope)`` of ``key`` from the highest layer that sets it; ``(None, None)`` if none does."""

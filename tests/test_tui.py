@@ -482,6 +482,52 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("'hi'" in o for o in self.outputs(app)), self.outputs(app))
             self.assertEqual(len(app.query(".user")), 0)
 
+    async def test_shift_tab_cycles_modes_and_the_status_line_shows_the_current_one(self):
+        self.core.registry.register_mode("plan", description="read only", tools=["read"])
+        self.core.registry.register_mode("build", description="everything")
+        app = MinimalTui(Host(self.core))
+        status = lambda: str(app.query_one("#status-left", Static).render())  # noqa: E731
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            self.assertNotIn("mode", status())  # no mode: nothing is shown
+            for expected in ("plan", "build", None):
+                await pilot.press("shift+tab")
+                self.assertEqual(self.core.mode, expected)
+                if expected is None:
+                    self.assertNotIn("mode ", status())
+                else:
+                    self.assertIn(f"mode {expected}", status())
+            self.assertIs(app.focused, app.query_one("#prompt", Input))  # the focus stayed in the composer
+
+    async def test_shift_tab_still_moves_the_focus_when_no_mode_is_registered(self):
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await pilot.press("shift+tab")
+            self.assertIsNone(self.core.mode)
+            self.assertIsNot(app.focused, app.query_one("#prompt", Input))
+
+    async def test_shift_tab_does_not_cycle_modes_in_a_dialog_or_while_a_turn_runs(self):
+        self.core.registry.register_mode("plan", description="read only")
+        self.core.registry.register_command("pick", lambda args, ctx: ctx.ui.choose("Pick", [("a", "A"), ("b", "B")]))
+        provider = self.core.provider = BlockingFakeProvider()
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "/pick")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, ChoiceScreen))
+            await pilot.press("shift+tab")
+            self.assertIsNone(self.core.mode)
+            await pilot.press("escape")
+            await self.wait_until(pilot, self.idle(app))
+            await self.submit(pilot, "hi")
+            await self.wait_until(pilot, provider.started.is_set)
+            await pilot.press("shift+tab")  # the prompt is locked while the turn runs
+            self.assertIsNone(self.core.mode)
+            provider.release.set()
+            await self.wait_until(pilot, self.idle(app))
+            await pilot.press("shift+tab")
+            self.assertEqual(self.core.mode, "plan")
+
     async def test_theme_command_switches_and_reload_falls_back(self):
         self.core.registry.register_theme("ocean", dark=True, background="#0b1622", foreground="#d0e4f5", accent="#4fc3f7")
         app = MinimalTui(Host(self.core))

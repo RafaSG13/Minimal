@@ -17,6 +17,10 @@ If the loop ends with an exception (interruption, provider error) while the call
 kept and every call not finished is answered with an error, so ``messages`` never ends with a ``tool_use`` that
 has no result.
 
+Each loop is one agent (see :mod:`minimal.core.agents`): it has an ``agent_id`` and a ``parent_id``, which
+every event it fires carries and which the tool calls and results it hands to ``on_tool`` and
+``on_tool_result`` carry too (as copies, so the history stays as the provider sent it).
+
 The loop only sees the canonical message format described in
 :mod:`minimal.providers.base`; each provider translates to and from its own API.
 """
@@ -52,6 +56,14 @@ Confirm = Callable[[dict], bool]
 Permit = Callable[[Tool, dict], bool]
 """Permission rules: ``True`` runs a call without asking; raising denies it."""
 
+ToolGate = Callable[[str], "str | None"]
+"""Decides per tool name: ``None`` lets the model see and call it; a reason (the text of the error the model
+gets) hides it from the tool list and refuses a call to it. Asked live, so it may change during a turn."""
+
+
+class MaxTurnsExceeded(RuntimeError):
+    """The model was still calling tools after the loop's ``max_turns`` requests."""
+
 
 def raise_if_cancelled(cancelled: threading.Event | None) -> None:
     """Raise :class:`TurnInterrupted` if ``cancelled`` is set."""
@@ -70,14 +82,19 @@ def run_agent(
     on_text: Callable[[str], Any] | None = None,
     on_tool: Callable[[dict], Any] | None = None,
     on_tool_result: Callable[[dict, dict], Any] | None = None,
+    on_reply: Callable[[Reply], Any] | None = None,
     confirm: Confirm | None = None,
     cancelled: threading.Event | None = None,
     permit: Permit | None = None,
     exclude_tools: frozenset[str] = frozenset(),
+    gate: ToolGate | None = None,
     nested: bool = False,
     max_turns: int = 50,
     options: Mapping[str, Any] | None = None,
     switch_provider: Callable[[str, str | None], tuple[Provider, str]] | None = None,
+    agent_id: str = "main",
+    parent_id: str | None = None,
+    dynamic_system: Callable[[], str] | None = None,
 ) -> Reply:
     """Run the model/tool loop until the model answers without calling tools.
 
@@ -90,13 +107,16 @@ def run_agent(
         registry: Source of tools and event handlers.
         ctx: The :class:`~minimal.core.context.Context` passed to every tool and event.
         on_text: Called with each streamed text chunk.
-        on_tool: Called with each ``tool_use`` block before it runs.
-        on_tool_result: Called with each ``tool_use`` block and its ``tool_result`` block after it runs.
+        on_tool: Called with each ``tool_use`` block before it runs (a copy with ``agent_id`` and ``parent_id`` added).
+        on_tool_result: Called with each ``tool_use`` block and its ``tool_result`` block after it runs (copies with
+            ``agent_id`` and ``parent_id`` added).
+        on_reply: Called with each reply, after it is appended to ``messages``.
         confirm: Asked before running a tool marked ``confirm`` that ``permit`` did not allow.
         cancelled: Setting it interrupts the turn: at the next text chunk,
             before the next model request or before the next tool.
         permit: Permission rules, consulted after the ``tool_call`` handlers.
         exclude_tools: Tools neither offered to the model nor run (a subagent's own tool).
+        gate: Further restriction on tools, asked on every request and every call (the current mode, an allow-list).
         nested: This loop runs inside a tool (a subagent); passed on in ``turn_end``.
         max_turns: Most model requests allowed for this turn.
         options: Request options for the provider (``max_tokens``, ``temperature``); ``before_request``
@@ -104,12 +124,16 @@ def run_agent(
         switch_provider: Switches to ``(provider name, model or None)`` and returns the new provider
             and model, for a ``provider_error`` handler that answers ``{"provider": ...}``; ``None``
             means such an answer re-raises the error.
+        agent_id: This loop's id, carried by every event it fires.
+        parent_id: The id of the agent whose tool started this loop; ``None`` for the user's turn.
+        dynamic_system: Text added after ``system`` (blank line between) on every request, asked live: the current
+            mode's note, which a tool may change in the middle of a turn.
 
     Returns:
         The final reply.
 
     Raises:
-        RuntimeError: if the model is still calling tools after ``max_turns`` requests.
+        MaxTurnsExceeded: (a ``RuntimeError``) if the model is still calling tools after ``max_turns`` requests.
         TurnInterrupted: if ``cancelled`` is set while the turn runs.
         Exception: a failed model request that no ``provider_error`` handler retried.
     """
@@ -119,10 +143,20 @@ def run_agent(
         if on_text:
             on_text(chunk)
 
+    who = {"agent_id": agent_id, "parent_id": parent_id}
+
     for _ in range(max_turns):
         raise_if_cancelled(cancelled)
+        extra = dynamic_system() if dynamic_system else ""
         request = _before_request(
-            registry, ctx, messages, system, tool_specs(registry, exclude_tools), options or {}, nested
+            registry,
+            ctx,
+            messages,
+            f"{system}\n\n{extra}" if system and extra else system or extra,
+            tool_specs(registry, exclude_tools, gate),
+            options or {},
+            nested,
+            who,
         )
         reply = None
         attempt = 0
@@ -133,17 +167,21 @@ def run_agent(
                 raise
             except Exception as e:
                 attempt += 1
-                retry = _provider_error(e, attempt, registry, ctx, provider, model, nested, switch_provider, cancelled)
+                retry = _provider_error(
+                    e, attempt, registry, ctx, provider, model, nested, switch_provider, cancelled, who
+                )
                 if retry is None:
                     raise
                 provider, model = retry
                 raise_if_cancelled(cancelled)
         messages.append(_assistant_message(provider, reply))
-        registry.emit("after_response", {"ctx": ctx, "reply": reply, "usage": reply.usage, "nested": nested})
+        if on_reply:
+            on_reply(reply)
+        registry.emit("after_response", {"ctx": ctx, "reply": reply, "usage": reply.usage, "nested": nested, **who})
 
         calls = [block for block in reply.content if block["type"] == "tool_use"]
         if not calls or reply.stop_reason not in ("tool_use", "max_tokens"):
-            registry.emit("turn_end", {"messages": messages, "ctx": ctx, "nested": nested})
+            registry.emit("turn_end", {"messages": messages, "ctx": ctx, "nested": nested, **who})
             return reply
 
         if reply.stop_reason == "max_tokens":
@@ -160,10 +198,20 @@ def run_agent(
             for call in calls:
                 raise_if_cancelled(cancelled)
                 if on_tool:
-                    on_tool(call)
-                result = execute_tool_call(call, registry, ctx, confirm=confirm, permit=permit, exclude=exclude_tools)
+                    on_tool({**call, **who})
+                result = execute_tool_call(
+                    call,
+                    registry,
+                    ctx,
+                    confirm=confirm,
+                    permit=permit,
+                    exclude=exclude_tools,
+                    gate=gate,
+                    agent_id=agent_id,
+                    parent_id=parent_id,
+                )
                 if on_tool_result:
-                    on_tool_result(call, result)
+                    on_tool_result({**call, **who}, {**result, **who})
                 results.append(result)
         except BaseException:
             # Keep the results of the calls that finished and answer the rest, so the history stays valid.
@@ -175,7 +223,7 @@ def run_agent(
             raise
         messages.append({"role": "user", "content": results})
 
-    raise RuntimeError(f"exceeded the maximum of {max_turns} turns")
+    raise MaxTurnsExceeded(f"exceeded the maximum of {max_turns} turns")
 
 
 def execute_tool_call(
@@ -186,16 +234,21 @@ def execute_tool_call(
     confirm: Confirm | None = None,
     permit: Permit | None = None,
     exclude: frozenset[str] = frozenset(),
+    gate: ToolGate | None = None,
+    agent_id: str = "main",
+    parent_id: str | None = None,
 ) -> dict:
     """Run one ``tool_use`` block and return the matching ``tool_result`` block.
 
-    Never raises: any error (unknown tool, veto from a ``tool_call`` handler,
-    permission rule, user refusal, exception in the tool) becomes an ``is_error``
+    Never raises: any error (unknown tool, a tool ``gate`` refuses (a mode), veto from a ``tool_call``
+    handler, permission rule, user refusal, exception in the tool) becomes an ``is_error``
     result so the model can react to it. ``tool_result`` handlers see the whole
-    output and may rewrite it; what the model gets is then clipped.
+    output and may rewrite it; what the model gets is then clipped. ``agent_id`` and ``parent_id`` go
+    into the payloads of ``tool_call`` and ``tool_result``.
     """
+    who = {"agent_id": agent_id, "parent_id": parent_id}
     try:
-        output = _run_tool(call, registry, ctx, confirm, permit, exclude)
+        output = _run_tool(call, registry, ctx, confirm, permit, exclude, gate, who)
         is_error = False
     except Exception as e:
         output = f"Error: {e}"
@@ -207,6 +260,7 @@ def execute_tool_call(
         "output": output,
         "is_error": is_error,
         "ctx": ctx,
+        **who,
     }
     for rewrite in registry.emit("tool_result", payload):
         if isinstance(rewrite, dict) and isinstance(rewrite.get("output"), str):
@@ -221,15 +275,26 @@ def execute_tool_call(
 
 
 def _run_tool(
-    call: dict, registry: Registry, ctx: Any, confirm: Confirm | None, permit: Permit | None, exclude: frozenset[str]
+    call: dict,
+    registry: Registry,
+    ctx: Any,
+    confirm: Confirm | None,
+    permit: Permit | None,
+    exclude: frozenset[str],
+    gate: ToolGate | None,
+    who: dict[str, Any],
 ) -> str:
     """Look up, vet, check permissions, confirm and run the tool for ``call``. Raises on any failure."""
     tool = None if call["name"] in exclude else registry.tools.get(call["name"])
     if tool is None:
         raise ValueError(f"unknown tool: {call['name']}")
+    if gate is not None and (reason := gate(call["name"])) is not None:
+        raise RuntimeError(reason)
 
     try:
-        verdicts = registry.emit("tool_call", {"name": call["name"], "input": call["input"], "ctx": ctx}, strict=True)
+        verdicts = registry.emit(
+            "tool_call", {"name": call["name"], "input": call["input"], "ctx": ctx, **who}, strict=True
+        )
     except TurnInterrupted:
         raise
     except Exception as e:  # fail closed: a guard that crashed has not approved the call
@@ -246,12 +311,12 @@ def _run_tool(
     return str(tool.run(call["input"], ctx))
 
 
-def tool_specs(registry: Registry, exclude: frozenset[str] = frozenset()) -> list[dict]:
-    """Describe every registered tool but ``exclude`` in the provider-neutral form."""
+def tool_specs(registry: Registry, exclude: frozenset[str] = frozenset(), gate: ToolGate | None = None) -> list[dict]:
+    """Describe every registered tool but ``exclude`` and the ones ``gate`` refuses in the provider-neutral form."""
     return [
         {"name": t.name, "description": t.description, "input_schema": t.input_schema}
-        for t in registry.tools.values()
-        if t.name not in exclude
+        for t in list(registry.tools.values())
+        if t.name not in exclude and (gate is None or gate(t.name) is None)
     ]
 
 
@@ -267,6 +332,7 @@ def _before_request(
     tools: list[dict],
     options: Mapping[str, Any],
     nested: bool,
+    who: dict[str, Any],
 ) -> dict[str, Any]:
     """The keyword arguments of the next ``provider.stream`` call (but ``model``, ``on_text``), after the ``before_request`` handlers.
 
@@ -276,7 +342,7 @@ def _before_request(
     """
     request: dict[str, Any] = {"messages": messages, "system": system, "tools": tools}
     opts = dict(options)
-    for result in registry.emit("before_request", {"ctx": ctx, **request, "options": dict(opts), "nested": nested}):
+    for result in registry.emit("before_request", {"ctx": ctx, **request, "options": dict(opts), "nested": nested, **who}):
         if not isinstance(result, dict):
             continue
         for key, value in result.items():
@@ -307,6 +373,7 @@ def _provider_error(
     nested: bool,
     switch_provider: Callable[[str, str | None], tuple[Provider, str]] | None,
     cancelled: threading.Event | None,
+    who: dict[str, Any],
 ) -> tuple[Provider, str] | None:
     """Ask the ``provider_error`` handlers what to do about a failed request; return the provider and model to retry with.
 
@@ -318,7 +385,15 @@ def _provider_error(
         ValueError: if switching provider fails (chained to ``error``).
         TurnInterrupted: if ``cancelled`` is set while waiting.
     """
-    payload = {"ctx": ctx, "error": error, "attempt": attempt, "provider": provider.name, "model": model, "nested": nested}
+    payload = {
+        "ctx": ctx,
+        "error": error,
+        "attempt": attempt,
+        "provider": provider.name,
+        "model": model,
+        "nested": nested,
+        **who,
+    }
     verdict = next(
         (
             v

@@ -27,13 +27,13 @@ from __future__ import annotations
 import hashlib
 import os
 import types
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, TypedDict
 
 from minimal import config
 from minimal.extensions.metadata import Metadata
-from minimal.extensions.registry import CommandRun, EventHandler, Registry, Tool, ToolRun, check_event
+from minimal.extensions.registry import CommandRun, EventHandler, PromptText, Registry, Tool, ToolRun, check_event
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage
 
 
@@ -43,7 +43,11 @@ class ToolCallEvent(TypedDict):
     name: str
     input: dict
     ctx: Any
-    """The :class:`~minimal.core.context.Context`."""
+    """The :class:`~minimal.core.context.Context` (of the agent that makes the call)."""
+    agent_id: str
+    """The loop that fired it: ``"main"`` for the user's turn, else the id of a ``ctx.run_agent`` agent."""
+    parent_id: str | None
+    """The agent whose tool started that loop; ``None`` for ``"main"``."""
 
 
 class ToolResultEvent(TypedDict):
@@ -54,6 +58,8 @@ class ToolResultEvent(TypedDict):
     output: str
     is_error: bool
     ctx: Any
+    agent_id: str
+    parent_id: str | None
 
 
 class TurnEndEvent(TypedDict):
@@ -64,6 +70,8 @@ class TurnEndEvent(TypedDict):
     ctx: Any
     nested: bool
     """The loop ran inside a tool, such as a subagent."""
+    agent_id: str
+    parent_id: str | None
 
 
 class SessionStartEvent(TypedDict):
@@ -105,6 +113,8 @@ class BeforeRequestEvent(TypedDict):
     """The request options so far (``max_tokens``, ``temperature``); empty for the provider's defaults."""
     nested: bool
     """The loop runs inside a tool, such as a subagent."""
+    agent_id: str
+    parent_id: str | None
 
 
 class AfterResponseEvent(TypedDict):
@@ -114,6 +124,8 @@ class AfterResponseEvent(TypedDict):
     reply: Reply
     usage: Usage | None
     nested: bool
+    agent_id: str
+    parent_id: str | None
 
 
 class ShutdownEvent(TypedDict):
@@ -137,6 +149,47 @@ class ProviderErrorEvent(TypedDict):
     provider: str
     model: str
     nested: bool
+    agent_id: str
+    parent_id: str | None
+
+
+class AgentStartEvent(TypedDict):
+    """Payload of ``agent_start``: an agent loop begins (the user's turn, or ``ctx.run_agent``)."""
+
+    ctx: Any
+    agent_id: str
+    parent_id: str | None
+    name: str
+    """``"main"`` for the user's turn, else the ``name`` given to ``run_agent`` (``"agent"`` by default)."""
+    prompt: str
+    """The user's message, or the agent's prompt."""
+
+
+class AgentEndEvent(TypedDict):
+    """Payload of ``agent_end``: an agent loop ended, whichever way."""
+
+    ctx: Any
+    agent_id: str
+    parent_id: str | None
+    name: str
+    status: str
+    """``"done"``, ``"interrupted"``, ``"error"`` or ``"max_turns"``."""
+    text: str
+    """The text of its last reply."""
+    usage: Usage
+    """Token counts summed over the loop's replies."""
+    error: str | None
+    """Why it failed (``error``, ``max_turns``); else ``None``."""
+
+
+class ModeChangeEvent(TypedDict):
+    """Payload of ``mode_change``: the current mode changed."""
+
+    ctx: Any
+    old: str | None
+    """The mode that was current; ``None`` for no mode."""
+    new: str | None
+    """The mode that is current now; ``None`` for no mode."""
 
 
 def _first_line(doc: str | None) -> str:
@@ -161,6 +214,7 @@ class Extension:
         path: The ``.py`` file or package folder.
         scope: ``"global"``, ``"project"``, ``"cli"`` (``--ext``) or ``"bundled"`` (shipped inside minimal).
         version: Its ``__version__``; ``""`` if unset.
+        project_trusted: Whether the current project passed ``/trust`` (or minimal runs with ``--trust-project``).
     """
 
     def __init__(
@@ -175,6 +229,7 @@ class Extension:
         settings: config.Settings,
         errors: list[str],
     ) -> None:
+        self._project_trusted = settings.project_trusted
         self._id, self._path, self._scope, self._metadata = id, path, scope, metadata
         self._cwd = cwd
         self._registry = registry
@@ -198,6 +253,17 @@ class Extension:
     @property
     def version(self) -> str:
         return self._metadata.version
+
+    @property
+    def project_trusted(self) -> bool:
+        """Whether the user trusted the current project: ``/trust`` accepted its present extensions and trust-gated
+        settings, or minimal was started with ``--trust-project``. Fixed for this load: ``/trust`` reloads.
+
+        Read it before acting on what a repository controls (its prompt text, servers, scripts). A project with
+        nothing for ``/trust`` to review (no project extensions, no trust-gated settings) is not trusted unless
+        ``--trust-project`` is set.
+        """
+        return self._project_trusted
 
     @property
     def tools(self) -> Mapping[str, Tool]:
@@ -303,10 +369,39 @@ class Extension:
         """Add a paragraph to the end of the system prompt."""
         self._registry.append_system_prompt(text)
 
+    def register_prompt_section(self, name: str, text: PromptText, *, replace: str | None = None) -> None:
+        """Add a named section to the system prompt, or replace one (``replace="base"``); see :meth:`Registry.register_prompt_section`. API 2.2."""
+        self._registry.register_prompt_section(name, text, replace=replace)
+
+    def remove_prompt_section(self, name: str) -> None:
+        """Take a section out of the system prompt; see :meth:`Registry.remove_prompt_section`. API 2.2."""
+        self._registry.remove_prompt_section(name)
+
+    def register_mode(
+        self,
+        name: str,
+        *,
+        description: str,
+        tools: Iterable[str] | None = None,
+        exclude_tools: Iterable[str] = (),
+        system_note: str = "",
+        read_only: bool = False,
+    ) -> None:
+        """Add a mode (a restriction on the tools the model may use, with an optional prompt note); see :meth:`Registry.register_mode`. API 2.2."""
+        self._registry.register_mode(
+            name,
+            description=description,
+            tools=tools,
+            exclude_tools=exclude_tools,
+            system_note=system_note,
+            read_only=read_only,
+        )
+
     def on(self, event: str, handler: EventHandler | None = None):
         """Subscribe ``handler(event)`` to ``event``: one of :data:`~minimal.extensions.registry.EVENTS`
         (``tool_call``, ``tool_result``, ``turn_end``, ``session_start``, ``session_switch``,
-        ``turn_start``, ``before_request``, ``after_response``, ``shutdown``, ``provider_error``).
+        ``turn_start``, ``before_request``, ``after_response``, ``shutdown``, ``provider_error``,
+        ``agent_start``, ``agent_end``, ``mode_change``).
 
         Without ``handler``, returns a decorator that subscribes the decorated function.
 

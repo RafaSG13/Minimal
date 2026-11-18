@@ -30,7 +30,7 @@ from minimal.core.session import (
 )
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import Registry
+from minimal.extensions.registry import MODE_OFF, Registry
 from minimal.providers import login_provider
 from minimal.ui import setup
 
@@ -152,6 +152,22 @@ def _provider(args: str, ctx: Context) -> None:
 
 def _tools(args: str, ctx: Context) -> None:
     print(", ".join(ctx.tools))
+
+
+def _mode(args: str, ctx: Context) -> None:
+    modes = ctx.modes()
+    if not args:
+        if not modes:
+            print("No modes registered: an extension adds them (/ext).")
+            return
+        print(f"Mode: {ctx.mode or 'none'} (* = current)")
+        for name, description in modes.items():
+            print(f"{'*' if name == ctx.mode else ' '} {name:<12} {description}")
+        print(f"Change with /mode <name>; /mode {MODE_OFF} for none.")
+        return
+    name = args.strip()
+    ctx.set_mode(None if name == MODE_OFF else name)
+    print(f"Mode: {ctx.mode or 'none'}")
 
 
 def _login(args: str, ctx: Context) -> None:
@@ -456,6 +472,7 @@ def register_builtin_commands(registry: Registry) -> None:
         ("model", _model, "list models, or change: /model [number|name]", False),
         ("provider", _provider, "list providers, or switch: /provider <name> [model]", False),
         ("tools", _tools, "list the tools", False),
+        ("mode", _mode, f"list the modes, or switch: /mode [name|{MODE_OFF}]", False),
         ("reload", _reload, "reload extensions from disk", False),
         ("settings", _settings, "show the settings files and the effective settings with where each comes from", False),
         ("trust", _trust, "review this project's extensions and choose whether to trust and load them", False),

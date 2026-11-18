@@ -26,7 +26,7 @@ CAPABILITIES: dict[str, str] = {
     "tool_result": "sees every tool result and can rewrite it",
     "turn_end": "sees the whole conversation after each turn",
     "provider": "adds a model provider (receives the conversation)",
-    "prompt": "adds instructions to the system prompt",
+    "prompt": "adds to, replaces or removes parts of the system prompt",
 }
 """Capability key → description, in report order."""
 
@@ -64,7 +64,7 @@ _METHODS = {
     "decoding": {
         "b64decode", "urlsafe_b64decode", "b32decode", "b85decode", "a85decode", "unhexlify", "fromhex", "decompress",
     },
-    "prompt": {"append_system_prompt"},
+    "prompt": {"append_system_prompt", "register_prompt_section", "remove_prompt_section"},
 }  # fmt: skip
 _EVENTS = ("tool_call", "tool_result", "turn_end")
 _ENVIRON = ("os.environ", "os.environb")

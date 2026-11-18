@@ -10,7 +10,7 @@ active theme's CSS variables and glyphs from :mod:`minimal.ui.tui.theme`.
 
 Turns and slash commands run in a worker thread so the UI stays responsive;
 :class:`~minimal.ui.tui.frontend.TuiFrontend` hands their output and confirmations back to the UI
-thread. Esc interrupts the turn in progress. Anything printed (slash-command
+thread. Esc interrupts the turn in progress; ``shift+tab`` cycles the mode (:data:`MODE_KEY`). Anything printed (slash-command
 output, extension messages) is shown in the transcript. Commands marked
 ``terminal`` run with the UI suspended.
 """
@@ -33,6 +33,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.screen import ModalScreen
 from textual.suggester import Suggester
 from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
@@ -48,6 +49,12 @@ from minimal.ui.tui.widgets import Header, PanelView, ToolBlock, to_content
 
 REPLAY_LIMIT = 200
 """Most messages of a resumed session drawn in the transcript."""
+
+MODE_KEY = "shift+tab"
+"""The key that cycles the mode. ``tab`` and ``shift+tab`` both move the focus between the prompt and the
+transcript (the screen's own bindings), so binding either one takes that over; ``shift+tab`` leaves ``tab`` doing it.
+It cycles modes only with a mode registered, no dialog open and the prompt idle (:meth:`MinimalTui.check_action`);
+otherwise it still moves the focus."""
 
 
 @contextmanager
@@ -114,6 +121,7 @@ class MinimalTui(TextualApp):
     BINDINGS = [
         Binding("escape", "interrupt", "Interrupt turn", show=False),
         Binding("ctrl+b", "toggle_sidebar", "Toggle sidebar", show=False),
+        Binding(MODE_KEY, "cycle_mode", "Cycle mode", show=False, priority=True),
     ]
 
     CSS = """
@@ -424,6 +432,23 @@ class MinimalTui(TextualApp):
         self._call_widgets("refresh_live", self.host.ctx, event)
         self._render_status()
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Let :data:`MODE_KEY` cycle modes only when one is registered, no dialog is open and no turn is running;
+        otherwise the key keeps moving the focus."""
+        if action == "cycle_mode":
+            return (
+                bool(self.host.modes())
+                and not isinstance(self.screen, ModalScreen)
+                and not self.query_one("#prompt", Input).disabled
+            )
+        return True
+
+    def action_cycle_mode(self) -> None:
+        """Go to the next mode (:meth:`~minimal.core.host.Host.cycle_mode`) and show which one is current."""
+        mode = self.host.cycle_mode()
+        self._render_status()
+        self.notify(f"Mode: {mode or 'none'}", timeout=2, markup=False)
+
     def action_toggle_sidebar(self) -> None:
         """Hide or show the sidebar of extension widgets."""
         self.query_one("#sidebar").toggle_class("-collapsed")
@@ -486,6 +511,8 @@ class MinimalTui(TextualApp):
             branch, dirty = git
             color = "$status-git-dirty" if dirty else "$status-git-clean"
             parts += [sep, (f"{theme.BRANCH} {branch}{' *' if dirty else ''}", color)]
+        if status.mode:
+            parts += [sep, (f"mode {status.mode}", "$accent")]
         for segment in self._status_segments("left"):
             parts += [sep, segment]
         self.query_one("#status-left", Static).update(Content.assemble(*parts))

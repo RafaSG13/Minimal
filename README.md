@@ -147,6 +147,7 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 | `/model [number\|name]`      | List models, or change model                                               |
 | `/provider [name [model]]`   | List providers, or switch for this session and keep the conversation       |
 | `/tools`                     | List the tools                                                             |
+| `/mode [name\|off]`          | List the modes extensions added and the current one, or switch (`Shift+Tab` cycles them) |
 | `/theme [name]`              | Pick the colour theme; the choice is saved in `~/.minimal/settings.json`   |
 | `/reload`                    | Reload extensions and settings from disk                                   |
 | `/settings`                  | Show the settings files and each effective setting with where it comes from |
@@ -224,7 +225,7 @@ def register(minimal):
     minimal.append_system_prompt("Always reply in the user's language.")
 ```
 
-`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo, plus `declare_settings`, `data_dir()` (a private folder outside the repository for the extension's state) and `on_dispose` (cleanup before a reload or exit). Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.notify` for notices, `ctx.complete` and `ctx.run_agent` for model calls, `ctx.new_session`, `ctx.use_provider` and `ctx.queue_user_message`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__api__`, `__dependencies__`), every member, event payloads, settings, widgets, themes, logos and publishing. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
+`register(minimal)` receives an `Extension` with decorators and `register_*` methods for tools, commands, providers, events, prompt notes, widgets, status segments, themes and a header logo, plus `declare_settings`, `data_dir()` (a private folder outside the repository for the extension's state) and `on_dispose` (cleanup before a reload or exit). Tools, commands, events and widgets receive a `Context` as `ctx`: the session, model and tools, `ctx.ui` for questions, `ctx.notify` for notices, `ctx.complete`, `ctx.run_agent` and `ctx.run_agent_result` for model calls (nested agents with their own prompt, tools, model and cancel flag), `ctx.agents()`, `register_mode` and `ctx.set_mode` for restricting the model's tools, `register_prompt_section` for editing the system prompt, `ctx.new_session`, `ctx.use_provider` and `ctx.queue_user_message`. Import anything else only from `minimal.api`. Errors raised by a tool are returned to the model as an `is_error` result, so it can correct itself. **[docs/extensions.md](docs/extensions.md)** is the full guide: package folders, metadata (`__version__`, `__api__`, `__dependencies__`), every member, event payloads, settings, widgets, themes, logos and publishing. See [`extensions/example.py`](extensions/example.py) for a complete extension with a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
 
 Compaction (`compact`), retries with backoff and a fallback provider (`retry`), the `subagent` tool and the `web_search` tool ([Brave Search API](https://api-dashboard.search.brave.com), needs `BRAVE_API_KEY`) are installed from the default marketplace with `/ext`.
 
@@ -362,7 +363,9 @@ CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` 
 | `test_settings.py`    | Settings layers and precedence, validation errors, trust-gated keys, prompt files |
 | `test_permissions.py` | Allow/deny rules for bash, paths and extension tools; deny with `-y`; shell operators             |
 | `test_extension_api.py` | The `Extension` and `Context` facades: decorators, events, settings, sessions, commands, nested agents, package folders, `__api__`, disabling |
-| `test_security.py`    | Trust digests and the `/trust` scan                                                              |
+| `test_agents.py`      | Agent ids and `agent_start`/`agent_end`, `run_agent_result`, per-agent cancellation, tool allow-lists, modes |
+| `test_prompt.py`      | The default system prompt pinned byte for byte, and prompt sections added, replaced and removed |
+| `test_security.py`    | Trust digests and the `/trust` scan, `project_trusted`                                           |
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
 | `test_tui.py`         | The Textual UI through Textual's pilot: streaming turns, dialogs, `/theme`, widgets and panels, the untrusted notice |

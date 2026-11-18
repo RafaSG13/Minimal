@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Added
+
+- Extension API 2.2 (additions only: every extension for API 2.0 or 2.1 keeps working). Modes:
+  `minimal.register_mode(name, description=..., tools=None, exclude_tools=(), system_note="", read_only=False)` adds a
+  mode, a restriction on the tools the model may use. While one is current (`/mode <name>`, `/mode off`, `Shift+Tab` in
+  the terminal UI, `ctx.set_mode(name)`, `ctx.cycle_mode()`; `ctx.mode`, `ctx.modes()` and `ctx.mode_info()` read them) the other tools
+  are not offered to the model, and a call to one is refused with an error that names the mode and says only the user
+  can change it. The check is in the tool path, so it holds for tools a mode's agents start too: `ctx.run_agent(...,
+  tools=[...])` can only narrow a mode. The mode's `system_note` joins the system prompt, the status line shows the mode
+  (only when one is set) and `mode_change` fires on every switch. A reload keeps the mode if an extension registers it
+  again and otherwise falls back to no mode with a warning.
+- Agent identity. Every loop that talks to the model has an `agent_id` (`"main"` for your turn, a short id for each
+  `ctx.run_agent`) and a `parent_id`. `tool_call`, `tool_result`, `turn_end`, `before_request`, `after_response` and
+  `provider_error` carry both (`nested` stays), and so do the calls the terminal UI's widgets and a `Frontend` are
+  shown. New events `agent_start` and `agent_end` (status, text, token usage) bracket each loop; `ctx.agents()` (and
+  `Host.agents()`) list the agents of the session, running and finished, with status, model, tool-call count and usage.
+  `ctx.agent_id` and `ctx.parent_id` say which agent a tool's `ctx` belongs to.
+- `ctx.run_agent` takes `name`, `system` (the agent's whole system prompt), `tools` (an allow-list; unknown names raise
+  `ValueError`), `model`, `provider` (another provider for that agent only; the app's own does not change) and
+  `max_turns`. `ctx.run_agent_result(...)` takes the same and returns an `AgentResult` (`agent_id`, `text`, `usage`,
+  `status` of `done`, `interrupted`, `error` or `max_turns`, `error`, `messages`) instead of raising. Each agent has its
+  own cancel flag: `ctx.cancel_agent(agent_id)` stops that agent and the ones it started, and its parent carries on with
+  the result; Esc still stops everything.
+- The system prompt is made of named sections (`base`, `environment`, `extending`, `instructions`, `append`, then what
+  extensions add). `minimal.register_prompt_section(name, text_or_function, replace=None)` adds one or replaces another
+  (`replace="base"`), `minimal.remove_prompt_section(name)` drops one, and `ctx.prompt_sections()` lists them. The
+  default prompt is byte for byte what it was.
+- `ctx.project_trusted` and `minimal.project_trusted`: whether you trusted the project with `/trust` (or started with
+  `--trust-project`), for extensions that would act on what a repository controls.
+
+### Changed
+
+- The `/trust` scan reports `register_prompt_section` and `remove_prompt_section` as it does `append_system_prompt`
+  (it "adds to, replaces or removes parts of the system prompt").
+
 ## 0.6.0
 
 ### Breaking
