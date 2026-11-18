@@ -16,7 +16,7 @@ from minimal.core import session as session_mod
 from minimal.core.agent import run_agent
 from minimal.core.app import App
 from minimal.core.session import Session
-from minimal import cli, config
+from minimal import __version__, cli, config
 from minimal.extensions import loader
 from minimal.extensions.loader import load_extensions
 from minimal.extensions.registry import PanelSpec, Registry, TurnInterrupted, styled_line, styled_lines
@@ -634,6 +634,13 @@ class InterfaceTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit:
                 cli.parse_args(["--ui", "tui"])
         self.assertEqual(exit.exception.code, 2)
+
+    def test_version_option_prints_the_version_and_starts_nothing(self):
+        for flag in ("--version", "-V"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertIsNone(cli.parse_args([flag]))
+            self.assertEqual(out.getvalue(), f"minimal {__version__}\n")
 
     def test_importing_the_api_does_not_import_textual(self):
         code = "import sys, minimal.api; print(any(m.split('.')[0] == 'textual' for m in sys.modules))"

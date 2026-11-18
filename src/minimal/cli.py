@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-from minimal import config
+from minimal import __version__, config
 from minimal.core.app import App, ConsoleFrontend
 from minimal.core.host import Host
 from minimal.core.session import TORN_NOTICE, Session, last_session, new_id, open_session
@@ -47,6 +47,7 @@ Options:
   -y, --yes             do not ask for confirmation for write/edit/bash
   --trust-project       apply this project's extensions and trust-gated settings without /trust
   -h, --help            this help
+  -V, --version         the installed version
 
 Settings:
   ~/.minimal/settings.json         global: provider, model, theme, prompt, permissions, extensions, marketplaces
@@ -259,7 +260,7 @@ def start_provider(app: App, opts: argparse.Namespace) -> None:
 def parse_args(argv: list[str]) -> argparse.Namespace | None:
     """Parse command-line options.
 
-    Returns ``None`` after printing the help for ``-h``. Exits with status 2
+    Returns ``None`` after printing the help for ``-h`` or the version for ``-V``. Exits with status 2
     after printing the help for unknown or malformed options.
     """
     parser = argparse.ArgumentParser(prog="minimal", add_help=False, allow_abbrev=False)
@@ -271,6 +272,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace | None:
     parser.add_argument("-y", "--yes", action="store_true")
     parser.add_argument("--trust-project", action="store_true")
     parser.add_argument("-h", "--help", action="store_true")
+    parser.add_argument("-V", "--version", action="store_true")
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--login", nargs="?", const="", default=None, metavar="provider")
     parser.add_argument("--logout", nargs="?", const="", default=None, metavar="provider")
@@ -287,6 +289,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace | None:
         sys.exit(2)
     if opts.help:
         print(help_text)
+        return None
+    if opts.version:
+        print(f"minimal {__version__}")
         return None
     return opts
 

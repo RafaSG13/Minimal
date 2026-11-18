@@ -4,6 +4,7 @@
 
 ### Added
 
+- `minimal --version` (`-V`) prints the installed version and exits, with no terminal needed.
 - Extension API 2.2 (additions only: every extension for API 2.0 or 2.1 keeps working). Modes:
   `minimal.register_mode(name, description=..., tools=None, exclude_tools=(), system_note="", read_only=False)` adds a
   mode, a restriction on the tools the model may use. While one is current (`/mode <name>`, `/mode off`, `Shift+Tab` in
