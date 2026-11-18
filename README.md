@@ -353,7 +353,7 @@ uv run mypy
 uv run coverage run -m unittest discover -s tests && uv run coverage report
 ```
 
-CI runs the same on Ubuntu and macOS with Python 3.11–3.13 (`coverage report` fails below the threshold in `pyproject.toml`), and checks every item of the default marketplace with `minimal ext check`. Plain `uv run python -m unittest discover -s tests` runs the suite without coverage. The suite needs no network or API key. It covers:
+CI runs one Ubuntu job on every pull request and on `main` (Python 3.12: `ruff`, `mypy`, the suite with `coverage report` failing below the threshold in `pyproject.toml`, and `minimal ext check` of every item of the default marketplace). The full matrix (Ubuntu and macOS, Python 3.11–3.13) runs before each release, weekly and on demand. Plain `uv run python -m unittest discover -s tests` runs the suite without coverage. The suite needs no network or API key. It covers:
 
 | Test file             | What's covered                                                                                   |
 | --------------------- | ------------------------------------------------------------------------------------------------ |

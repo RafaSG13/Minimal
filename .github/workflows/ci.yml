@@ -1,25 +1,33 @@
 name: CI
+# One fast job on every pull request and on main. The full OS x Python matrix runs where it pays off:
+# before a release (release.yml calls this workflow), weekly, and on demand.
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md"]
   pull_request:
+    paths-ignore: ["**.md"]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+  check:
+    # Lint, types, the suite with the coverage gate, and the default marketplace's items against this minimal
+    # (an API change that would break a published item fails here, before a release ships it).
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
       # The extras too: mypy resolves the optional provider SDKs, and the tests run with them installed.
       - run: uv sync --locked --all-extras
       - run: uv run ruff check
@@ -34,19 +42,33 @@ jobs:
         env:
           MARKETPLACE_CHECKOUT: ${{ github.workspace }}/marketplace
       - run: uv run coverage report
-  marketplace:
-    # The default marketplace's items against this minimal: an API change that would break a published
-    # item fails here, before a release ships it.
-    runs-on: ubuntu-latest
+      - run: uv run minimal ext check --install-deps marketplace
+  matrix:
+    # Every supported OS and Python except the one `check` covers: on tags (release.yml calls this workflow),
+    # weekly and on demand; not on pull requests or pushes to main.
+    if: github.ref_type == 'tag' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --all-extras
       - uses: actions/checkout@v7
         with:
           repository: RafaSG13/minimal-marketplace
           path: marketplace
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.3.3
-      - run: uv sync --locked
-      - run: uv run minimal ext check --install-deps marketplace
+      - run: uv run python -m unittest discover -s tests
+        env:
+          MARKETPLACE_CHECKOUT: ${{ github.workspace }}/marketplace
