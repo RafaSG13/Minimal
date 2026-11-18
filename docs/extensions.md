@@ -138,7 +138,7 @@ minimal.on("turn_end", lambda event: None)
 - `after_response` fires after each reply is added to the history; `usage` is the reply's `Usage`, or `None`.
 - `shutdown` fires when minimal exits.
 - `agent_start` and `agent_end` bracket every agent loop: the user's turn (`name` `"main"`, `prompt` the user's message) and each `ctx.run_agent` ([Agents](#agents)). `agent_end` fires however the loop ended, after its `turn_end` (if it had one) and before the caller gets the result; `status` is `done`, `interrupted`, `error` or `max_turns`, `text` the last reply's text, `usage` the `Usage` summed over the loop's replies and `error` the message of a failure, else `None`.
-- `mode_change` fires when the current mode changes (`ctx.set_mode`, `/mode`, `Shift+Tab`, a reload that lost the mode); `old` and `new` are mode names or `None` for no mode ([Modes](#modes)).
+- `mode_change` fires when the current mode changes (`ctx.set_mode`, `/mode`, `Shift+Tab`, a reload that lost the mode); `old` and `new` are mode names or `None` for no mode ([Modes](#modes)). It runs on the thread that changed the mode: for `Shift+Tab` and `/mode` a worker thread (like a command), so a handler may use `ctx.ui`; the status line is redrawn after the handlers ran, whichever thread changed the mode.
 - `provider_error` fires when a model request fails (rate limit, overload, network). `attempt` counts this request's failures from 1; nothing retries by itself, so a handler decides how often (`return None` gives up and the turn fails as before). `{"provider": ...}` switches provider for the rest of the session (`model` optional: its default). Esc interrupts the wait. Text streamed before the failure stays on screen.
 
 ```python

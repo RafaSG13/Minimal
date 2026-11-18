@@ -443,11 +443,13 @@ class MinimalTui(TextualApp):
             )
         return True
 
+    @work(thread=True, exclusive=True, group="agent")
     def action_cycle_mode(self) -> None:
-        """Go to the next mode (:meth:`~minimal.core.host.Host.cycle_mode`) and show which one is current."""
+        """Go to the next mode (:meth:`~minimal.core.host.Host.cycle_mode`) and show which one is current.
+
+        It runs in a worker like a command, so a ``mode_change`` handler may ask the user a question."""
         mode = self.host.cycle_mode()
-        self._render_status()
-        self.notify(f"Mode: {mode or 'none'}", timeout=2, markup=False)
+        self.call_from_thread(self.notify, f"Mode: {mode or 'none'}", timeout=2, markup=False)
 
     def action_toggle_sidebar(self) -> None:
         """Hide or show the sidebar of extension widgets."""

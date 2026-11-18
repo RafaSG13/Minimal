@@ -291,6 +291,9 @@ class Frontend(Protocol):
     def queued(self) -> None:
         """A user message was queued (:meth:`App.take_queued`): send it as soon as no turn or command is running."""
 
+    def mode_changed(self) -> None:
+        """The current mode changed, from any thread: redraw whatever shows it."""
+
 
 class ExitRepl(Exception):
     """Raised by a command (``/exit``) to quit the interactive UI."""
@@ -395,6 +398,9 @@ class ConsoleFrontend:
 
     def queued(self) -> None:
         """Nothing to do: a console has no loop that sends the next message."""
+
+    def mode_changed(self) -> None:
+        """Nothing to redraw in a console."""
 
 
 class App:
@@ -761,6 +767,7 @@ class App:
             new = self.mode = choose(old)
         if new != old:
             self.registry.emit("mode_change", {"ctx": self.context, "old": old, "new": new})
+            self.frontend.mode_changed()
         return new
 
     def _validate_mode(self) -> None:

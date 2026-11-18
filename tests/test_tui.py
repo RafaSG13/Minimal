@@ -499,6 +499,22 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                     self.assertIn(f"mode {expected}", status())
             self.assertIs(app.focused, app.query_one("#prompt", Input))  # the focus stayed in the composer
 
+    async def test_mode_change_handler_can_ask_and_the_status_follows_a_later_change(self):
+        answers = []
+        self.core.registry.register_mode("plan", description="read only", tools=["read"])
+        self.core.registry.on("mode_change", lambda e: e["new"] and answers.append(e["ctx"].ui.ask_text("Why?")))
+        app = MinimalTui(Host(self.core))
+        status = lambda: str(app.query_one("#status-left", Static).render())  # noqa: E731
+        async with app.run_test() as pilot:
+            await pilot.press("shift+tab")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, TextScreen))
+            await pilot.press("o", "k", "enter")
+            await self.wait_until(pilot, lambda: answers == ["ok"])
+            await self.wait_until(pilot, lambda: "mode plan" in status())
+            await self.wait_until(pilot, self.idle(app))
+            await asyncio.to_thread(self.core.set_mode, None)  # a thread that is not the UI's: the status line follows
+            await self.wait_until(pilot, lambda: "mode plan" not in status())
+
     async def test_shift_tab_still_moves_the_focus_when_no_mode_is_registered(self):
         app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
