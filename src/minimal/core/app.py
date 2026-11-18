@@ -17,13 +17,14 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 import minimal.core.context
 import minimal.extensions.facade
 import minimal.extensions.loader
 from minimal import config
-from minimal.core.agent import run_agent
+from minimal.core.agent import MaxTurnsExceeded, run_agent
+from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent
 from minimal.core.context import Context
 from minimal.core.permissions import Permissions
 from minimal.core.session import Session
@@ -34,9 +35,17 @@ from minimal.extensions.loader import (
     project_extensions_dir,
     read_project_snapshot,
 )
-from minimal.extensions.registry import Command, CommandRun, Registry, Tool
+from minimal.extensions.registry import (
+    PROMPT_SECTIONS,
+    Command,
+    CommandRun,
+    Registry,
+    Tool,
+    TurnInterrupted,
+    apply_prompt_edits,
+)
 from minimal.providers import register_builtin_providers
-from minimal.providers.base import Provider
+from minimal.providers.base import Provider, Usage, result_text
 from minimal.tools.builtin import register_builtin_tools
 
 DEFAULT_PROMPT_FILE = Path(__file__).with_name("prompt.md")
@@ -73,14 +82,20 @@ SELF_EXTEND_PROMPT = (
     "@minimal.tool(description=..., input_schema=..., confirm=...) on run(input, ctx) adds a tool (name and "
     "description default to the function's name and docstring); @minimal.command() on run(args, ctx) adds a slash "
     'command; @minimal.on(event) on handler(event) hooks events: "tool_call", "tool_result", "turn_end", '
-    '"session_start", "session_switch", "turn_start", "before_request", "after_response", "shutdown" or '
-    '"provider_error" (event["ctx"] is the Context; turn_end, before_request and after_response have event["nested"] '
-    'for a subagent\'s loop; turn_start may return {{"text": ...}} to rewrite the user\'s message, before_request '
+    '"session_start", "session_switch", "turn_start", "before_request", "after_response", "shutdown", '
+    '"provider_error", "agent_start", "agent_end" or "mode_change" (event["ctx"] is the Context; turn_end, '
+    'before_request and after_response have event["nested"] for a subagent\'s loop, and the events of a loop have '
+    'event["agent_id"] and event["parent_id"]; turn_start may return {{"text": ...}} to rewrite the user\'s message, before_request '
     '{{"messages", "system", "tools"}} to send instead for that request only, and provider_error '
     '{{"retry_after": seconds}} or {{"provider": name, "model": name}} to retry a failed request); the same exist as '
     "minimal.register_tool, "
     "register_command and on(event, handler). minimal.register_provider(...) adds a model; "
-    "minimal.append_system_prompt(text) adds instructions; minimal.on_dispose(fn) runs fn before a reload and at "
+    "minimal.append_system_prompt(text) adds instructions, and minimal.register_prompt_section(name, text, "
+    "replace=None) / remove_prompt_section(name) add, replace or remove a named section of this prompt (ctx.prompt_sections() "
+    "lists them); minimal.register_mode(name, description=..., tools=None, exclude_tools=(), system_note='', "
+    "read_only=False) adds a mode that restricts the tools the model may use (the user picks it with /mode or "
+    "shift+tab; ctx.mode, ctx.modes(), ctx.set_mode(name), ctx.cycle_mode()); minimal.project_trusted and "
+    "ctx.project_trusted say whether the user trusted this project; minimal.on_dispose(fn) runs fn before a reload and at "
     "exit: stop threads, timers and subprocesses there; minimal.data_dir(scope='project'|'global') is a private "
     "folder for the extension's own files, outside the repository; settings = minimal.declare_settings({{...defaults}}) "
     "declares settings the user sets under extensions.settings.<id> in ~/.minimal/settings.json (id is the name, or "
@@ -106,7 +121,9 @@ SELF_EXTEND_PROMPT = (
     "equal-length strings, one character per pixel (' ' or '.' transparent), two pixel rows per terminal row; colors "
     "maps every other character to #rrggbb or a theme variable such as $accent. "
     "In ctx: ctx.ui.ask/choose/choose_many/ask_text question the user; ctx.complete(messages) makes one model "
-    "request and ctx.run_agent(prompt) runs a nested agent loop; ctx.new_session(messages) switches to a new session; "
+    "request and ctx.run_agent(prompt) runs a nested agent loop (keywords name, system, tools, model, provider, "
+    "max_turns; ctx.run_agent_result returns an AgentResult instead of raising; ctx.agents() lists the agents and "
+    "ctx.cancel_agent(id) stops one); ctx.new_session(messages) switches to a new session; "
     "ctx.commands() lists the slash commands and ctx.run_command(line, builtin=False) runs one (builtin=True reaches "
     "a built-in the extension replaced); ctx.models() and ctx.set_model(name) list and switch models; "
     "ctx.widget(name) is the widget shown for register_widget(name, ...); ctx.notify(text, kind='info'|'warning'|"
@@ -117,39 +134,85 @@ SELF_EXTEND_PROMPT = (
 )
 
 
-def build_system_prompt(registry: Registry, cwd: str, settings: config.Settings) -> str:
-    """Assemble the system prompt.
+def _join(*parts: str) -> str:
+    """The non-empty ``parts`` separated by blank lines."""
+    return "\n\n".join(p for p in parts if p)
 
-    Parts, separated by blank lines: the base prompt (:func:`base_prompt`), the
-    working directory and today's date, how to extend minimal, each existing
-    ``prompt.files`` file (default ``AGENTS.md``) resolved against ``cwd``, each
-    ``prompt.append`` text, and the paragraphs added by extensions.
 
-    Files listed by a project or local settings file must be inside ``cwd``:
-    a project cannot pull ``~/.ssh/id_rsa`` into the prompt.
+def _builtin_sections(cwd: str, settings: config.Settings) -> list[tuple[str, Callable[[Any], str]]]:
+    """The built-in sections of the system prompt (:data:`~minimal.extensions.registry.PROMPT_SECTIONS`) as ``(name, text)``.
+
+    ``text(ctx)`` is only called if the section survives the extensions' edits.
     """
-    parts = [
-        base_prompt(settings),
-        f"Working directory: {cwd}\nDate: {datetime.now(timezone.utc).date().isoformat()}",
-        SELF_EXTEND_PROMPT.format(
+
+    def environment(ctx: Any) -> str:
+        return f"Working directory: {cwd}\nDate: {datetime.now(timezone.utc).date().isoformat()}"
+
+    def extending(ctx: Any) -> str:
+        return SELF_EXTEND_PROMPT.format(
             facade_path=Path(minimal.extensions.facade.__file__),
             context_path=Path(minimal.core.context.__file__),
             global_dir=global_extensions_dir(),
             project_dir=project_extensions_dir(cwd),
             api_major=minimal.API_VERSION.split(".")[0],
-        ),
-    ]
-    files, scope = settings.prompt_files
-    root = Path(cwd).resolve()
-    for name in files:
-        path = (root / Path(name).expanduser()).resolve()
-        if scope in ("project", "local") and not path.is_relative_to(root):
-            continue
-        if path.is_file():
-            parts.append(f"Project instructions ({name}):\n{path.read_text(encoding='utf-8')}")
-    parts.extend(settings.prompt_append)
-    parts.extend(registry.prompt_parts)
-    return "\n\n".join(p for p in parts if p)
+        )
+
+    def instructions(ctx: Any) -> str:
+        files, scope = settings.prompt_files
+        root = Path(cwd).resolve()
+        parts = []
+        for name in files:
+            path = (root / Path(name).expanduser()).resolve()
+            if scope in ("project", "local") and not path.is_relative_to(root):
+                continue
+            if path.is_file():
+                parts.append(f"Project instructions ({name}):\n{path.read_text(encoding='utf-8')}")
+        return _join(*parts)
+
+    texts = {
+        "base": lambda ctx: base_prompt(settings),
+        "environment": environment,
+        "extending": extending,
+        "instructions": instructions,
+        "append": lambda ctx: _join(*settings.prompt_append),
+    }
+    return [(name, texts[name]) for name in PROMPT_SECTIONS]
+
+
+def build_system_prompt(registry: Registry, cwd: str, settings: config.Settings, ctx: Context | None = None) -> str:
+    """Assemble the system prompt.
+
+    Sections, separated by blank lines, in this order (the names extensions use to replace or remove one):
+    ``base`` (:func:`base_prompt`), ``environment`` (the working directory and today's date), ``extending``
+    (how to extend minimal), ``instructions`` (each existing ``prompt.files`` file, default ``AGENTS.md``,
+    resolved against ``cwd``), ``append`` (each ``prompt.append`` text), then the sections extensions added
+    (``append_system_prompt`` paragraphs and ``register_prompt_section``), after any replacing or removing
+    they did (:func:`~minimal.extensions.registry.apply_prompt_edits`). An empty section is left out; an extension's
+    text function that raises is reported on stderr and its section skipped.
+
+    Files listed by a project or local settings file must be inside ``cwd``:
+    a project cannot pull ``~/.ssh/id_rsa`` into the prompt.
+
+    Args:
+        ctx: Passed to the functions that give the text of an extension's section.
+
+    Raises:
+        ValueError: if the ``base`` section is not replaced and the ``prompt.base`` file is missing or unreadable.
+    """
+    builtin = _builtin_sections(cwd, settings)
+    own = {id(text) for _, text in builtin}  # these raise ValueError for the user to fix; an extension's are reported and skipped
+    parts = []
+    for name, text in apply_prompt_edits(builtin, registry.prompt_edits):
+        if not callable(text):
+            parts.append(text or "")
+        elif id(text) in own:
+            parts.append(text(ctx))
+        else:
+            try:
+                parts.append(text(ctx) or "")
+            except Exception as e:
+                print(f'[extension] prompt section "{name}": {e}', file=sys.stderr)
+    return _join(*parts)
 
 
 
@@ -166,6 +229,23 @@ def _visible(text: str) -> str:
     return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
 
 
+def _failure_status(error: BaseException) -> str:
+    """The ``agent_end`` status of a loop that ended with ``error``."""
+    if isinstance(error, TurnInterrupted):
+        return "interrupted"
+    return "max_turns" if isinstance(error, MaxTurnsExceeded) else "error"
+
+
+def _last_text(messages: list[dict]) -> str:
+    """The text of the last assistant message of ``messages`` that has any; ``""`` if none."""
+    for message in reversed(messages):
+        if message["role"] == "assistant":
+            text = result_text(message["content"])
+            if text:
+                return text
+    return ""
+
+
 class Frontend(Protocol):
     """Shows a turn to the user. Every method is called from the thread running the turn or command."""
 
@@ -173,10 +253,16 @@ class Frontend(Protocol):
         """Model text, streamed as it arrives."""
 
     def tool_call(self, call: dict) -> None:
-        """A tool is about to run: ``{name, input}``."""
+        """A tool is about to run: ``{id, name, input, agent_id, parent_id}``.
+
+        ``agent_id`` and ``parent_id`` say which agent calls it (``"main"`` and ``None`` for the user's turn, else
+        a ``ctx.run_agent`` agent and the one that started it): extra keys of the same call, so a frontend that
+        ignores them keeps working. :meth:`text` is the user's turn's only: nested agents do not stream text.
+        """
 
     def tool_result(self, call: dict, result: dict) -> None:
-        """A tool finished: ``result`` is its ``tool_result`` block (``content``, ``is_error``)."""
+        """A tool finished: ``call`` as in :meth:`tool_call`; ``result`` is its ``tool_result`` block
+        (``content``, ``is_error``) with the same ``agent_id`` and ``parent_id``."""
 
     def turn_end(self, error: str | None) -> None:
         """The turn finished; ``error`` is set if it failed."""
@@ -204,6 +290,9 @@ class Frontend(Protocol):
 
     def queued(self) -> None:
         """A user message was queued (:meth:`App.take_queued`): send it as soon as no turn or command is running."""
+
+    def mode_changed(self) -> None:
+        """The current mode changed, from any thread: redraw whatever shows it."""
 
 
 class ExitRepl(Exception):
@@ -310,6 +399,9 @@ class ConsoleFrontend:
     def queued(self) -> None:
         """Nothing to do: a console has no loop that sends the next message."""
 
+    def mode_changed(self) -> None:
+        """Nothing to redraw in a console."""
+
 
 class App:
     """Everything a running ``minimal`` process needs.
@@ -336,7 +428,9 @@ class App:
         setting_errors: Problems found in the settings files by the last reload.
         untrusted: What the last reload did not apply because the user has not
             trusted the project (``/trust``); ``None`` if nothing.
-        cancelled: Set to interrupt the turn in progress.
+        cancelled: Set to interrupt the turn in progress, and with it every agent running under it.
+        agents: The session's agent records (``ctx.agents()``, per-agent cancel flags).
+        mode: The current mode's name, or ``None`` for no mode (:meth:`set_mode`).
     """
 
     def __init__(
@@ -364,7 +458,10 @@ class App:
         self.extensions: list[Path] = []
         self.extension_errors: list[str] = []
         self.untrusted: ProjectSnapshot | None = None
-        self.cancelled = threading.Event()
+        self.cancelled = CancelEvent()
+        self.agents = Agents(self.cancelled)
+        self.mode: str | None = None
+        self._mode_lock = threading.Lock()
         self.settings = config.Settings()
         self.setting_errors: list[str] = []
         self.queued: collections.deque[str] = collections.deque()
@@ -407,6 +504,9 @@ class App:
         skipped without asking and recorded in :attr:`untrusted`; that is not an
         error. The files are read once: that snapshot is what is hashed and run.
 
+        The current mode stays if the reload registered it again; if not, there is no mode
+        afterwards (``mode_change``, and a warning to the user).
+
         Returns:
             ``(loaded, errors)`` as from :func:`~minimal.extensions.loader.load_extensions`,
             followed by the settings files' errors.
@@ -420,7 +520,8 @@ class App:
         except OSError as e:
             snapshot, trusted = None, False
             read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
-        self.settings = config.Settings(tuple(layers), trusted)
+        project_trusted = self.trust_project or (snapshot is not None and trusted)
+        self.settings = config.Settings(tuple(layers), trusted, project_trusted)
         self.permissions = Permissions(self.settings)
         self.setting_errors = setting_errors
         self.registry.dispose()
@@ -436,6 +537,7 @@ class App:
         self.extensions, self.extension_errors = loaded, errors
         self.untrusted = snapshot if snapshot is not None and not trusted else None
         self.frontend.reloaded()
+        self._validate_mode()
         return loaded, errors
 
     def untrusted_notice(self) -> str | None:
@@ -447,10 +549,8 @@ class App:
             "trusted, so they were not applied; run /trust to review them"
         )
 
-    def use_provider(self, name: str, model: str | None = None) -> None:
-        """Switch to provider ``name`` and to ``model`` (default: the provider's default).
-
-        The conversation is kept: history is stored in the provider-neutral format.
+    def create_provider(self, name: str, model: str | None = None) -> tuple[Provider, str]:
+        """A new instance of provider ``name`` and the model to use with it (``model``, else its default), without switching to it.
 
         Raises:
             ValueError: if the provider is unknown, its optional SDK is not installed or its credentials are missing.
@@ -464,9 +564,18 @@ class App:
         problem = spec.missing_sdk() or spec.missing_credentials()
         if problem:
             raise ValueError(problem)
-        self.provider = spec.create()
+        return spec.create(), model or spec.default_model
+
+    def use_provider(self, name: str, model: str | None = None) -> None:
+        """Switch to provider ``name`` and to ``model`` (default: the provider's default).
+
+        The conversation is kept: history is stored in the provider-neutral format.
+
+        Raises:
+            ValueError: if the provider is unknown, its optional SDK is not installed or its credentials are missing.
+        """
+        self.provider, self.model = self.create_provider(name, model)
         self.provider_name = name
-        self.model = model or spec.default_model
 
     def begin(self) -> None:
         """Fire ``session_start``: once per process, when the UI is up (a reload does not fire it again)."""
@@ -588,15 +697,85 @@ class App:
         """
         return self.permissions.check(tool, input, self.cwd)
 
-    def system_prompt(self) -> str:
-        """The system prompt of the next turn (:func:`build_system_prompt`)."""
-        return build_system_prompt(self.registry, self.cwd, self.settings)
+    def base_system_prompt(self) -> str:
+        """The system prompt without the current mode's note (:func:`build_system_prompt`)."""
+        return build_system_prompt(self.registry, self.cwd, self.settings, self.context)
 
-    def request_options(self) -> dict:
+    def system_prompt(self) -> str:
+        """The system prompt of the next turn: :meth:`base_system_prompt`, then the current mode's note."""
+        return _join(self.base_system_prompt(), self.mode_note())
+
+    def request_options(self, provider_name: str | None = None, model: str | None = None) -> dict:
         """Provider request options of the next request: ``max_tokens`` from the settings
-        (:meth:`~minimal.config.Settings.max_tokens_for`); empty for the provider's defaults."""
-        n = self.settings.max_tokens_for(self.provider_name, self.model)
+        (:meth:`~minimal.config.Settings.max_tokens_for`) for the current provider and model, or for the given
+        ones; empty for the provider's defaults."""
+        n = self.settings.max_tokens_for(provider_name or self.provider_name, model or self.model)
         return {} if n is None else {"max_tokens": n}
+
+    # --- modes ---------------------------------------------------------------
+
+    def mode_note(self) -> str:
+        """The current mode's ``system_note``; ``""`` if there is none or no mode."""
+        spec = self.registry.modes.get(self.mode) if self.mode is not None else None
+        return spec.system_note if spec is not None else ""
+
+    def mode_block_reason(self, name: str) -> str | None:
+        """Why the current mode does not let the model use tool ``name`` (the error it gets); ``None`` if it may.
+
+        It is the :data:`~minimal.core.agent.ToolGate` of every agent loop, asked on each request and each call.
+        A mode that is no longer registered (a reload in progress) blocks everything rather than nothing.
+        """
+        mode = self.mode
+        if mode is None:
+            return None
+        spec = self.registry.modes.get(mode)
+        if spec is None:
+            return f"{name} is blocked: the {mode} mode is not registered (extensions are reloading); try again"
+        why = spec.block_reason(name, self.registry.tools.get(name))
+        if why is None:
+            return None
+        return (
+            f"{name} is blocked: {why}. Do not retry it; only the user can change the mode "
+            f"(/mode <name>, available: {', '.join(self.registry.modes)}; /mode off for none)."
+        )
+
+    def set_mode(self, name: str | None) -> None:
+        """Make ``name`` the current mode (``None``: no mode) and fire ``mode_change`` if it changed.
+
+        Raises:
+            ValueError: if no mode is called ``name``.
+        """
+        if name is not None and name not in self.registry.modes:
+            available = ", ".join(self.registry.modes) or "none registered"
+            raise ValueError(f"no mode {name!r} (modes: {available})")
+        self._swap_mode(lambda old: name)
+
+    def cycle_mode(self) -> str | None:
+        """Go to the next mode in registration order: ``None``, the first mode, ..., the last, ``None``...;
+        return the new one (``None`` and no change if no mode is registered)."""
+
+        def advance(old: str | None) -> str | None:
+            order = [None, *self.registry.modes]
+            return order[(order.index(old) + 1) % len(order)] if old in order else None
+
+        return self._swap_mode(advance)
+
+    def _swap_mode(self, choose: Callable[[str | None], str | None]) -> str | None:
+        """Set the mode to ``choose(current)`` atomically; fire ``mode_change`` after the lock is released if it changed."""
+        with self._mode_lock:
+            old = self.mode
+            new = self.mode = choose(old)
+        if new != old:
+            self.registry.emit("mode_change", {"ctx": self.context, "old": old, "new": new})
+            self.frontend.mode_changed()
+        return new
+
+    def _validate_mode(self) -> None:
+        """After a reload: drop a mode that is no longer registered, telling the user."""
+        mode = self.mode
+        if mode is not None and mode not in self.registry.modes:
+            self._swap_mode(lambda old: None)
+            self.frontend.notify(f"Mode {mode!r} is no longer registered: no mode now.", "warning")
 
     def fallback_provider(self, name: str, model: str | None) -> tuple[Provider, str]:
         """Switch to provider ``name`` (:meth:`use_provider`) after a failed request; return the new provider and model.
@@ -611,7 +790,8 @@ class App:
     def run_turn(self, text: str) -> None:
         """Send ``text`` to the model, stream the answer to the frontend and save the session.
 
-        ``turn_start`` handlers may rewrite ``text`` first. If the turn fails or is
+        ``turn_start`` handlers may rewrite ``text`` first. The turn is the agent ``"main"``: ``agent_start``
+        fires before its first request and ``agent_end`` after it ended, however it ended. If the turn fails or is
         interrupted, the frontend gets the error. If the model had already replied,
         the turn stays in the history, closed with an assistant note saying why it
         ended (every ``tool_use`` has its result), so the model still knows what it
@@ -624,33 +804,183 @@ class App:
         before = len(self.messages)
         self.messages.append({"role": "user", "content": text})
         error = None
+        status, answer = "interrupted", ""
         assert self.provider is not None  # startup (cli) picks a provider before any turn
+        run = self.agents.begin_main(text, self.model, self.provider_name)
         try:
-            run_agent(
+            self._emit_agent_start(self.context, run)
+            reply = run_agent(
                 provider=self.provider,
                 model=self.model,
-                system=self.system_prompt(),
+                system=self.base_system_prompt(),
+                dynamic_system=self.mode_note,
                 messages=self.messages,
                 registry=self.registry,
                 ctx=self.context,
                 on_text=self.frontend.text,
-                on_tool=self.frontend.tool_call,
+                on_tool=self._on_tool(run),
                 on_tool_result=self.frontend.tool_result,
+                on_reply=self._on_reply(run),
                 confirm=self.confirm,
                 cancelled=self.cancelled,
                 permit=self.permit,
+                gate=self.mode_block_reason,
                 options=self.request_options(),
                 switch_provider=self.fallback_provider,
             )
+            status, answer = "done", result_text(reply.content) or ""
         except KeyboardInterrupt:
             self._close_failed_turn(before, "interrupted by the user")
             raise
         except Exception as e:
             error = str(e)
+            status = _failure_status(e)
             self._close_failed_turn(before, error)
         finally:
-            self.session.save()
+            try:
+                self.session.save()
+            finally:
+                self._emit_agent_end(self.context, run, status, error if status != "interrupted" else None, answer)
         self.frontend.turn_end(error)
+
+    def run_agent(
+        self,
+        parent_id: str,
+        prompt: str,
+        *,
+        system_note: str = "",
+        exclude_tools: Iterable[str] = (),
+        name: str | None = None,
+        system: str | None = None,
+        tools: Iterable[str] | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        max_turns: int | None = None,
+    ) -> tuple[AgentResult, BaseException | None]:
+        """Run ``prompt`` as a nested agent under agent ``parent_id``: what ``ctx.run_agent`` and ``ctx.run_agent_result`` do.
+
+        Its tools are the registered ones minus ``exclude_tools`` (or only ``tools``), minus what the current mode
+        blocks (asked live, so a mode can never be bypassed by ``tools``). With ``provider`` or ``model`` it talks to
+        that provider/model for this agent only: the app's own do not change.
+
+        Returns:
+            ``(result, error)``: the :class:`~minimal.core.agents.AgentResult`, and the exception that ended the
+            loop (``None`` if it finished).
+
+        Raises:
+            ValueError: for an invalid argument, or an unknown provider or one without credentials.
+        """
+        exclude = frozenset(exclude_tools)
+        allow = None
+        if tools is not None:
+            if isinstance(tools, str):
+                raise ValueError("run_agent: tools must be a collection of tool names, not a string")
+            if exclude:
+                raise ValueError("run_agent: tools and exclude_tools cannot be used together")
+            allow = frozenset(tools)
+            unknown = sorted(allow - self.registry.tools.keys())
+            if unknown:
+                raise ValueError(
+                    f"run_agent: unknown tool(s) in tools: {', '.join(unknown)} "
+                    f"(registered: {', '.join(self.registry.tools)})"
+                )
+        if max_turns is not None and (isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1):
+            raise ValueError("run_agent: max_turns must be an integer >= 1")
+        assert self.provider is not None  # startup (cli) picks a provider before any extension runs
+        if provider is None and model is None:
+            llm, llm_name, llm_model, switch = self.provider, self.provider_name, self.model, self.fallback_provider
+        elif provider is None:
+            llm, llm_name, llm_model, switch = self.provider, self.provider_name, model or "", self.create_provider
+        else:
+            llm, llm_model = self.create_provider(provider, model)
+            llm_name, switch = provider, self.create_provider
+        system_text = _join(self.base_system_prompt() if system is None else system, system_note)
+
+        def gate(tool: str) -> str | None:
+            if allow is not None and tool not in allow:
+                return f"{tool} is not available to this agent (its tools: {', '.join(sorted(allow)) or 'none'})"
+            return self.mode_block_reason(tool)
+
+        run = self.agents.begin(
+            name=name or "agent", parent_id=parent_id, prompt=prompt, model=llm_model, provider=llm_name
+        )
+        ctx = Context(self, run)
+        messages: list[dict] = [{"role": "user", "content": prompt}]
+        status, error, reply = "interrupted", None, None
+        failure: BaseException | None = None
+        try:
+            self._emit_agent_start(ctx, run)
+            reply = run_agent(
+                provider=llm,
+                model=llm_model,
+                system=system_text,
+                dynamic_system=self.mode_note,
+                messages=messages,
+                registry=self.registry,
+                ctx=ctx,
+                on_tool=self._on_tool(run),
+                on_tool_result=self.frontend.tool_result,
+                on_reply=self._on_reply(run),
+                confirm=self.confirm,
+                cancelled=run.cancel,
+                permit=self.permit,
+                exclude_tools=exclude,
+                gate=gate,
+                nested=True,
+                max_turns=50 if max_turns is None else max_turns,
+                options=self.request_options(llm_name, llm_model),
+                switch_provider=switch,
+                agent_id=run.id,
+                parent_id=run.parent_id,
+            )
+            status = "done"
+        except TurnInterrupted as e:
+            failure = e
+        except Exception as e:
+            failure = e
+            status, error = _failure_status(e), str(e) or type(e).__name__
+        finally:
+            text = result_text(reply.content) if reply is not None else _last_text(messages)
+            usage = self._emit_agent_end(ctx, run, status, error, text)
+        result = AgentResult(run.id, text, usage, status, error, messages)
+        return result, failure
+
+    def _on_tool(self, run: AgentRun) -> Callable[[dict], Any]:
+        """The loop's ``on_tool`` for ``run``: count the call, then show it."""
+
+        def on_tool(call: dict) -> None:
+            self.agents.tool_called(run)
+            self.frontend.tool_call(call)
+
+        return on_tool
+
+    def _on_reply(self, run: AgentRun) -> Callable[[Any], None]:
+        """The loop's ``on_reply`` for ``run``: add the reply's usage to the agent's."""
+        return lambda reply: self.agents.replied(run, reply.usage)
+
+    def _emit_agent_start(self, ctx: Context, run: AgentRun) -> None:
+        self.registry.emit(
+            "agent_start",
+            {"ctx": ctx, "agent_id": run.id, "parent_id": run.parent_id, "name": run.name, "prompt": run.prompt},
+        )
+
+    def _emit_agent_end(self, ctx: Context, run: AgentRun, status: str, error: str | None, text: str) -> Usage:
+        """Record how ``run`` ended, fire ``agent_end`` and return the agent's usage."""
+        usage = self.agents.finish(run, status, error)
+        self.registry.emit(
+            "agent_end",
+            {
+                "ctx": ctx,
+                "agent_id": run.id,
+                "parent_id": run.parent_id,
+                "name": run.name,
+                "status": status,
+                "text": text,
+                "usage": usage,
+                "error": error,
+            },
+        )
+        return usage
 
     def _close_failed_turn(self, before: int, reason: str) -> None:
         """Leave the history valid after a turn that began at ``messages[before]`` failed (see :meth:`run_turn`)."""

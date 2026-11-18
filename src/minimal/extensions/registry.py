@@ -7,16 +7,18 @@ through their :class:`~minimal.extensions.facade.Extension`). The agent loop and
 the terminal UI read from it. ``ctx`` below is the
 :class:`~minimal.core.context.Context`.
 
-Events (:data:`EVENTS`) and their payloads:
+Events (:data:`EVENTS`) and their payloads. Every loop that talks to the model (the user's turn and each
+agent a tool starts with ``ctx.run_agent``) has an ``agent_id`` (``"main"`` for the user's turn) and a ``parent_id``
+(``None`` for the user's turn, else the id of the agent whose tool started it); events fired by a loop carry both:
 
-    ``tool_call``    ``{name, input, ctx}``
+    ``tool_call``    ``{name, input, ctx, agent_id, parent_id}``
         Fired before a tool runs. A handler may return
         ``{"block": True, "reason": str}`` to veto the call. A handler
         that raises also blocks the call: a guard that crashed did not approve it.
-    ``tool_result``  ``{name, input, output, is_error, ctx}``
+    ``tool_result``  ``{name, input, output, is_error, ctx, agent_id, parent_id}``
         Fired after a tool runs, with its whole output. A handler may return
         ``{"output": str}`` to rewrite what the model sees (clipped afterwards).
-    ``turn_end``     ``{messages, ctx, nested}``
+    ``turn_end``     ``{messages, ctx, nested, agent_id, parent_id}``
         Fired when the model finishes answering without further tool calls.
         ``messages`` is the history of the loop that ended; ``nested`` is true
         when that loop ran inside a tool (a subagent), whose ``messages`` are
@@ -31,22 +33,33 @@ Events (:data:`EVENTS`) and their payloads:
     ``turn_start``   ``{ctx, text}``
         Fired when the user sends a message, before it enters the history. The
         last ``{"text": str}`` with a non-empty string rewrites the message.
-    ``before_request`` ``{ctx, messages, system, tools, options, nested}``
+    ``before_request`` ``{ctx, messages, system, tools, options, nested, agent_id, parent_id}``
         Fired before each model request. ``{"messages": list}``, ``{"system": str}``
         and ``{"tools": list}`` (combined by key, the last wins) are sent instead,
         for that request only: the history does not change; ``{"options": dict}``
         is merged into the request options (``max_tokens``, ``temperature``).
         Handlers must not mutate what they receive; they return copies.
-    ``after_response`` ``{ctx, reply, usage, nested}``
+    ``after_response`` ``{ctx, reply, usage, nested, agent_id, parent_id}``
         Fired after each reply is appended to the history. Results are ignored.
     ``shutdown``     ``{ctx}``
         Fired when minimal exits.
-    ``provider_error`` ``{ctx, error, attempt, provider, model, nested}``
+    ``provider_error`` ``{ctx, error, attempt, provider, model, nested, agent_id, parent_id}``
         Fired when a model request of a loop fails (``attempt`` counts the failures
         of that request, from 1). The first result with ``{"retry_after": seconds}``
         or ``{"provider": name, "model": name}`` decides: switch provider if asked,
         wait, and send the request again. No such result: the error propagates.
         Text already streamed before the failure stays shown.
+    ``agent_start``  ``{ctx, agent_id, parent_id, name, prompt}``
+        Fired when an agent loop begins: the user's turn (``name`` ``"main"``, ``prompt`` the user's
+        message, after ``turn_start``) or a nested agent (``ctx.run_agent``). Results are ignored.
+    ``agent_end``    ``{ctx, agent_id, parent_id, name, status, text, usage, error}``
+        Fired when that loop ends, after its ``turn_end`` if it had one and before the result goes back
+        to the caller. ``status`` is ``"done"``, ``"interrupted"``, ``"error"`` or ``"max_turns"``;
+        ``text`` the text of its last reply; ``usage`` the :class:`~minimal.providers.base.Usage` summed over
+        the loop's replies; ``error`` the message if it failed, else ``None``. Results are ignored.
+    ``mode_change``  ``{ctx, old, new}``
+        Fired when the current mode changes (``ctx.set_mode``, ``/mode``, a reload that lost the mode).
+        ``old`` and ``new`` are mode names or ``None`` (no mode). Results are ignored.
 """
 
 from __future__ import annotations
@@ -54,7 +67,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from minimal.providers.base import Provider, ProviderSpec
@@ -88,6 +101,9 @@ EVENTS = (
     "after_response",
     "shutdown",
     "provider_error",
+    "agent_start",
+    "agent_end",
+    "mode_change",
 )
 """Events an extension can subscribe to with ``on``."""
 
@@ -330,6 +346,104 @@ class LogoSpec:
     align: str = "center"
 
 
+MODE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+"""The form of a mode name (it is typed as ``/mode <name>``); always ``fullmatch``."""
+
+MODE_OFF = "off"
+"""What ``/mode`` accepts to leave the current mode; no mode can be called that."""
+
+
+@dataclass(frozen=True)
+class ModeSpec:
+    """A mode: a restriction on the tools the model may use, with an optional note for the system prompt (see :meth:`Registry.register_mode`).
+
+    Attributes:
+        name: Unique name; registering the same name again replaces it (keeping its place in the cycle).
+        description: One line shown by ``/mode``.
+        tools: Allow-list of tool names; ``None`` allows every tool that no other rule blocks.
+        exclude_tools: Tool names the mode blocks.
+        system_note: Appended to the system prompt while the mode is current.
+        read_only: Also block every tool registered with ``confirm=True`` (it always asks: ``write``, ``edit``, ``bash``), unless ``tools`` lists it. A
+            ``confirm(input, ctx)`` function does not count: ``read``, ``grep`` and ``glob`` use one to ask only outside the workspace.
+    """
+
+    name: str
+    description: str
+    tools: tuple[str, ...] | None = None
+    exclude_tools: tuple[str, ...] = ()
+    system_note: str = ""
+    read_only: bool = False
+
+    def block_reason(self, name: str, tool: Tool | None) -> str | None:
+        """Why this mode stops the model from using tool ``name``; ``None`` if it may (``tool`` is its registration, ``None`` if it has none)."""
+        listed = self.tools is not None and name in self.tools
+        if self.tools is not None and not listed:
+            return f"the {self.name} mode only allows {', '.join(self.tools) or 'no tools'}"
+        if name in self.exclude_tools:
+            return f"the {self.name} mode excludes it"
+        if self.read_only and not listed and tool is not None and tool.confirm is True:
+            return f"the {self.name} mode is read-only and {name} can change things"
+        return None
+
+
+PROMPT_SECTIONS = ("base", "environment", "extending", "instructions", "append")
+"""The sections of the built-in system prompt, in order (see :func:`~minimal.core.app.build_system_prompt`).
+
+``base``: the base prompt (``prompt.md``, or the ``prompt.base`` file); ``environment``: the working directory and
+the date; ``extending``: how to extend minimal; ``instructions``: each ``prompt.files`` file (``AGENTS.md``);
+``append``: the ``prompt.append`` settings. Sections extensions add follow them."""
+
+PromptText = str | Callable[[Any], "str | None"]
+"""The text of a prompt section: a string, or ``text(ctx)`` returning one (``None`` or ``""`` leaves the section out)."""
+
+
+@dataclass(frozen=True)
+class PromptEdit:
+    """One change an extension made to the system prompt's sections (see :meth:`Registry.register_prompt_section`).
+
+    Attributes:
+        op: ``"add"`` (a section after the others), ``"replace"`` (``name`` takes the place of ``target``) or
+            ``"remove"`` (``target`` goes).
+        name: The section the edit creates; ``""`` for ``remove``.
+        text: Its text; ``None`` for ``remove``.
+        target: The section replaced or removed; ``""`` for ``add``.
+    """
+
+    op: str
+    name: str = ""
+    text: PromptText | None = None
+    target: str = ""
+
+
+def apply_prompt_edits(sections: list[tuple[str, Any]], edits: Iterable[PromptEdit]) -> list[tuple[str, Any]]:
+    """``sections`` (``(name, text)`` pairs, in order) after ``edits``: added at the end, replaced in place, removed."""
+    out = list(sections)
+    for edit in edits:
+        names = [name for name, _ in out]
+        if edit.op == "add":
+            if edit.name not in names:
+                out.append((edit.name, edit.text))
+        elif edit.op == "replace":
+            out[names.index(edit.target)] = (edit.name, edit.text)
+        else:
+            del out[names.index(edit.target)]
+    return out
+
+
+def _names(what: str, values: Iterable[str]) -> tuple[str, ...]:
+    """``values`` as a tuple of tool names; ``ValueError`` if it is a bare string or holds anything but strings."""
+    problem = ValueError(f"register_mode: {what} must be a collection of tool names")
+    if isinstance(values, str):
+        raise problem
+    try:
+        names = tuple(values)
+    except TypeError:
+        raise problem from None
+    if not all(isinstance(n, str) for n in names):
+        raise problem
+    return names
+
+
 class Registry:
     """Collects tools, commands, providers, prompt additions, event handlers, widgets, status segments, themes, the logo, panels and renderers.
 
@@ -339,7 +453,8 @@ class Registry:
         builtin_commands: minimal's own slash commands, by name; an extension command of the
             same name replaces one.
         providers: Model integrations, by name (see :mod:`minimal.providers`).
-        prompt_parts: Extra paragraphs appended to the system prompt.
+        prompt_edits: What extensions did to the system prompt's sections, in order (see :meth:`prompt_section_names`).
+        modes: Modes by name, in registration order (the order ``cycle_mode`` goes through).
         widgets: Visual components for the terminal UI, by name.
         status: Status-line segments for the terminal UI, by name.
         themes: Colour themes for the terminal UI, by name.
@@ -353,7 +468,8 @@ class Registry:
         self.commands: dict[str, Command] = {}
         self.builtin_commands: dict[str, Command] = {}
         self.providers: dict[str, ProviderSpec] = {}
-        self.prompt_parts: list[str] = []
+        self.prompt_edits: list[PromptEdit] = []
+        self.modes: dict[str, ModeSpec] = {}
         self.widgets: dict[str, WidgetSpec] = {}
         self.status: dict[str, StatusSpec] = {}
         self.themes: dict[str, ThemeSpec] = {}
@@ -374,7 +490,8 @@ class Registry:
         self.commands.clear()
         self.builtin_commands.clear()
         self.providers.clear()
-        self.prompt_parts.clear()
+        self.prompt_edits.clear()
+        self.modes.clear()
         self.widgets.clear()
         self.status.clear()
         self.themes.clear()
@@ -677,8 +794,91 @@ class Registry:
         self._handlers.setdefault(event, []).append(handler)
 
     def append_system_prompt(self, text: str) -> None:
-        """Add a paragraph to the end of the system prompt."""
-        self.prompt_parts.append(text)
+        """Add a paragraph to the end of the system prompt (a section of its own, named ``append:<n>``)."""
+        names = self.prompt_section_names()
+        n = len(self.prompt_edits) + 1
+        while f"append:{n}" in names:
+            n += 1
+        self.prompt_edits.append(PromptEdit("add", f"append:{n}", text))
+
+    def prompt_section_names(self) -> list[str]:
+        """The names of the system prompt's sections in order: the built-in ones (:data:`PROMPT_SECTIONS`) with the extensions' edits applied."""
+        return [name for name, _ in apply_prompt_edits([(name, None) for name in PROMPT_SECTIONS], self.prompt_edits)]
+
+    def register_prompt_section(self, name: str, text: PromptText, *, replace: str | None = None) -> None:
+        """Add a named section to the system prompt, or replace one.
+
+        ``text`` is a string or ``text(ctx)`` returning one, called every time the prompt is built; a section whose
+        text is empty (or ``None``) is left out. Without ``replace`` the section goes after the others; if ``name``
+        already exists (``base``, one of an extension) its text is replaced in place. With ``replace="base"``
+        ``name`` takes the place of that section, which must exist: a built-in one (:data:`PROMPT_SECTIONS`) or
+        one registered earlier (extensions load in a fixed order, so register yours after the one it replaces).
+
+        Raises:
+            ValueError: if ``name`` is empty or ``text`` is neither a string nor callable, ``replace`` names no
+                section, or ``name`` is already a different section than the one replaced.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("register_prompt_section: name is required")
+        if not isinstance(text, str) and not callable(text):
+            raise ValueError("register_prompt_section: text must be a string or a function returning one")
+        names = self.prompt_section_names()
+        if replace is None or replace == name:
+            if name in names:
+                self.prompt_edits.append(PromptEdit("replace", name, text, name))
+            else:
+                self.prompt_edits.append(PromptEdit("add", name, text))
+            return
+        if replace not in names:
+            raise ValueError(f"register_prompt_section: no section {replace!r} to replace (sections: {', '.join(names)})")
+        if name in names:
+            raise ValueError(f"register_prompt_section: {name!r} is already a section; remove it first or use a new name")
+        self.prompt_edits.append(PromptEdit("replace", name, text, replace))
+
+    def remove_prompt_section(self, name: str) -> None:
+        """Take a section out of the system prompt: a built-in one (:data:`PROMPT_SECTIONS`) or one registered earlier.
+
+        Raises:
+            ValueError: if there is no such section.
+        """
+        names = self.prompt_section_names()
+        if name not in names:
+            raise ValueError(f"remove_prompt_section: no section {name!r} (sections: {', '.join(names)})")
+        self.prompt_edits.append(PromptEdit("remove", target=name))
+
+    def register_mode(
+        self,
+        name: str,
+        *,
+        description: str,
+        tools: Iterable[str] | None = None,
+        exclude_tools: Iterable[str] = (),
+        system_note: str = "",
+        read_only: bool = False,
+    ) -> None:
+        """Register a mode, replacing any mode of the same name (it keeps its place in the order).
+
+        While it is the current mode (``ctx.set_mode``, ``/mode``) the model may use only the tools ``tools``
+        lists (``None``: every tool), but those in ``exclude_tools``; with ``read_only``, tools registered with
+        ``confirm=True`` (they always ask: the ones with side effects) are blocked too unless ``tools`` lists them. Blocked tools are
+        not offered to the model and a call to one is answered with an error. ``system_note`` is appended to the
+        system prompt. Names in ``tools`` and ``exclude_tools`` need not be registered tools.
+
+        Raises:
+            ValueError: if ``name`` is not lowercase letters, digits, ``_`` and ``-`` (starting with a letter or
+                digit) or is ``"off"``, ``description`` or ``system_note`` is not a string, ``tools`` or
+                ``exclude_tools`` is not a collection of names, or ``read_only`` is not a bool.
+        """
+        if not isinstance(name, str) or not MODE_NAME.fullmatch(name) or name == MODE_OFF:
+            raise ValueError(
+                f"register_mode: name {name!r} must be lowercase letters, digits, '_' or '-' and not {MODE_OFF!r}"
+            )
+        if not isinstance(description, str) or not isinstance(system_note, str):
+            raise ValueError("register_mode: description and system_note must be strings")
+        if not isinstance(read_only, bool):
+            raise ValueError("register_mode: read_only must be a bool")
+        allow = None if tools is None else _names("tools", tools)
+        self.modes[name] = ModeSpec(name, description, allow, _names("exclude_tools", exclude_tools), system_note, read_only)
 
     def emit(self, event: str, payload: dict, *, strict: bool = False) -> list:
         """Call every handler of ``event`` in order and return their non-``None`` results.

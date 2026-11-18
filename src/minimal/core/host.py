@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from minimal import config
+from minimal.core.agents import AgentInfo
 from minimal.core.context import Context
 from minimal.extensions.registry import (
     Command,
@@ -45,6 +46,7 @@ class HostStatus:
         context_tokens: Tokens in the context after the last reply, if the provider reports usage.
         extensions: How many extensions the last reload loaded.
         untrusted: How many project extensions and settings were not applied for lack of ``/trust``; ``0`` if none.
+        mode: The current mode's name; ``None`` for no mode.
     """
 
     model: str
@@ -54,6 +56,7 @@ class HostStatus:
     context_tokens: int | None
     extensions: int
     untrusted: int
+    mode: str | None = None
 
 
 class Host:
@@ -98,6 +101,7 @@ class Host:
             context_tokens=app.context_tokens,
             extensions=len(app.extensions),
             untrusted=app.untrusted.count if app.untrusted is not None else 0,
+            mode=app.mode,
         )
 
     @property
@@ -108,6 +112,33 @@ class Host:
     def untrusted_notice(self) -> str | None:
         """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""
         return self._app.untrusted_notice()
+
+    # --- agents and modes -----------------------------------------------------
+
+    def agents(self) -> list[AgentInfo]:
+        """A snapshot of the session's agents (``ctx.agents()``): the user's turn, ``"main"``, and every nested agent, in start order."""
+        return self._app.agents.snapshot()
+
+    @property
+    def mode(self) -> str | None:
+        """The current mode's name; ``None`` for no mode."""
+        return self._app.mode
+
+    def modes(self) -> dict[str, str]:
+        """Every registered mode and its description, in registration order (the order :meth:`cycle_mode` follows)."""
+        return self._app.context.modes()
+
+    def set_mode(self, name: str | None) -> None:
+        """Make ``name`` the current mode (``None``: no mode).
+
+        Raises:
+            ValueError: if no mode is called ``name``.
+        """
+        self._app.set_mode(name)
+
+    def cycle_mode(self) -> str | None:
+        """Go to the next mode (no mode, then each in registration order, then no mode again); return the new one."""
+        return self._app.cycle_mode()
 
     # --- what extensions add to the interface ---------------------------------
 

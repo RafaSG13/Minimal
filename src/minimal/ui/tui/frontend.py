@@ -76,6 +76,9 @@ class TuiFrontend:
     def queued(self) -> None:
         self._on_ui(self.tui.submit_queued)
 
+    def mode_changed(self) -> None:
+        self._on_ui(self.tui._render_status)
+
     def _modal(self, screen: ModalScreen) -> Any:
         """Show ``screen`` from a worker thread and wait for its dismiss value (``None`` on quit)."""
         done = threading.Event()

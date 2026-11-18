@@ -166,6 +166,50 @@ class ProjectTrustTest(TempDirTest):
         self.assertIsNone(self.app.untrusted)
         self.frontend.ask.assert_not_called()
 
+    PROBE = (
+        '__api__ = "2.2"\n'
+        "def register(minimal):\n"
+        '    minimal.register_tool("probe", lambda input, ctx: f"{minimal.project_trusted} {ctx.project_trusted}")\n'
+    )
+
+    def probe(self) -> str:
+        """What a global extension sees: ``minimal.project_trusted`` at load time and ``ctx.project_trusted`` now."""
+        return self.app.registry.tools["probe"].run({}, self.app.context)
+
+    def test_project_trusted_follows_trust_for_extension_and_ctx(self):
+        probe = self.home / "extensions" / "probe.py"
+        probe.parent.mkdir(parents=True)
+        probe.write_text(self.PROBE)
+        self.frontend.ask.return_value = True
+        self.app.reload_extensions()
+        self.assertEqual(self.probe(), "False False")
+
+        self.trust()  # reloads: the extension sees the new answer while it registers
+        self.assertEqual(self.probe(), "True True")
+
+        (self.ext_dir / "hello.py").write_text(HELLO_EXT.format(reply="v2"))  # edited since: untrusted again
+        self.app.reload_extensions()
+        self.assertEqual(self.probe(), "False False")
+
+    def test_project_trusted_with_the_trust_project_option(self):
+        probe = self.home / "extensions" / "probe.py"
+        probe.parent.mkdir(parents=True)
+        probe.write_text(self.PROBE)
+        self.app.trust_project = True
+        self.app.reload_extensions()
+        self.assertEqual(self.probe(), "True True")
+
+    def test_a_project_with_nothing_to_review_is_not_trusted_without_the_option(self):
+        (self.ext_dir / "hello.py").unlink()
+        probe = self.home / "extensions" / "probe.py"
+        probe.parent.mkdir(parents=True)
+        probe.write_text(self.PROBE)
+        self.app.reload_extensions()
+        self.assertEqual(self.probe(), "False False")  # /trust has nothing to accept here
+        self.app.trust_project = True
+        self.app.reload_extensions()
+        self.assertEqual(self.probe(), "True True")
+
 
 AUDITED = b'''"""Reads ~/.env for nothing."""
 import os
@@ -197,6 +241,15 @@ class AuditTest(unittest.TestCase):
                 (9, "dynamic"),
             },
         )
+
+    def test_scan_flags_every_way_to_edit_the_system_prompt(self):
+        source = (
+            b"def register(minimal):\n"
+            b"    minimal.append_system_prompt('a')\n"
+            b"    minimal.register_prompt_section('x', 'b', replace='base')\n"
+            b"    minimal.remove_prompt_section('extending')\n"
+        )
+        self.assertEqual({(f.line, f.capability) for f in audit.scan(source)}, {(2, "prompt"), (3, "prompt"), (4, "prompt")})
 
     def test_unparsable_source(self):
         self.assertEqual([f.capability for f in audit.scan(b"def (")], ["unparsable"])

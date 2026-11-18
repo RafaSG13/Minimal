@@ -191,7 +191,10 @@ class ExtensionApiTest(unittest.TestCase):
             self.assertEqual(self.app.context.run_agent("go", exclude_tools={"x"}), "done")
         self.assertNotIn("x", self.app.provider.offered[0])
         self.assertIn("bash", self.app.provider.offered[0])
-        self.assertEqual(seen, [(True, self.app.context)])
+        self.assertEqual([nested for nested, _ in seen], [True])
+        ctx = seen[0][1]  # the loop's own ctx: the app's, with the agent's identity and cancel flag
+        self.assertEqual((ctx._app, ctx.agent_id, ctx.parent_id), (self.app, ctx.agent_id, "main"))
+        self.assertNotEqual(ctx.agent_id, "main")
 
     def test_complete_keeps_an_empty_system_prompt(self):
         self.app.provider = mock.Mock(stream=mock.Mock(return_value=Reply(content=[], stop_reason="end_turn")))
