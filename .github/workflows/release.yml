@@ -43,32 +43,9 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
   homebrew:
-    # Points the Homebrew formula (RafaSG13/homebrew-tap) at the release just published. Skipped, not failed, while
-    # the HOMEBREW_TAP_TOKEN secret (fine-grained, contents:write on RafaSG13/homebrew-tap) does not exist: PyPI is
-    # already published by then, and `scripts/update_brew_formula.py` does the same by hand (RELEASING.md).
+    # PyPI is published by now: a failure here only means the formula is stale (RELEASING.md has the manual steps).
     needs: publish
-    runs-on: ubuntu-latest
-    env:
-      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-    steps:
-      - if: env.HOMEBREW_TAP_TOKEN != ''
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - if: env.HOMEBREW_TAP_TOKEN != ''
-        uses: actions/checkout@v7
-        with:
-          repository: RafaSG13/homebrew-tap
-          path: tap
-          token: ${{ env.HOMEBREW_TAP_TOKEN }}
-      - if: env.HOMEBREW_TAP_TOKEN != ''
-        run: python3 scripts/update_brew_formula.py "${GITHUB_REF_NAME#v}" tap/Formula/minimal.rb
-      - if: env.HOMEBREW_TAP_TOKEN != ''
-        working-directory: tap
-        run: |
-          git diff --quiet || {
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -am "minimal ${GITHUB_REF_NAME#v}"
-            git push
-          }
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets: inherit

@@ -1,0 +1,55 @@
+name: Homebrew
+# Points the Homebrew formula (RafaSG13/homebrew-tap, Formula/minimal.rb) at a release published on PyPI. Called by
+# release.yml after `publish`; run it by hand (`gh workflow run homebrew.yml -f version=X.Y.Z`) to redo or check it.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version, with or without the leading v
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version, with or without the leading v
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  formula:
+    runs-on: ubuntu-latest
+    env:
+      # Fine-grained token with contents:write on RafaSG13/homebrew-tap (the one Pandora's release uses works).
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Without the token there is nothing to push with
+        if: env.HOMEBREW_TAP_TOKEN == ''
+        run: echo "::warning::HOMEBREW_TAP_TOKEN is not set: the formula was not updated (RELEASING.md has the manual steps)"
+      - if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@v7
+        with:
+          repository: RafaSG13/homebrew-tap
+          path: tap
+          token: ${{ env.HOMEBREW_TAP_TOKEN }}
+      - if: env.HOMEBREW_TAP_TOKEN != ''
+        run: python3 scripts/update_brew_formula.py "${VERSION#v}" tap/Formula/minimal.rb
+      - if: env.HOMEBREW_TAP_TOKEN != ''
+        working-directory: tap
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "minimal ${VERSION#v}"
+          fi
+          # A dry run first: it fails here, not silently, if the token cannot write to the tap.
+          git push --dry-run origin HEAD:main
+          git push origin HEAD:main
