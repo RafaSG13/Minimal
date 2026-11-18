@@ -72,6 +72,10 @@ DEFAULT_URL = "https://github.com/RafaSG13/minimal-marketplace.git"
 CACHE_ROOT = Path.home() / ".minimal" / "marketplace"
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
 """Valid extension names (always ``fullmatch``): no path separators, no leading ``_``."""
+MARKETPLACE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+"""Valid marketplace names (always ``fullmatch``)."""
+DEFAULT_NAME = "minimal-marketplace"
+"""The name :func:`names` gives :data:`DEFAULT_URL`."""
 GIT_TIMEOUT = 120
 """Seconds a ``git`` or ``gh`` command may take before it is given up (a dead network must not hang ``/ext``)."""
 _COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc")
@@ -94,6 +98,8 @@ class Listing:
     """Why this minimal cannot run it (:func:`~minimal.extensions.metadata.api_problem`); ``None`` if it can."""
     dependencies: tuple[str, ...] = ()
     """Its ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
+    tags: tuple[str, ...] = ()
+    """Its ``__tags__``: keywords that :func:`releases` matches besides the name and description."""
 
     @property
     def compatible(self) -> bool:
@@ -147,47 +153,86 @@ def marketplace_url() -> str:
     return os.environ.get("MINIMAL_MARKETPLACE") or DEFAULT_URL
 
 
-def _saved_marketplaces() -> list[str]:
-    """The ``marketplaces`` of ``~/.minimal/settings.json``, in the order they were added."""
-    return list(config.load_global().get("marketplaces", []))
+def _saved_entries() -> list[dict[str, str]]:
+    """The saved ``marketplaces`` as ``{"url": …}`` or ``{"name": …, "url": …}`` dicts, in the order added."""
+    return [{"url": e} if isinstance(e, str) else dict(e) for e in config.load_global().get("marketplaces", [])]
+
+
+def saved_marketplaces() -> list[str]:
+    """The URLs of the saved marketplaces, in the order they were added."""
+    return [e["url"] for e in _saved_entries()]
 
 
 def marketplaces() -> list[str]:
     """Marketplaces to offer: :func:`marketplace_url`, :data:`DEFAULT_URL`, then the saved ones."""
-    return list(dict.fromkeys([marketplace_url(), DEFAULT_URL, *_saved_marketplaces()]))
+    return list(dict.fromkeys([marketplace_url(), DEFAULT_URL, *saved_marketplaces()]))
 
 
-def add_marketplace(url: str) -> str:
-    """Save a marketplace after checking that it can be cloned; return it as saved.
+def names() -> dict[str, str]:
+    """Marketplace URL to its name: :data:`DEFAULT_URL` as :data:`DEFAULT_NAME`, plus the saved named ones."""
+    named = {e["url"]: e["name"] for e in _saved_entries() if "name" in e}
+    return {DEFAULT_URL: DEFAULT_NAME, **named}
 
-    Existing local paths are saved as absolute paths.
+
+def label(url: str) -> str:
+    """What to show for a marketplace: its name if it has one, else its URL."""
+    return names().get(url, url)
+
+
+def resolve(ref: str) -> str:
+    """The URL of a marketplace given as a URL or a name.
 
     Raises:
-        ValueError: if ``url`` is empty or already listed.
+        ValueError: if ``ref`` is neither a known URL nor a known name.
+    """
+    if ref in marketplaces():
+        return ref
+    for url, name in names().items():
+        if name == ref and url in marketplaces():
+            return url
+    raise ValueError("unknown marketplace; add it with /ext first")
+
+
+def add_marketplace(url: str, name: str | None = None) -> str:
+    """Save a marketplace after checking that it can be cloned; return it as saved.
+
+    Existing local paths are saved as absolute paths. A ``name`` is shown instead of the URL
+    (:func:`label`) and accepted wherever a marketplace is chosen (:func:`resolve`).
+
+    Raises:
+        ValueError: if ``url`` is empty or already listed, or ``name`` is invalid or already taken.
         RuntimeError: if git cannot clone it.
     """
     url = url.strip()
     if not url:
         raise ValueError("enter a git URL or a local path")
+    name = (name or "").strip() or None
+    if name is not None:
+        if not MARKETPLACE_NAME_RE.fullmatch(name):
+            raise ValueError(f"{name} is not a valid marketplace name: use letters, digits, - and _")
+        if name in names().values():
+            raise ValueError(f"{name} is already a marketplace name")
     if Path(url).expanduser().exists():
         url = str(Path(url).expanduser().resolve())
     if url in marketplaces():
         raise ValueError(f"{url} is already in the list")
     sync(url)
-    config.update_global({"marketplaces": [*_saved_marketplaces(), url]})
+    entry: str | dict[str, str] = url if name is None else {"name": name, "url": url}
+    config.update_global({"marketplaces": [*config.load_global().get("marketplaces", []), entry]})
     return url
 
 
 def remove_marketplace(url: str) -> None:
-    """Forget a saved marketplace.
+    """Forget a saved marketplace, named or not.
 
     Raises:
         ValueError: if ``url`` was not saved (the default and ``$MINIMAL_MARKETPLACE`` cannot be removed).
     """
-    saved = _saved_marketplaces()
-    if url not in saved:
+    entries = _saved_entries()
+    if url not in [e["url"] for e in entries]:
         raise ValueError(f"{url} is not a saved marketplace")
-    config.update_global({"marketplaces": [u for u in saved if u != url]})
+    kept = [e if "name" in e else e["url"] for e in entries if e["url"] != url]
+    config.update_global({"marketplaces": kept})
 
 
 def _run_git(args: tuple[str, ...], cwd: Path | None) -> bytes:
@@ -250,7 +295,7 @@ def describe(path: Path, name: str | None = None) -> Listing:
     Raises:
         ValueError: on a syntax error, an invalid name, a missing ``register``
             function, module docstring, ``__version__`` or ``__api__``, an invalid ``__api__`` or
-            ``__dependencies__``, a package named like a category folder, or a package symlink to a
+            ``__dependencies__`` or ``__tags__``, a package named like a category folder, or a package symlink to a
             folder or outside it.
     """
     entry = _entry_file(path)
@@ -291,13 +336,15 @@ def describe(path: Path, name: str | None = None) -> Listing:
         meta.api,
         problem,
         meta.dependencies,
+        meta.tags,
     )
 
 
 def format_listing(listing: Listing) -> str:
-    """One line: ``name version — description``."""
+    """One line: ``name version — description``, then ``[tag, tag]`` if it has tags."""
     head = f"{listing.name} {listing.version}" if listing.version else listing.name
-    return f"{head} — {listing.description}"
+    tags = f" [{', '.join(listing.tags)}]" if listing.tags else ""
+    return f"{head} — {listing.description}{tags}"
 
 
 def _incompatible(listing: Listing) -> str:
@@ -346,7 +393,7 @@ def _entries(root: Path, category: str) -> tuple[list[Path], list[Path]]:
 
 
 def releases(query: str = "", url: str | None = None, category: str | None = None) -> list[Release]:
-    """The offered version (:class:`Release`) of each extension whose name or description contains ``query`` (case-insensitive); all if empty.
+    """The offered version (:class:`Release`) of each extension whose name, description or a tag contains ``query`` (case-insensitive); all if empty.
 
     Listed by category in :data:`~minimal.extensions.loader.CATEGORIES` order, then by
     name; only ``category``'s if given. Extensions whose HEAD has invalid metadata are skipped.
@@ -371,7 +418,8 @@ def releases(query: str = "", url: str | None = None, category: str | None = Non
             except ValueError:
                 continue
             listing = release.listing
-            if needle in listing.name.lower() or needle in listing.description.lower():
+            haystack = (listing.name.lower(), listing.description.lower(), *listing.tags)
+            if any(needle in text for text in haystack):
                 found.append(release)
     return found
 
@@ -1156,37 +1204,41 @@ def _missing(module: str) -> bool:
 # --- tools for the model -----------------------------------------------------
 
 
-def _known_marketplace(url: str | None) -> str | None:
-    if url is not None and url not in marketplaces():
-        raise ValueError("unknown marketplace; add it with /ext first")
-    return url
+def _known_marketplace(ref: str | None) -> str | None:
+    return None if ref is None else resolve(ref)
 
 
-def ext_search_tool(input: dict, ctx: Any) -> str:
-    """The model's ``ext_search``: one line per matching extension of every marketplace (registered by ``marketplace_tools``)."""
-    category = input.get("category")
+def search_lines(query: str = "", category: str | None = None) -> list[str]:
+    """One line per matching extension of every marketplace, prefixed with its :func:`label` when there are several.
+
+    A marketplace that cannot be reached contributes one ``(label: error)`` line.
+
+    Raises:
+        ValueError: if ``category`` is not a category.
+    """
     if category:
-        loader.category_dir(
-            Path(), category
-        )  # validates it before any marketplace is synced
+        loader.category_dir(Path(), category)  # validates it before any marketplace is synced
     urls = marketplaces()
     lines = []
     for url in urls:
         try:
-            found = releases(input.get("query", ""), url, category)
+            found = releases(query, url, category)
         except (RuntimeError, ValueError) as e:
-            lines.append(f"({url}: {e})")
+            lines.append(f"({label(url)}: {e})")
             continue
-        prefix = f"{url} " if len(urls) > 1 else ""
+        prefix = f"{label(url)} " if len(urls) > 1 else ""
         for release in found:
             x = release.listing
             note = "" if x.compatible else f" [{x.problem}]"
             if release.newer is not None:
-                note = (
-                    f" [latest for this minimal; newer needs API {release.newer.api}]"
-                )
+                note = f" [latest for this minimal; newer needs API {release.newer.api}]"
             lines.append(f"{prefix}{x.category}/{format_listing(x)}{note}")
-    return "\n".join(lines) or "No extensions found."
+    return lines
+
+
+def ext_search_tool(input: dict, ctx: Any) -> str:
+    """The model's ``ext_search``: one line per matching extension of every marketplace (registered by ``marketplace_tools``)."""
+    return "\n".join(search_lines(input.get("query", ""), input.get("category"))) or "No extensions found."
 
 
 def ext_install_tool(input: dict, ctx: Any) -> str:
@@ -1206,7 +1258,7 @@ def ext_install_tool(input: dict, ctx: Any) -> str:
                 continue
         if len(having) > 1:
             raise ValueError(
-                f"{name} is in several marketplaces ({', '.join(having)}); pass marketplace"
+                f"{name} is in several marketplaces ({', '.join(label(h) for h in having)}); pass marketplace"
             )
         url = having[0] if having else None
     scope = input.get("scope", "global")

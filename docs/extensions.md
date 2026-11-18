@@ -56,6 +56,7 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__version__`  | `"1.0"`: a string, required by the marketplace; shown as `minimal.version`                                 |
 | `__api__`      | `"2"`: the [API version](#api-versions) it is written for, required. `"2"` runs on any 2.x; `"2.1"` needs 2.1 or a later 2.x |
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
+| `__tags__`     | `["git", "ui"]`: optional list of lowercase keywords (`[a-z0-9_-]+`) that `/ext search` and `ext_search` match besides the name and description; shown after the description |
 
 An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "2"`), and neither is one written for another major version (`written for minimal API 1, this minimal has API 2.0`) or a newer minor (`needs minimal API 2.3, this minimal has API 2.0: upgrade minimal`).
 
@@ -436,10 +437,11 @@ A marketplace is a git repository with one top-level folder per category: `exten
 **The lockfile.** Each extensions folder (`~/.minimal/extensions/` and `./.minimal/extensions/`) has a `.lock.json` written by the marketplace on install and update and cleaned on uninstall. It is keyed by extension id (`name`, or `category/name`) and holds `marketplace`, `commit`, `version`, `api` and `sha256` (over each installed file's path and bytes) of the copy as installed. The loader skips dot-files, so it is never loaded. Updates compare commits, not bytes: an item is outdated when its locked commit is not the one on offer. A copy whose files no longer match `sha256` has local changes; `/ext` leaves its update unticked ("local changes will be overwritten") and `ext_install` refuses it unless called with `force: true`. A copy without a lock entry (installed by hand or by an older minimal) is compared byte by byte with the offered version and has no local-change protection.
 
 ```
+/ext search <query> [category] search every marketplace by name, description or tag
 /ext publish <path> [name]     push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
 ```
 
-The model's `ext_publish` tool does the same, with an optional `category` and `marketplace` (one of the configured URLs). Before publishing or opening a pull request by hand, validate:
+The model's `ext_publish` tool does the same, with an optional `category` and `marketplace` (a configured name or URL; give a marketplace a name with `{"name": "team", "url": "…"}` in the global `marketplaces` setting or in the `/ext` marketplace picker, see [settings](settings.md)). Before publishing or opening a pull request by hand, validate:
 
 ```bash
 minimal ext check my_ext.py my_pkg/      # files or package folders

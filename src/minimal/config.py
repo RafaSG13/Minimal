@@ -55,6 +55,14 @@ def _is_str_list(value: object) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
+def _is_marketplace_list(value: object) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(v, str)
+        or (isinstance(v, dict) and set(v) == {"name", "url"} and all(isinstance(x, str) for x in v.values()))
+        for v in value
+    )
+
+
 def _is_settings_map(value: object) -> bool:
     return isinstance(value, dict) and all(isinstance(v, dict) for v in value.values())
 
@@ -77,7 +85,7 @@ _TYPES = {
         _is_max_tokens,
         'a positive integer or an object mapping "provider" or "provider/model" to positive integers',
     ),
-    "marketplaces": (_is_str_list, "a list of strings"),
+    "marketplaces": (_is_marketplace_list, "a list of URLs or {name, url} objects"),
     "prompt.base": (lambda v: isinstance(v, str), "a string"),
     "prompt.append": (lambda v: isinstance(v, str) or _is_str_list(v), "a string or a list of strings"),
     "prompt.files": (_is_str_list, "a list of strings"),
@@ -227,7 +235,7 @@ class Settings:
         ]
 
     @property
-    def marketplaces(self) -> list[str]:
+    def marketplaces(self) -> list[str | dict[str, str]]:
         return list(self._global().get("marketplaces", []))
 
     @property

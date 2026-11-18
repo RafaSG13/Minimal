@@ -20,7 +20,7 @@ CATEGORY_SCHEMA = {
 
 MARKETPLACE_SCHEMA = {
     "type": "string",
-    "description": "Marketplace URL, as listed by ext_search",
+    "description": "Marketplace name or URL, as listed by ext_search",
 }
 
 

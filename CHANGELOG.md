@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Named marketplaces: an entry of the global `marketplaces` setting may be `{"name": "team", "url": "…"}` as well as a
+  URL. `ext_search` and `/ext` show the name instead of the URL, `ext_install` and `ext_publish` accept it as
+  `marketplace`, and adding a marketplace in `/ext` asks for an optional name. The default marketplace is called
+  `minimal-marketplace`. Names are unique and use letters, digits, `-` and `_`.
+- `__tags__ = ["git", "ui"]` extension metadata (optional, lowercase). `ext_search` matches a query against the name,
+  the description and the tags, and listings show the tags.
+- `/ext search <query> [category]` searches every marketplace from the command line.
+
 ## 0.7.0
 
 ### Added

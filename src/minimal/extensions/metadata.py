@@ -4,7 +4,8 @@
 - ``__version__ = "1.2"``: the extension's own version (the marketplace requires one);
 - ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`);
 - ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional; :data:`DEPENDENCY_RE`).
-  ``/ext`` offers to install the missing ones into minimal's Python.
+  ``/ext`` offers to install the missing ones into minimal's Python;
+- ``__tags__ = ["git", "ui"]``: keywords the marketplace search matches (optional; :data:`TAG_RE`).
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ class Metadata:
     """Whether a top-level ``def register`` exists."""
     dependencies: tuple[str, ...] = ()
     """Top-level ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
+    tags: tuple[str, ...] = ()
+    """Top-level ``__tags__``: lowercase keywords the marketplace search matches."""
 
 
 DEPENDENCY_RE = re.compile(
@@ -53,6 +56,25 @@ def _dependencies(node: ast.expr, filename: str) -> tuple[str, ...]:
     )
 
 
+TAG_RE = re.compile(r"[a-z0-9_-]+")
+"""A valid ``__tags__`` entry (always ``fullmatch``): lowercase letters, digits, ``-`` and ``_``."""
+
+
+def _tags(node: ast.expr, filename: str) -> tuple[str, ...]:
+    if isinstance(node, (ast.List, ast.Tuple)) and all(
+        isinstance(e, ast.Constant) and isinstance(e.value, str) and TAG_RE.fullmatch(e.value) for e in node.elts
+    ):
+        return tuple(e.value for e in node.elts)  # type: ignore[attr-defined]
+    try:
+        value = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        value = ast.unparse(node)
+    raise ValueError(
+        f'{filename}: __tags__ must be a list of lowercase tags such as ["git", "ui"]; got {value!r}'
+    )
+
+
+
 class SourceSyntaxError(ValueError):
     """:func:`read_metadata` could not parse the source."""
 
@@ -62,7 +84,7 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
 
     Raises:
         SourceSyntaxError: if ``source`` does not parse.
-        ValueError: if ``__dependencies__`` is not a list of package requirements.
+        ValueError: if ``__dependencies__`` is not a list of package requirements or ``__tags__`` not a list of tags.
     """
     try:
         tree = ast.parse(source, filename=filename)
@@ -70,12 +92,15 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
         raise SourceSyntaxError(f"{filename}: syntax error: {e}") from None
     strings = {}
     dependencies: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
         names = [t.id for t in node.targets if isinstance(t, ast.Name)]
         if "__dependencies__" in names:
             dependencies = _dependencies(node.value, filename)
+        if "__tags__" in names:
+            tags = _tags(node.value, filename)
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             for name in names:
                 if name in ("__version__", "__api__"):
@@ -87,6 +112,7 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
         api=strings.get("__api__", ""),
         has_register=any(isinstance(n, ast.FunctionDef) and n.name == "register" for n in tree.body),
         dependencies=dependencies,
+        tags=tags,
     )
 
 

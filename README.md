@@ -255,6 +255,7 @@ The default marketplace is [`RafaSG13/minimal-marketplace`](https://github.com/R
 ```
 /ext                              pick a marketplace and a category, then tick items to install, update or remove
 /ext list                         list installed items by scope and category
+/ext search <query> [category]    search every marketplace by name, description or tag
 /ext publish <path> [name]        push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
 ```
 

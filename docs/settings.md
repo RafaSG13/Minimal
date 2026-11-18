@@ -22,7 +22,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `model`               | string                       | all          | highest layer wins                                                   |
 | `theme`               | string                       | all          | highest layer wins                                                   |
 | `max_tokens`          | positive integer, or object: `"provider"` or `"provider/model"` → positive integer | all | highest layer wins; default: each provider's own (8192 for Anthropic, Claude and Gemini, none sent to OpenAI-compatible servers) |
-| `marketplaces`        | list of strings (git URLs or paths) | global only | —                                                         |
+| `marketplaces`        | list of strings (git URLs or paths) or `{"name": "…", "url": "…"}` objects | global only | — (a name is shown instead of the URL and can be passed as `marketplace` to `ext_install`/`ext_publish`) |
 | `prompt.base`         | string: path of the base system prompt (`~` allowed) | global only | — (default: the packaged prompt)          |
 | `prompt.append`       | string or list of strings    | all          | concatenated global → project → local, added to the system prompt     |
 | `prompt.files`        | list of strings              | all          | highest layer wins; default `["AGENTS.md"]`                          |
@@ -94,7 +94,7 @@ prints each file with its scope (or `(not found)`), then one line per effective 
   "provider": "claude",
   "model": "claude-sonnet-5-5",
   "theme": "dark",
-  "marketplaces": ["https://github.com/me/my-marketplace.git"],
+  "marketplaces": ["https://github.com/me/my-marketplace.git", {"name": "team", "url": "git@example.com:team/market.git"}],
   "prompt": {"append": "Prefer small, focused diffs."},
   "permissions": {
     "allow": ["bash(git status*)", "bash(git diff*)"],
