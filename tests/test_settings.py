@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -11,6 +13,7 @@ from minimal.cli import start_provider
 from minimal.core.app import App, build_system_prompt
 from minimal.core.session import Session
 from minimal.extensions import loader
+from minimal.ui import commands
 from minimal.extensions.registry import Registry
 from minimal.providers.base import ProviderSpec
 
@@ -178,6 +181,18 @@ class SettingsTest(unittest.TestCase):
         app.reload_extensions()
         self.assertIsNone(app.untrusted)
         self.assertEqual(app.settings.allow, [("bash(ls*)", "project")])
+
+    def test_settings_command_shows_named_marketplace_as_name_equals_url(self):
+        self.write("global", {"marketplaces": [{"name": "team", "url": "https://example.com/m.git"}, "https://example.com/plain.git"]})
+        app = App(registry=Registry(), session=Session("t", self.home / "t.jsonl"), cwd=str(self.cwd), auto_approve=False)
+        app.reload_extensions()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            commands._settings("", SimpleNamespace(_app=app))
+        shown = out.getvalue()
+        self.assertIn("marketplaces  team=https://example.com/m.git  (global)", shown)
+        self.assertIn("marketplaces  https://example.com/plain.git  (global)", shown)
+        self.assertNotIn("{'name'", shown)
 
 
 if __name__ == "__main__":
