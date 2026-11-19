@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from textual.widgets import Input, OptionList
+from textual.widgets import OptionList
 
 from minimal import config
 from minimal.core.app import App
@@ -18,6 +18,7 @@ from minimal.extensions.registry import Registry
 from minimal.providers.base import Reply, Usage
 from minimal.ui.commands import register_builtin_commands
 from minimal.ui.tui.app import MinimalTui
+from minimal.ui.tui.composer import Composer
 from tests.test_bundled_extensions import MARKETPLACE, BundledExtensionTest, RecordingProvider, text_reply
 
 ITEM = MARKETPLACE / "widgets" / "agent_monitor.py"
@@ -310,12 +311,12 @@ class AgentMonitorTuiTest(unittest.IsolatedAsyncioTestCase):
         self.fail("timed out")
 
     def idle(self, app):
-        return lambda: not app.query_one("#prompt", Input).disabled
+        return lambda: not app.busy
 
     async def test_browser_shows_the_tree_the_selected_detail_and_interrupts_a_running_agent(self):
         app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
-            app.query_one("#prompt", Input).value = "/agents"
+            app.query_one("#prompt", Composer).set_text("/agents")
             await pilot.press("enter")
             await self.wait_until(pilot, lambda: type(app.screen).__name__ == "AgentsScreen")
             screen = app.screen
@@ -343,7 +344,7 @@ class AgentMonitorTuiTest(unittest.IsolatedAsyncioTestCase):
     async def test_closing_with_no_interaction_returns_the_prompt(self):
         app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
-            app.query_one("#prompt", Input).value = "/agents"
+            app.query_one("#prompt", Composer).set_text("/agents")
             await pilot.press("enter")
             await self.wait_until(pilot, lambda: type(app.screen).__name__ == "AgentsScreen")
             await pilot.press("c")  # on main: it is not running, so nothing is interrupted

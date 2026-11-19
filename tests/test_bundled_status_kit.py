@@ -11,6 +11,7 @@ from unittest import mock
 from minimal.core.host import Host
 from minimal.core.session import Session
 from minimal.ui.tui.app import MinimalTui
+from minimal.ui.tui.composer import Composer
 from tests.test_bundled_extensions import MARKETPLACE, BundledExtensionTest, text_reply
 
 
@@ -270,11 +271,11 @@ class TermTitleTest(BundledExtensionTest, unittest.IsolatedAsyncioTestCase):
         real.isatty.return_value = True
         with mock.patch("textual.drivers.headless_driver.HeadlessDriver.write", lambda driver, data: sent.append(data)):
             async with tui.run_test() as pilot:
-                tui.query_one("#prompt").value = "hi"
+                tui.query_one("#prompt", Composer).set_text("hi")
                 await pilot.press("enter")
                 for _ in range(100):
                     await pilot.pause(0.05)
-                    if not tui.query_one("#prompt").disabled:
+                    if not tui.busy:
                         break
         sent = [data for data in sent if data.startswith("\x1b]0;") or data == self.module.PUSH]
         titles = [data[4:-1] for data in sent if data.startswith("\x1b]0;")]

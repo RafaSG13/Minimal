@@ -24,8 +24,6 @@ settings from ``extensions.settings.<id>`` in settings.json::
 
 from __future__ import annotations
 
-import hashlib
-import os
 import types
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -33,7 +31,16 @@ from typing import Any, TypedDict
 
 from minimal import config
 from minimal.extensions.metadata import Metadata
-from minimal.extensions.registry import CommandRun, EventHandler, PromptText, Registry, Tool, ToolRun, check_event
+from minimal.extensions.registry import (
+    CommandComplete,
+    CommandRun,
+    EventHandler,
+    PromptText,
+    Registry,
+    Tool,
+    ToolRun,
+    check_event,
+)
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage
 
 
@@ -281,8 +288,7 @@ class Extension:
             ValueError: if ``scope`` is neither.
         """
         if scope == "project":
-            key = hashlib.sha256(os.path.realpath(self._cwd).encode()).hexdigest()[:16]
-            path = config.HOME_DIR / "data" / "projects" / key / self._id
+            path = config.project_data_dir(self._cwd) / self._id
         elif scope == "global":
             path = config.HOME_DIR / "data" / "global" / self._id
         else:
@@ -307,9 +313,19 @@ class Extension:
         """
         self._registry.register_tool(name, run, description, input_schema, confirm, subject_key)
 
-    def register_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
-        """Add the slash command ``/name``, run as ``run(args, ctx)``; see :meth:`Registry.register_command`."""
-        self._registry.register_command(name, run, description, terminal)
+    def register_command(
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
+    ) -> None:
+        """Add the slash command ``/name``, run as ``run(args, ctx)``; see :meth:`Registry.register_command`.
+
+        ``complete(args, ctx)`` returns candidate completions of the text typed after ``/name `` (API 2.3).
+        """
+        self._registry.register_command(name, run, description, terminal, complete)
 
     def register_widget(self, name: str, create: Callable[[Any], Any], area: str = "sidebar") -> None:
         """Add a terminal UI widget built by ``create(ctx)``; see :meth:`Registry.register_widget`."""
@@ -458,13 +474,18 @@ class Extension:
         return decorate
 
     def command(
-        self, name: str | None = None, *, description: str = "", terminal: bool = False
+        self,
+        name: str | None = None,
+        *,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
     ) -> Callable[[CommandRun], CommandRun]:
         """Decorator registering ``fn(args, ctx)`` as ``/name``: the name defaults to the function's,
-        the description to the first line of its docstring."""
+        the description to the first line of its docstring. ``complete`` is as in :meth:`register_command`."""
 
         def decorate(fn: CommandRun) -> CommandRun:
-            self.register_command(name or fn.__name__, fn, description or _first_line(fn.__doc__), terminal)
+            self.register_command(name or fn.__name__, fn, description or _first_line(fn.__doc__), terminal, complete)
             return fn
 
         return decorate

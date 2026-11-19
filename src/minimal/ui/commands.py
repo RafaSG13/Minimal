@@ -14,6 +14,7 @@ import json
 import os
 import shlex
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from minimal import config
@@ -30,9 +31,10 @@ from minimal.core.session import (
 )
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import MODE_OFF, Registry
+from minimal.extensions.registry import MODE_OFF, CommandComplete, Registry
 from minimal.providers import login_provider
 from minimal.ui import setup
+from minimal.ui.export import assistant_texts, native_copy, session_markdown
 
 
 def _app(ctx: Context) -> App:
@@ -466,6 +468,92 @@ def _ext_picker(app: App) -> None:
     print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
+def _complete_word(args: str, options: Iterable[str]) -> list[str]:
+    """``args`` with its last word replaced by each of ``options`` that starts with it: the completions of a command
+    whose arguments are words from a list."""
+    head, sep, last = args.rpartition(" ")
+    return [f"{head}{sep}{o}" for o in options if o.startswith(last)]
+
+
+def _complete_mode(args: str, ctx: Context) -> list[str]:
+    return _complete_word(args, [*ctx.modes(), MODE_OFF]) if " " not in args else []
+
+
+def _complete_provider(args: str, ctx: Context) -> list[str]:
+    return _complete_word(args, _app(ctx).registry.providers) if " " not in args else []
+
+
+def _complete_resume(args: str, ctx: Context) -> list[str]:
+    app = _app(ctx)
+    all_projects = "--all" in args.split()
+    ids = [i for i in reversed(list_sessions(None if all_projects else app.cwd)) if i != app.session.id]
+    return _complete_word(args, ["--all", *ids[:RESUME_CHOICES]])
+
+
+def _complete_ext(args: str, ctx: Context) -> list[str]:
+    return _complete_word(args, ("list", "search", "publish")) if " " not in args else []
+
+
+def _copy(args: str, ctx: Context) -> None:
+    """Copy the last assistant message (or the n-th from the end) to the clipboard."""
+    app = _app(ctx)
+    word = args.strip()
+    if word and not (word.isdigit() and int(word) >= 1):
+        raise ValueError("usage: /copy [n]")
+    n = int(word) if word else 1
+    texts = assistant_texts(app.messages)
+    if not texts:
+        raise ValueError("no assistant message to copy yet")
+    if n > len(texts):
+        raise ValueError(f"no assistant message number {n} from the end; there are {len(texts)}")
+    text = texts[-n]
+    used = []
+    copy_text = getattr(app.frontend, "copy_text", None)  # the terminal UI's: OSC 52 through the terminal
+    if copy_text is not None and copy_text(text):
+        used.append("OSC 52")
+    if tool := native_copy(text):
+        used.append(tool)
+    if not used:
+        raise ValueError("no clipboard available: install pbcopy, wl-copy, xclip or xsel, or use a terminal with OSC 52")
+    which = "the last reply" if n == 1 else f"reply {n} from the end"
+    print(f"Copied {len(text)} characters of {which} ({' + '.join(used)}).")
+
+
+def _export(args: str, ctx: Context) -> None:
+    """Write the session as Markdown to a file."""
+    app = _app(ctx)
+    words = shlex.split(args)
+    force = "--force" in words
+    rest = [w for w in words if w != "--force"]
+    if len(rest) > 1:
+        raise ValueError("usage: /export [path] [--force]")
+    if not app.messages:
+        raise ValueError("nothing to export yet")
+    name = rest[0] if rest else f"minimal-session-{app.session.id}.md"
+    path = Path(app.cwd, Path(name).expanduser())
+    text = session_markdown(app.messages, app.session.id, app.session.title, app.cwd)
+    try:
+        with open(path, "w" if force else "x", encoding="utf-8") as f:
+            f.write(text)
+    except FileExistsError:
+        raise ValueError(f"{path} already exists; /export {name} --force overwrites it") from None
+    except OSError as e:
+        raise ValueError(f"cannot write {path}: {e.strerror or e}") from None
+    print(f"Exported {len(app.messages)} messages to {path}")
+
+
+_COMPLETERS: dict[str, CommandComplete] = {
+    "resume": _complete_resume,
+    "provider": _complete_provider,
+    "login": _complete_provider,
+    "logout": _complete_provider,
+    "mode": _complete_mode,
+    "ext": _complete_ext,
+    "extensions": _complete_ext,
+}
+"""The built-in commands whose arguments the composer completes, by name."""
+
+
 def register_builtin_commands(registry: Registry) -> None:
     """Register the built-in slash commands into ``registry`` (:attr:`~minimal.extensions.registry.Registry.builtin_commands`)."""
     ext = f"pick extensions to install, update or remove; {EXT_USAGE}"
@@ -484,10 +572,12 @@ def register_builtin_commands(registry: Registry) -> None:
         ("trust", _trust, "review this project's extensions and choose whether to trust and load them", False),
         ("ext", _ext, ext, False),
         ("extensions", _ext, ext, False),
+        ("copy", _copy, "copy the last assistant message, or the n-th from the end: /copy [n]", False),
+        ("export", _export, "write the session as Markdown, default ./minimal-session-<id>.md: /export [path] [--force]", False),
         ("quit", _exit, "quit", False),
         ("setup", _setup, "choose and save the default provider, its login or key, and the model", True),
         ("login", _login, "sign in to a provider that uses a login (a subscription, an account): /login [provider]", True),
         ("logout", _logout, "forget a provider's login: /logout [provider]", False),
         ("exit", _exit, "quit", False),
     ):
-        registry.register_builtin_command(name, run, description, terminal)
+        registry.register_builtin_command(name, run, description, terminal, _COMPLETERS.get(name))

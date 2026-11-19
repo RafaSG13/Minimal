@@ -38,6 +38,7 @@ from minimal.extensions.loader import (
 from minimal.extensions.registry import (
     PROMPT_SECTIONS,
     Command,
+    CommandComplete,
     CommandRun,
     Registry,
     Tool,
@@ -468,20 +469,27 @@ class App:
         self.context = Context(self)
         self.permissions = Permissions(self.settings)
         self._register_commands = register_commands
-        self._frontend_commands: dict[str, tuple[CommandRun, str, bool]] = {}
+        self._frontend_commands: dict[str, tuple[CommandRun, str, bool, CommandComplete | None]] = {}
         self._register_builtins()  # usable before the first reload
 
     def _register_builtins(self) -> None:
         """Register the built-in commands and the terminal UI's commands."""
         if self._register_commands is not None:
             self._register_commands(self.registry)
-        for name, (run, description, terminal) in self._frontend_commands.items():
-            self.registry.register_builtin_command(name, run, description, terminal)
+        for name, (run, description, terminal, complete) in self._frontend_commands.items():
+            self.registry.register_builtin_command(name, run, description, terminal, complete)
 
-    def add_frontend_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
+    def add_frontend_command(
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
+    ) -> None:
         """Add a built-in command of the terminal UI (``/theme``); kept across reloads."""
-        self._frontend_commands[name] = (run, description, terminal)
-        self.registry.register_builtin_command(name, run, description, terminal)
+        self._frontend_commands[name] = (run, description, terminal, complete)
+        self.registry.register_builtin_command(name, run, description, terminal, complete)
 
     def take_queued(self) -> str | None:
         """The oldest message queued with ``ctx.queue_user_message``, removed from the queue; ``None`` if none."""

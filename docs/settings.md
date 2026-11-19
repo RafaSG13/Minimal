@@ -30,11 +30,21 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `permissions.deny`    | list of rules                | all          | concatenated                                                         |
 | `extensions.disabled` | list of extension ids        | all          | union; project/local only once trusted                               |
 | `extensions.settings` | object: extension id → object | all         | per id, each layer's object updates the lower ones; project/local only once trusted |
+| `ui.composer_max_lines` | positive integer           | all          | highest layer wins; default `8`                                      |
+| `ui.history_size`     | integer ≥ 0                  | all          | highest layer wins; default `500`                                    |
+| `ui.mention_max_chars` | positive integer            | all          | highest layer wins; default `20000`                                  |
+| `ui.notify`           | `"off"`, `"bell"` or `"osc9"` | all         | highest layer wins; default `"off"`                                  |
+| `ui.notify_after`     | number ≥ 0 (seconds)         | all          | highest layer wins; default `10`                                     |
 
 - **`prompt.files`** are read relative to the working directory and added to the system prompt as `Project instructions (<name>)`. Missing files are skipped. Files set by the project or local layer must stay inside the project; others are ignored.
 - **`max_tokens`** is the output-token limit of each model request. `{"max_tokens": 16000}` applies to every model; `{"max_tokens": {"anthropic": 16000, "openai/gpt-5.5": 32000}}` picks by `provider/model` first, then by provider, and leaves the rest at their default.
 - **`extensions.disabled`** lists ids (`compact`, `tools/subagent`, see [extensions](extensions.md#layout-and-where-to-save)) not to load from `~/.minimal/extensions` or `.minimal/extensions`, and the id of a bundled extension: `marketplace_tools` removes the model's `ext_search`, `ext_install` and `ext_publish`. Extensions passed with `--ext` always load.
 - **`extensions.settings`** holds the values an extension declares with `declare_settings` ([extensions](extensions.md#settings)).
+- **`ui.composer_max_lines`**, **`ui.history_size`**, **`ui.mention_max_chars`**, **`ui.notify`** and **`ui.notify_after`** shape the terminal UI's prompt (see [the composer](../README.md#the-composer)); `/reload` applies a change:
+  - `ui.composer_max_lines` (default `8`): rows the prompt grows to for a multi-line message before it scrolls.
+  - `ui.history_size` (default `500`): entries kept in the project's prompt history, `~/.minimal/data/projects/<key>/history.json` (mode 0600; `<key>` is the hash an extension's [`data_dir`](extensions.md#layout-and-where-to-save) uses). `0` keeps none. Consecutive duplicates are saved once.
+  - `ui.mention_max_chars` (default `20000`): characters of each `@file` mention appended to the message; the rest is cut with a note.
+  - `ui.notify` (`"off"` by default, `"bell"` or `"osc9"`) and `ui.notify_after` (seconds, default `10`): when a turn that took longer than `notify_after` ends and the terminal is in the background, ring the bell or send the OSC 9 desktop notification (iTerm2, WezTerm, Kitty, Ghostty and others). A terminal that never reports focus changes counts as in the background, so it is notified every time.
 
 A file that is not valid JSON is left out entirely. An unknown key, a value of the wrong type, an invalid permission rule, or a global-only key in a project file is dropped. Each problem is reported by `/reload` and `/settings` with the file's path, and the rest still applies.
 

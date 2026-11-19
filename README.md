@@ -158,6 +158,8 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 | `/tools`                     | List the tools                                                             |
 | `/mode [name\|off]`          | List the modes extensions added and the current one, or switch (`Shift+Tab` cycles them) |
 | `/theme [name]`              | Pick the colour theme; the choice is saved in `~/.minimal/settings.json`   |
+| `/copy [n]`                  | Copy the last assistant message (the `n`-th from the end) to the clipboard: OSC 52 through the terminal, and `pbcopy`, `wl-copy`, `xclip` or `xsel` when installed; it says which |
+| `/export [path] [--force]`   | Write the session as Markdown to `path` (default `./minimal-session-<id>.md`); an existing file is only overwritten with `--force`. Tool calls and results are summarised and cut, images are placeholders |
 | `/reload`                    | Reload extensions and settings from disk                                   |
 | `/settings`                  | Show the settings files and each effective setting with where it comes from |
 | `/trust`                     | Scan this project's extensions and trust-gated settings, then choose whether to trust and apply them |
@@ -170,6 +172,26 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 `Esc` interrupts the turn in progress: a running `bash` command is killed. It takes effect at the next streamed chunk, tool call or model request. If the model had already replied, the turn stays in the history, closed with a `[turn interrupted: …]` note and an error result for each tool call that had not finished, so the model still knows what it did; otherwise the turn is dropped and the same prompt can be sent again. Interrupting during an automatic compaction (the `compact` extension) aborts it and keeps the answer. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
 
 Typing `/` and part of a command suggests the rest; `→` accepts it. Click a tool call to expand its output (up to 500 lines) and again to collapse it; edits show a diff with the file's line numbers, and `read`/`write` show syntax-highlighted code. `Ctrl+B` hides or shows the sidebar.
+
+### The composer
+
+The prompt is a multi-line editor that grows with the text up to `ui.composer_max_lines` rows ([settings](docs/settings.md)).
+
+| Key | Does |
+| --- | --- |
+| `Enter` | Send the message (or the `/command`) |
+| `Shift+Enter`, `Ctrl+J`, `Alt+Enter` | Insert a newline. Most terminals send a plain `Enter` for `Shift+Enter` unless they speak the kitty keyboard protocol (kitty, WezTerm, Ghostty, recent iTerm2; tmux needs `extended-keys`): use `Ctrl+J` or `Alt+Enter` (on macOS Terminal and iTerm2 set Option to send Esc+) there |
+| `Up` on the first line, `Down` on the last | Walk the project's prompt history (kept in `~/.minimal/data/projects/<key>/history.json`); what you had typed comes back after the newest entry |
+| `@` and some letters | Complete a project file (`.gitignore` is respected; letters may skip: `@rdm` finds `README.md`). `Up`/`Down` move, `Tab` puts one in the text (again for the next), `Enter` accepts it, `Esc` closes the list |
+| `/command ` and some letters | Complete the command's arguments when it offers completions: `/theme`, `/mode`, `/resume`, `/provider`, `/ext` and extension commands ([`complete`](docs/extensions.md#commands)); same keys |
+| `→` or `Tab` after `/re` | Accept the ghost suggestion of a command name |
+| `Ctrl+P` | The command palette lists every slash command; choosing one runs it, or types `/name ` when it needs an argument |
+
+Every `@path` in a sent message that names a text file inside the working directory stays in the text and its content (cut at `ui.mention_max_chars`, 20000 characters) is appended to the message in a `<file path="…">` block, so the model has it without a tool call. Binary files, files outside the working directory (also through links) and paths that name nothing are not attached; the first two are reported.
+
+The prompt stays usable while a turn runs: a message sent meanwhile is shown dimmed above it as `queued: …` and sent when the turn ends, through the same queue as `ctx.queue_user_message`; `Esc` still interrupts the turn and the queued message goes out after it. A `/command` typed meanwhile is refused with a notice and kept in the prompt.
+
+With `ui.notify` set to `bell` or `osc9`, a turn that took longer than `ui.notify_after` seconds (default 10) rings the bell or sends a desktop notification when it ends while the terminal is in the background. A terminal that does not report focus changes is notified every time.
 
 ### Environment
 
@@ -327,11 +349,14 @@ src/minimal/         packages from the bottom up; each imports only from the one
     context.py       Context and UI: the ctx extensions receive
     permissions.py   permission rules: allow/deny matching for tool calls
     session.py       JSONL sessions (~/.minimal/sessions)
+    history.py       the project's prompt history (Up/Down in the composer)
+    mentions.py      @file mentions: project files to complete, files attached to a message
     prompt.md        packaged base prompt
   ui/
     commands.py      slash commands (/help, /provider, /reload, /settings, /trust, /ext, …)
     setup.py         onboarding wizard: provider, login or API key, model
-    tui/             the Textual terminal UI: app (MinimalTui, run_tui), widgets, dialogs, markdown, theme
+    export.py        /copy and /export: assistant texts, the session as Markdown, the clipboard tools
+    tui/             the Textual terminal UI: app (MinimalTui, run_tui), composer (prompt, history, completion), palette, widgets, dialogs, markdown, theme
   cli.py             option parsing, entry point, `minimal ext check`
   api.py             the only module extensions import from: Extension, Context, event types, glyphs, …
 extensions/
