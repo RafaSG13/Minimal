@@ -85,6 +85,85 @@ class ConfirmScreen(ModalScreen[bool]):
             self.dismiss(event.widget.id == "yes")
 
 
+class PermissionScreen(ModalScreen[str]):
+    """Whether a tool call may run: allow it once, for this session or always (writing the rule), or deny it.
+
+    Dismisses with ``"once"``, ``"session"``, ``"always"`` or ``"deny"``. The wider answers appear only when there is a
+    ``rule`` to add; ``"always"`` only when ``saved_in`` names the file it goes to.
+    """
+
+    DEFAULT_CSS = """
+    PermissionScreen { align: center middle; background: $modal-overlay; }
+    PermissionScreen > Vertical {
+        width: 80%; max-width: 100; height: auto;
+        padding: 1 2; background: $surface;
+    }
+    PermissionScreen .title { width: 100%; text-style: bold; margin-bottom: 1; }
+    PermissionScreen .rule { color: $muted; margin-top: 1; }
+    PermissionScreen #actions { height: auto; margin-top: 1; }
+    PermissionScreen .choice {
+        width: auto; margin-right: 2; padding: 0 2;
+        content-align: center middle; background: $panel; color: $muted;
+    }
+    PermissionScreen .choice.-selected { background: $success; color: $background; text-style: bold; }
+    PermissionScreen .choice.-deny.-selected { background: $error; }
+    PermissionScreen #hint { color: $dim; margin-top: 1; }
+    """
+
+    BINDINGS = [
+        ("left,up", "move(-1)", "Previous"),
+        ("right,down,tab", "move(1)", "Next"),
+        ("enter", "confirm", "Confirm"),
+        ("y", "answer('once')", "Allow once"),
+        ("s", "answer('session')", "This session"),
+        ("a", "answer('always')", "Always"),
+        ("n,d,escape", "answer('deny')", "Deny"),
+    ]
+
+    def __init__(self, question: str, rule: str | None = None, saved_in: str | None = None) -> None:
+        super().__init__()
+        self.question = question
+        self.rule = rule
+        self.saved_in = saved_in
+        self.choices = [("once", "Allow once")]
+        if rule is not None:
+            self.choices.append(("session", "Allow this session"))
+            if saved_in is not None:
+                self.choices.append(("always", "Always allow"))
+        self.choices.append(("deny", "Deny"))
+        self.index = 0  # enter on an untouched prompt allows once, like most agent harnesses
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(Content.assemble((theme.WARNING, "$warning"), " Permission"), classes="title")
+            yield Label(self.question, markup=False)
+            if self.rule is not None:
+                where = f"; always saves it in {self.saved_in}" if self.saved_in is not None else ""
+                yield Label(f"Rule for this session or always: {self.rule}{where}", classes="rule", markup=False)
+            with Horizontal(id="actions"):
+                for i, (value, label) in enumerate(self.choices):
+                    classes = f"choice -{value}" + (" -selected" if i == self.index else "")
+                    yield Label(label, id=f"choice-{value}", classes=classes)
+            yield Label("← → choose · enter confirms · esc denies", id="hint")
+
+    def action_move(self, step: int) -> None:
+        self.index = (self.index + step) % len(self.choices)
+        for i, (value, _) in enumerate(self.choices):
+            self.query_one(f"#choice-{value}").set_class(i == self.index, "-selected")
+
+    def action_confirm(self) -> None:
+        self.dismiss(self.choices[self.index][0])
+
+    def action_answer(self, value: str) -> None:
+        if any(value == offered for offered, _ in self.choices):
+            self.dismiss(value)
+
+    def on_click(self, event: events.Click) -> None:
+        widget_id = event.widget.id if event.widget is not None else None
+        if widget_id is not None and widget_id.startswith("choice-"):
+            self.dismiss(widget_id.removeprefix("choice-"))
+
+
 class DialogScreen(ModalScreen[Any]):
     """A titled box opened by a command through the frontend; esc cancels (dismisses with ``None``)."""
 

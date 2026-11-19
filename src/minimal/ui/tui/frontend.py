@@ -11,7 +11,7 @@ from textual.screen import ModalScreen
 
 from minimal.core.app import ConsoleFrontend
 from minimal.extensions.registry import CommandRun
-from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, TextScreen
+from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, PermissionScreen, TextScreen
 
 if TYPE_CHECKING:
     from minimal.ui.tui.app import MinimalTui
@@ -79,6 +79,9 @@ class TuiFrontend:
     def mode_changed(self) -> None:
         self._on_ui(self.tui._render_status)
 
+    def progress(self, text: str | None) -> None:
+        self._on_ui(self.tui.set_progress, text)
+
     def _modal(self, screen: ModalScreen) -> Any:
         """Show ``screen`` from a worker thread and wait for its dismiss value (``None`` on quit)."""
         done = threading.Event()
@@ -107,6 +110,11 @@ class TuiFrontend:
         if self._in_terminal():
             return ConsoleFrontend().ask(question)
         return bool(self._modal(ConfirmScreen(question)))
+
+    def permission(self, question: str, rule: str | None, saved_in: str | None) -> str:
+        if self._in_terminal():
+            return ConsoleFrontend().permission(question, rule, saved_in)
+        return self._modal(PermissionScreen(question, rule, saved_in)) or "deny"
 
     def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
         if self._in_terminal():

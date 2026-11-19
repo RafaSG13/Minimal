@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from minimal import config
-from minimal.core.agents import AgentInfo
+from minimal.core.agents import AgentInfo, UsageTotals
 from minimal.core.context import Context
 from minimal.extensions.registry import (
     Command,
@@ -49,6 +49,9 @@ class HostStatus:
         mode: The current mode's name; ``None`` for no mode.
         reasoning_effort: ``"low"``, ``"medium"`` or ``"high"`` when the model is asked to think that much; ``None`` for
             the provider's default.
+        usage: Tokens and requests this process has spent (``ctx.usage``).
+        truncations: How many times the session's history was cut (``ctx.truncate``): redraw the transcript when it
+            or ``session_id`` changes.
     """
 
     model: str
@@ -60,6 +63,8 @@ class HostStatus:
     untrusted: int
     mode: str | None = None
     reasoning_effort: str | None = None
+    usage: UsageTotals = UsageTotals()
+    truncations: int = 0
 
 
 class Host:
@@ -106,6 +111,8 @@ class Host:
             untrusted=app.untrusted.count if app.untrusted is not None else 0,
             mode=app.mode,
             reasoning_effort=app.reasoning_effort,
+            usage=app.usage.totals,
+            truncations=app.truncations,
         )
 
     @property

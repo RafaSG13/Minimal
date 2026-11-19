@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from minimal import API_VERSION, __version__
 from minimal.config import REASONING_EFFORTS
 from minimal.core.agent import USER_DENIED
-from minimal.core.agents import AGENT_STATUSES, MAIN_AGENT, AgentInfo, AgentResult
+from minimal.core.agents import AGENT_STATUSES, MAIN_AGENT, AgentInfo, AgentResult, UsageTotals
 from minimal.core.context import UI, Context
 from minimal.extensions.facade import (
     AfterResponseEvent,
@@ -73,7 +73,8 @@ __all__ = [
     "PromptText", "Provider",
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
     "ShutdownEvent", "Tool",
-    "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",
+    "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "UsageTotals",
+    "__version__",
     "glob_regex", "glyphs", "image_block", "logo_content", "openai_compatible", "result_text", "styled_line", "styled_lines", "theme",
 ]  # fmt: skip
 

@@ -83,6 +83,16 @@ A `bash` deny rule matches the whole command **or any command inside it**: the p
 | `"deny": ["bash(*rm -rf*)"]`   | never run these commands                                   |
 | `"allow": ["fetch(https://docs.python.org/*)"]` | an extension tool `fetch` with `subject_key="url"` |
 
+### Allow this session, allow always
+
+The terminal UI's permission dialog offers **Allow once**, **Allow this session**, **Always allow** and **Deny** (arrows and `enter`, or `y`, `s`, `a`, `n`/`esc`). The dialog shows the rule the two wider answers add, always the narrowest one that covers the call:
+
+- `bash`: the command's first two words when the second is a plain subcommand (`git status --short` → `bash(git status*)`); otherwise the exact command. Commands that run other programs or change many files by their arguments (`sh`, `env`, `sudo`, `xargs`, `find`, interpreters such as `python`, `rm`, `curl`, …) and commands with options right after the first word always get the exact command. A command that chains, pipes, substitutes or redirects (see above) gets **no rule**: no allow rule can match it, so the dialog offers only once or deny.
+- file tools: the exact path (relative to the working directory when inside it, so `write(src/app.py)`); a path containing `[` gets no rule.
+- other tools: `name(subject)` with their exact subject, or the bare `name` for a tool without a `subject_key`.
+
+*This session* keeps the rule in memory until minimal exits (a `/reload` and `/new` keep it). *Always* also appends it to `permissions.allow` in the project's `.minimal/settings.local.json` (not committed; created with mode 0600, everything else in the file is kept) and the transcript says which rule went where. It is offered when the project's trust-gated settings are trusted or it has none; the rule you just chose counts as trusted, so `/trust` is not asked again for it. In a project with unreviewed extensions or settings only *this session* is offered; run `/trust` first. If the file cannot be edited (invalid JSON, say) it is left alone and the rule holds for the session. `deny` rules still win over every allowed call, `-y` is unchanged, and the plain terminal keeps its yes/no question.
+
 ## `/settings`
 
 ```

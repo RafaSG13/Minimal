@@ -127,11 +127,11 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 
 **Interface.** `minimal` always opens the Textual terminal UI (`ui/tui/`). `/setup` and `/login` suspend it and run in the plain terminal.
 
-**Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
+**Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. The terminal UI's dialog also offers "Allow this session" and "Always allow", which add the rule it shows (the narrowest that covers the call) in memory or to the project's `.minimal/settings.local.json` ([details](docs/settings.md#allow-this-session-allow-always)). A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
 
 **Files.** `edit` replaces one exact, unique piece of text, every occurrence with `replace_all`, or several pieces in one call with `edits` (all or none), and returns the changed lines. `edit` and `write` refuse a file that changed on disk since the model last read, wrote or edited it (you, a formatter or a `bash` command touched it), so the model reads it again instead of overwriting your changes. `read` shows bytes that are not UTF-8 as `�` and does not print binary files.
 
-**Sessions.** A session is open in one minimal at a time: `-c`, `-s` or `/resume` of a session another minimal has open fails and says which process holds it. `/title` names a session; `/sessions` and `/resume` show the title (else the first message) and, for a session an extension started from another one (as `compact` does), the one it came from.
+**Sessions.** A session is open in one minimal at a time: `-c`, `-s` or `/resume` of a session another minimal has open fails and says which process holds it. `/title` names a session; `/sessions` and `/resume` show the title (else the first message) and, for a session an extension started from another one (as `compact` does), the one it came from. `/fork` copies a session into a new one and `/rewind` cuts the last exchange off the current one (never between a tool call and its result).
 
 ### Providers
 
@@ -153,6 +153,9 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 | `/new`, `/sessions [--all]`  | Start a new session, list this project's saved sessions (every project's with `--all`) |
 | `/resume [--all] [id]`       | Resume a saved session of this project: pick one of the latest (`--all`: of any project), or give an id |
 | `/title [text]`              | Show or set this session's title                                           |
+| `/fork [n]`                  | Continue in a new session copied from this one (up to before your n-th last message); the old one stays saved |
+| `/rewind [n]`                | Drop your n-th last message (default 1) and everything after it from this session |
+| `/usage`                     | Show the tokens and model requests spent since minimal started             |
 | `/model [number\|name]`      | List models, or change model                                               |
 | `/provider [name [model]]`   | List providers, or switch for this session and keep the conversation       |
 | `/tools`                     | List the tools                                                             |

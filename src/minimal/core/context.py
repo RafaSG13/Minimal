@@ -16,11 +16,11 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from minimal.core import agent
-from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun
+from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun, UsageTotals
 from minimal.core.session import list_sessions, new_id, open_session
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import ModeSpec, Tool
-from minimal.providers.base import Reply
+from minimal.extensions.registry import ModeSpec, Tool, TurnInterrupted
+from minimal.providers.base import Reply, result_text
 
 if TYPE_CHECKING:
     from minimal.core.app import App
@@ -151,29 +151,113 @@ class Context:
         system: str | None = None,
         tools: bool = True,
         options: Mapping[str, Any] | None = None,
+        model: str | None = None,
     ) -> Reply:
         """One model request with the current provider and model; no tools are run.
+
+        A failed request goes to the ``provider_error`` handlers, which may retry it as for a turn. The request counts
+        in :attr:`usage`.
 
         Args:
             messages: The conversation to send, in the canonical format.
             system: System prompt (default: :meth:`system_prompt`).
             tools: Offer the registered tools, as a turn does (keeps the provider's prompt cache warm).
             options: Request options (``max_tokens``, ``temperature``, ``reasoning_effort``) over the ones a turn uses.
+            model: Another model of the current provider (API 2.3); the request uses its ``max_tokens`` setting.
 
         Raises:
             TurnInterrupted: if the user interrupts while the reply streams.
         """
         app = self._app
-        opts = {**app.request_options(), **(options or {})}
+        opts = {**app.request_options(app.provider_name, model), **(options or {})}
         assert app.provider is not None  # startup picks a provider before any extension runs
-        return app.provider.stream(
-            model=app.model,
-            system=self.system_prompt() if system is None else system,
-            messages=messages,
-            tools=agent.tool_specs(app.registry, gate=app.mode_block_reason) if tools else [],
-            on_text=lambda _chunk: self.check_cancelled(),
-            **({"options": opts} if opts else {}),
+        provider, model_name = app.provider, model or app.model
+        system_text = self.system_prompt() if system is None else system
+        tool_list = agent.tool_specs(app.registry, gate=app.mode_block_reason) if tools else []
+        who = {"agent_id": self.agent_id, "parent_id": self.parent_id}
+        switch = app.fallback_provider if model is None else app.create_provider
+        flag = self._flag()
+        reply = None
+        attempt = 0
+        while reply is None:
+            try:
+                reply = provider.stream(
+                    model=model_name,
+                    system=system_text,
+                    messages=messages,
+                    tools=tool_list,
+                    on_text=lambda _chunk: self.check_cancelled(),
+                    **({"options": opts} if opts else {}),
+                )
+            except TurnInterrupted:
+                raise
+            except Exception as e:
+                attempt += 1
+                retry = agent._provider_error(
+                    e, attempt, app.registry, self, provider, model_name, self._run is not None, switch, flag, who
+                )
+                if retry is None:
+                    raise
+                provider, model_name = retry
+                self.check_cancelled()
+        app.usage.add(reply.usage)
+        return reply
+
+    def complete_text(
+        self, prompt: str, *, system: str | None = None, model: str | None = None, max_tokens: int = 1024
+    ) -> str:
+        """Ask the model one question and return its answer as text: one request, no tools, not added to the history.
+
+        API 2.3. A thin layer over :meth:`complete` for utilities such as a title, a summary or a classification:
+        the conversation is not sent, only ``prompt``. The request counts in :attr:`usage` and a failure goes
+        to the ``provider_error`` handlers.
+
+        Args:
+            prompt: The user message.
+            system: The system prompt; none by default (pass :meth:`system_prompt` to send the session's).
+            model: Another model of the current provider; default the current model.
+            max_tokens: The most tokens the answer may have.
+
+        Raises:
+            ValueError: if ``prompt`` is empty or ``max_tokens`` is not a positive integer.
+            TurnInterrupted: if the user interrupts while the reply streams.
+        """
+        if not prompt.strip():
+            raise ValueError("complete_text: prompt is empty")
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+            raise ValueError("complete_text: max_tokens must be an integer >= 1")
+        reply = self.complete(
+            [{"role": "user", "content": prompt}],
+            system=system or "",
+            tools=False,
+            options={"max_tokens": max_tokens},
+            model=model,
         )
+        return result_text(reply.content)
+
+    @property
+    def usage(self) -> UsageTotals:
+        """Tokens and requests this minimal process has spent so far (API 2.3): every model request of the user's
+        turns, of the agents they start and of :meth:`complete`, since it started. A new or resumed session does not
+        reset it, and it is not saved: ``minimal -c`` starts counting again. A snapshot, not live."""
+        return self._app.usage.totals
+
+    def progress(self, text: str | None) -> None:
+        """Show ``text`` as a one-line progress note next to the working indicator while a tool or command runs;
+        ``None`` clears it.
+
+        API 2.3. Only the first line is shown, at most 120 characters; the terminal UI also clears it when the
+        turn or command ends. Call it as often as you like, from any thread (the console prints each change on stderr
+        when it is a terminal).
+
+        Raises:
+            TypeError: if ``text`` is neither a string nor ``None``.
+        """
+        if text is not None:
+            if not isinstance(text, str):
+                raise TypeError("progress: text must be a string or None")
+            text = " ".join(text.split("\n", 1)[0].split())[:120] or None
+        self._app.frontend.progress(text)
 
     def run_agent(
         self,
@@ -337,6 +421,32 @@ class Context:
         app.messages.extend(messages)
         app.session.save()
         return old.id
+
+    def fork(self, at_index: int | None = None) -> str:
+        """Continue in a new session that starts as a copy of this one up to message ``at_index``; return its id.
+
+        API 2.3. The copy holds ``messages[:at_index]`` (every message if ``at_index`` is ``None``); the current
+        session stays saved as it is, and the new session's header names it as its ``parent``. Fires
+        ``session_switch``, and the terminal UI redraws the transcript from the new session.
+
+        Raises:
+            ValueError: if a turn is running (a command or a tool's ``ctx`` of the user's turn cannot fork it),
+                ``at_index`` is not in ``0..len(messages)``, or the cut would separate an assistant ``tool_use``
+                from the ``tool_result`` message after it: cut before the call or after its results.
+        """
+        return self._app.fork_session(at_index)
+
+    def truncate(self, at_index: int) -> int:
+        """Drop the messages from ``at_index`` on from the current session, and from its file; return how many.
+
+        API 2.3. ``ctx.messages`` is cut in place and the session file is rewritten atomically, so a crash never
+        leaves half a history. The terminal UI redraws the transcript. It does not fire ``session_switch``: this is
+        still the same session. ``fork`` first to keep the dropped messages.
+
+        Raises:
+            ValueError: as for :meth:`fork`.
+        """
+        return self._app.truncate_session(at_index)
 
     def sessions(self, *, all_projects: bool = False) -> list[str]:
         """Saved session ids, oldest first: this project's (see ``cwd``), or every project's with ``all_projects``."""

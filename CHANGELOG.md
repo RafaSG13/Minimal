@@ -20,6 +20,29 @@
 - `reasoning_effort` setting (`low`, `medium` or `high`) and `ctx.reasoning_effort` / `ctx.set_reasoning_effort()`:
   Anthropic extended-thinking budget, OpenAI `reasoning_effort` for reasoning models, Gemini `thinking_level`;
   ignored by anything that cannot use it. `HostStatus.reasoning_effort` carries it to a status line.
+- `ctx.fork(at_index=None)` continues in a new session copied from the first `at_index` messages of the current one (the
+  old one stays saved and is named as `parent`), and `ctx.truncate(at_index)` drops the messages from `at_index` on and
+  rewrites the session file atomically. Both refuse to split a `tool_use` from its `tool_result`, refuse while a turn
+  runs, and make the terminal UI redraw the transcript. The built-in `/fork [n]` and `/rewind [n]` use them (`n`: back
+  to before your n-th last message; `/rewind` defaults to 1).
+- `ctx.complete_text(prompt, *, system=None, model=None, max_tokens=1024)` asks the model one question outside the
+  conversation and returns the text, and `ctx.complete` takes `model=` and now goes through the `provider_error`
+  handlers like a turn's request does.
+- `ctx.usage` (`UsageTotals`: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests`)
+  counts every model request of the process, agents and `ctx.complete` included; it is also in `HostStatus.usage` and
+  printed by the new `/usage`. It is per process: `minimal -c` starts counting again.
+- `ctx.progress(text)` shows a one-line progress note next to the working indicator while a tool or command runs
+  (`Frontend.progress` for other frontends; the plain terminal prints each change on stderr).
+- The permission dialog of the terminal UI offers Allow once, Allow this session, Always allow and Deny, and shows the
+  narrowest rule the two wider answers add (`bash(git status*)`, `write(src/app.py)`; a `bash` command that chains,
+  pipes or redirects gets none). "Always" appends it to `permissions.allow` in the project's
+  `.minimal/settings.local.json`, keeps the project trusted and tells the transcript where it went; `deny` rules still
+  win. `Frontend` gained `permission(question, rule, saved_in)` and `progress(text)`, and `config.add_allow_rule`
+  edits the file.
+
+### Changed
+
+- `HostStatus` has `usage` and `truncations`; the terminal UI redraws its transcript when the latter changes.
 
 ## 0.8.0
 
