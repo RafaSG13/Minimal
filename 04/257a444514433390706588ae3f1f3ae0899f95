@@ -1,0 +1,36 @@
+CHANGELOG.md
+  h_e81853c41416fb 5-14
+README.md
+  h_e81853c41416fb 258
+docs/extensions.md
+  h_e81853c41416fb 59,440,444
+docs/settings.md
+  h_e81853c41416fb 25,97
+src/minimal/bundled/marketplace_tools.py
+  h_e81853c41416fb 23
+src/minimal/config.py
+  h_e81853c41416fb 58-65,88,238
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 75-78,101-102,156-163,168-180,182-183,185-196,199-200,203,209-214,220-221,226,231-232,234-235,298,339,344,346-347,396,421-422,1207-1208,1211-1218,1220,1225,1227,1229,1234,1236-1241,1261
+src/minimal/extensions/metadata.py
+  h_e81853c41416fb 7-8,32-33,59-77,87,95,102-103,115
+src/minimal/ui/commands.py
+  h_e81853c41416fb 278,297-299,311-312,314,316-317,323,333,335,339,342
+tests/test_bundled_creator.py
+  h_e81853c41416fb 1-176
+tests/test_marketplace.py
+  h_e81853c41416fb 210-211,224,227-252,416-453
+tests/test_settings.py
+  h_e81853c41416fb 86-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "04257a444514433390706588ae3f1f3ae0899f95",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
