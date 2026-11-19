@@ -1,4 +1,4 @@
-"""Example extension: a tool, a command, a guardrail with a setting, a prompt note and a sidebar panel.
+"""Example extension: a tool, a command, a guardrail with a setting, a prompt note, a sidebar panel and a key.
 
 Copy it to ~/.minimal/extensions/ or ./.minimal/extensions/ to always load it,
 or load it on demand with:  minimal --ext extensions/example.py
@@ -10,7 +10,7 @@ Its guardrail patterns are a setting: replace them in settings.json with
 import re
 from datetime import datetime
 
-__version__ = "1.1"
+__version__ = "1.2"
 __api__ = "2"
 
 
@@ -38,5 +38,15 @@ def register(minimal):
     # 4) An extra note in the system prompt.
     minimal.append_system_prompt("Always reply in the same language the user writes in.")
 
-    # 5) A visual component any frontend can draw: a sidebar panel, redrawn after every turn.
-    minimal.register_panel("session", lambda ctx: f"{len(ctx.messages)} messages\n{ctx.provider_name} · {ctx.model}")
+    # 5) A visual component any frontend can draw: a sidebar panel, redrawn after every turn. `order` puts it
+    #    before the other widgets of its area; the user can move, reorder or hide it without touching this file:
+    #    /ui move session footer, /ui hide session, or "ui": {"widgets": {"session": {...}}} in settings.json.
+    minimal.register_panel(
+        "session", lambda ctx: f"{len(ctx.messages)} messages\n{ctx.provider_name} · {ctx.model}", order=-10
+    )
+
+    # 6) A global key: ctrl+o runs like a slash command (it may print, or ask the user). The user can give it
+    #    another key with {"ui": {"keys": {"example:stats": "alt+s"}}} in settings.json.
+    @minimal.keybinding("ctrl+o", name="stats", description="show session stats")
+    def show_stats(ctx):
+        stats("", ctx)

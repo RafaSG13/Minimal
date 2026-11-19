@@ -18,7 +18,7 @@ def register(minimal):
         return settings["greeting"]
 ```
 
-[`extensions/example.py`](../extensions/example.py) is a complete extension: a tool, a command, a guardrail with a setting, a prompt note and a sidebar widget.
+[`extensions/example.py`](../extensions/example.py) is a complete extension: a tool, a command, a guardrail with a setting, a prompt note, a sidebar panel and a key.
 
 ## Layout and where to save
 
@@ -57,6 +57,10 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__api__`      | `"2"`: the [API version](#api-versions) it is written for, required. `"2"` runs on any 2.x; `"2.1"` needs 2.1 or a later 2.x |
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
 | `__tags__`     | `["git", "ui"]`: optional list of lowercase keywords (`[a-z0-9_-]+`) that `/ext search` and `ext_search` match besides the name and description; shown after the description |
+| `__depends__`  | `["modes"]`: optional list of extension ids ([ids](#layout-and-where-to-save)) that must be loaded before this one. It is loaded after them; if one is missing, failed or skipped, this one is skipped with `needs 'modes': install it with /ext`. API 2.3 |
+| `__conflicts__` | `["tools/subagent"]`: optional list of extension ids it cannot be loaded with. Whichever of the two loads first stays; the other is skipped with `conflicts with 'tools/subagent', which is already loaded`. API 2.3 |
+
+`__depends__` and `__conflicts__` are ids, not package names (those are `__dependencies__`), and are read without running the extension: `minimal ext check` fails a malformed list, an extension that lists itself, and an id in both. Loading goes in the usual order (bundled, global, project, `--ext`; alphabetical in a folder), except that an extension comes after the ones it depends on; a dependency cycle skips its members. `/ext list` shows each extension's `needs` and `conflicts with`.
 
 An extension without `__api__` is not loaded (`declares no __api__; add __api__ = "2"`), and neither is one written for another major version (`written for minimal API 1, this minimal has API 2.0`) or a newer minor (`needs minimal API 2.3, this minimal has API 2.0: upgrade minimal`).
 
@@ -345,7 +349,7 @@ def render(ctx):
 minimal.register_panel("session", render, area="sidebar")
 ```
 
-`register_panel(name, render, area="sidebar", live=None, interval=0)` adds styled text to the terminal UI without Textual code, in `area` (`WIDGET_AREAS`). `render(ctx)` returns `None` to hide the panel, a string (one line per `\n`) or a list of lines; a line is a string, a `(text, style)` tuple or a list of those pieces. A style is space-separated names from `STYLES`: colours `foreground`, `accent`, `secondary`, `success`, `warning`, `error`, `muted`, `dim`, `diff_added`, `diff_removed` and the modifiers `bold`, `italic`, `underline`, `reverse` (`"bold muted"`); `""` is the default; any other name is an error. `render` runs on the UI thread after mount, after every turn, command and reload, after each `live` event and every `interval` seconds (`> 0`), so keep it cheap and never block: start a thread for slow work and return what it last found. `live(ctx, event)` receives `{"kind": "start", "turn": bool}`, `{"kind": "tool_call", "call": dict}`, `{"kind": "tool_result", "call": dict, "result": dict}` and `{"kind": "end"}` (after every turn or command and after every mount). A panel that raises is hidden and reported once.
+`register_panel(name, render, area="sidebar", live=None, interval=0, *, order=0)` adds styled text to the terminal UI without Textual code, in `area` (`WIDGET_AREAS`; see [Placement](#placement-and-the-users-layout) for the areas and `order`). `render(ctx)` returns `None` to hide the panel, a string (one line per `\n`) or a list of lines; a line is a string, a `(text, style)` tuple or a list of those pieces. A style is space-separated names from `STYLES`: colours `foreground`, `accent`, `secondary`, `success`, `warning`, `error`, `muted`, `dim`, `diff_added`, `diff_removed` and the modifiers `bold`, `italic`, `underline`, `reverse` (`"bold muted"`); `""` is the default; any other name is an error. `render` runs on the UI thread after mount, after every turn, command and reload, after each `live` event and every `interval` seconds (`> 0`), so keep it cheap and never block: start a thread for slow work and return what it last found. `live(ctx, event)` receives `{"kind": "start", "turn": bool}`, `{"kind": "tool_call", "call": dict}`, `{"kind": "tool_result", "call": dict, "result": dict}` and `{"kind": "end"}` (after every turn or command and after every mount). A panel that raises is hidden and reported once.
 
 ## Widgets
 
@@ -361,13 +365,47 @@ class SessionPanel(Static):
 minimal.register_widget("session", lambda ctx: SessionPanel(), area="sidebar")
 ```
 
-`register_widget(name, create, area)` places the widget built by `create(ctx)` in `area`, one of `WIDGET_AREAS`: `"top"`, `"bottom"` or `"sidebar"`. A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `src/minimal/ui/tui/theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. If it has a `refresh_live(ctx, event)` method, the UI calls it while a turn runs: when a turn or command starts (`{"kind": "start", "turn": bool}`), after each tool call is shown (`{"kind": "tool_call", "call": …}`) and after each result (`{"kind": "tool_result", "call": …, "result": …}`; the result is not in `ctx.messages` until every call of that reply has finished). The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
+`register_widget(name, create, area, *, order=0)` places the widget built by `create(ctx)` in `area`, one of `WIDGET_AREAS`: `"top"`, `"bottom"`, `"sidebar"`, `"left"` or `"footer"` ([Placement](#placement-and-the-users-layout)). A widget is any [Textual](https://textual.textualize.io/) widget, styled with its own `DEFAULT_CSS`. Besides Textual's standard variables (`$primary`, `$surface`, …), the CSS can use the theme's own: `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, … (see `src/minimal/ui/tui/theme.py`). If it has a `refresh_state(ctx)` method, the UI calls it after mount, after every turn and command, and after every reload. If it has a `refresh_live(ctx, event)` method, the UI calls it while a turn runs: when a turn or command starts (`{"kind": "start", "turn": bool}`), after each tool call is shown (`{"kind": "tool_call", "call": …}`) and after each result (`{"kind": "tool_result", "call": …, "result": …}`; the result is not in `ctx.messages` until every call of that reply has finished). The `top` and `bottom` areas size to their content: give the widget a height and don't `dock` it.
 
 To only show text, use a [panel](#panels): it needs no Textual code.
 
 ## Status segments
 
-`register_status(name, render, side)` adds a segment to the status line, `side` being one of `STATUS_SIDES`: `left` after the git branch or `right` before the context size. `render(ctx)` returns `None` for no segment, a string, a `(text, style)` tuple or a list of strings and `(text, style)` pieces (style names: [Panels](#panels)); the terminal UI also accepts a `textual.content.Content`. It runs on every redraw, so keep it cheap. A segment that raises, or returns an unknown style, is skipped and reported once.
+`register_status(name, render, side, *, order=0)` adds a segment to the status line, `side` being one of `STATUS_SIDES`: `left` after the git branch or `right` before the context size (`order` sorts the segments of a side: [Placement](#placement-and-the-users-layout)). `render(ctx)` returns `None` for no segment, a string, a `(text, style)` tuple or a list of strings and `(text, style)` pieces (style names: [Panels](#panels)); the terminal UI also accepts a `textual.content.Content`. It runs on every redraw, so keep it cheap. A segment that raises, or returns an unknown style, is skipped and reported once.
+
+## Placement and the user's layout
+
+The terminal UI has five areas for widgets and panels (`WIDGET_AREAS`):
+
+| Area      | Where                                                                                                   |
+| --------- | ------------------------------------------------------------------------------------------------------- |
+| `top`     | above the transcript                                                                                    |
+| `bottom`  | between the transcript and the prompt                                                                   |
+| `sidebar` | a column on the right (`ui.sidebar` puts it on the left or hides it); shown only when it has something |
+| `left`    | a column on the left, built like the sidebar                                                            |
+| `footer`  | under the status line                                                                                   |
+
+`top`, `bottom` and `footer` size to their content: give a widget a height and do not `dock` it. The widgets and panels of an area stack by `order` (an integer, default `0`, lower first), then in registration order; status segments sort the same way within their side. minimal's own segments have orders from -40 to 0 on the left and 100 to 110 on the right (`model`, `path`, `git`, `mode`; `context`, `extensions`, `session`), so a segment you leave at `0` goes after them on the left and before them on the right, and `order=-50` puts yours first.
+
+Your placement is a default. The user can move, reorder and hide any widget, panel or status segment, minimal's own included, without editing code: `/ui move session footer`, `/ui hide git`, or the `ui.widgets` and `ui.status` [settings](settings.md#ui-settings) (keys are the names you registered). A name you register as a status segment that is also one of minimal's own (`git`, `model`) replaces it. Do not assume your widget is mounted: `ctx.widget(name)` is `None` for one the user hid.
+
+## Keybindings
+
+```python
+@minimal.keybinding("ctrl+o", name="stats", description="show session stats")
+def show_stats(ctx):
+    print(f"{len(ctx.messages)} messages")
+
+minimal.register_keybinding("f6", lambda ctx: ctx.run_command("/mode plan"), "plan mode", show=True)
+```
+
+`register_keybinding(key, run, description="", *, show=False, name="")` (and the `@minimal.keybinding(key, *, description, show, name)` decorator, which takes the description from the function's docstring) binds a global key to `run(ctx)`. It runs on a worker thread, like a slash command: it may print (the output goes to the transcript), ask the user questions with `ctx.ui` and call anything on `ctx`; the prompt is locked meanwhile. An error it raises is shown once as `[extension] key <key> (<id>): <message>`. A key is ignored while a turn, a command or a dialog is running. The bindings are in force after every load and are dropped and made again on every `/reload`.
+
+- **Key names** are Textual's: modifiers `ctrl`, `alt`, `shift`, `meta`, `super` joined with `+` to a letter, a digit, `f1`-`f24` or a named key (`ctrl+o`, `alt+x`, `f5`, `ctrl+shift+left`). Without `ctrl`, `alt`, `meta` or `super` only function keys and `insert` are accepted (a bare letter would steal typing). The terminal decides which combinations reach the app: `ctrl+<letter>`, function keys and `alt+<letter>` usually do.
+- **Reserved keys** (`RESERVED_KEYS`) are refused with a `ValueError` (a load error for the extension): `escape`, `ctrl+c`, `ctrl+p`, `ctrl+q`, `enter`, `tab`, `shift+tab`, `ctrl+b`, the arrows, `home`/`end`, `pageup`/`pagedown`, `backspace`/`delete` and the prompt's editing keys (`ctrl+a`, `ctrl+e`, `ctrl+k`, `ctrl+u`, `ctrl+w`, `ctrl+z`, …).
+- **Duplicates.** Two extensions binding the same key: the later one (load order) wins and the reload reports `<id>: key ctrl+o was bound by <other>'s binding '<label>'; replaced`. Two bindings of one extension cannot share a `name` (or description).
+- **`show=True`** lists the key (with its description) in Textual's `Footer` widget, for an extension widget that uses one: a `Footer` subclass with `DEFAULT_CSS = "Keys { dock: none; }"` in the `footer` area (a docked widget leaves the area zero rows tall). minimal draws no key hints of its own: `/ui` lists every key.
+- **Re-keying.** The user gives a binding another key under `ui.keys` by `<extension id>:<name>` (`name`, else the description, else the key): `{"ui": {"keys": {"example:stats": "alt+s"}}}`; `""` unbinds it. `ui.keys` also rebinds minimal's own actions (`interrupt`, `toggle_sidebar`, `cycle_mode`; `KEY_ACTIONS`). Give every binding a stable `name` so a description edit does not break users' settings.
 
 ## Renderers
 
@@ -426,7 +464,7 @@ A project's `./.minimal/extensions/` is code from the repository, so minimal doe
 
 ## Reloading
 
-`/reload`, the model's `reload_extensions` tool and `ctx.reload()` rebuild every registration from disk in place (modes and prompt sections included; the current mode stays if it is registered again): new tools are offered on the model's next request, even in the middle of a turn, and widgets are remounted. Before that, every `on_dispose` function of the extensions loaded so far runs, so a thread or timer started by the old copy does not outlive it. Load errors (syntax errors, a missing or unsupported `__api__`, setting errors) are listed in the summary, and returned to the model when it reloaded.
+`/reload`, the model's `reload_extensions` tool and `ctx.reload()` rebuild every registration from disk in place (modes and prompt sections included; the current mode stays if it is registered again): new tools are offered on the model's next request, even in the middle of a turn, and widgets are remounted; the `ui.*` settings (layout, keys, density, stylesheet) are applied again. Before that, every `on_dispose` function of the extensions loaded so far runs, so a thread or timer started by the old copy does not outlive it. Load errors (syntax errors, a missing or unsupported `__api__`, setting errors) are listed in the summary, and returned to the model when it reloaded.
 
 ## Publishing and `minimal ext check`
 
@@ -457,7 +495,7 @@ WARN extensions/mermaid: needs termaid
 FAIL widgets/broken: syntax error: '(' was never closed (broken.py, line 2)
 ```
 
-In a marketplace checkout `ext check` looks at every item of every category folder. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+In a marketplace checkout `ext check` looks at every item of every category folder. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, `__depends__` or `__conflicts__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
 
 Only the package name of a `__dependencies__` entry is checked when deciding what is missing, not its version range.
 
@@ -477,7 +515,8 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `TurnInterrupted`                                           | Raised when the user interrupts                                   |
 | `USER_DENIED`                                               | The text of a tool result the user declined                       |
 | `ToolCallEvent`, `ToolResultEvent`, `TurnEndEvent`, `SessionStartEvent`, `SessionSwitchEvent`, `TurnStartEvent`, `BeforeRequestEvent`, `AfterResponseEvent`, `ShutdownEvent`, `ProviderErrorEvent`, `AgentStartEvent`, `AgentEndEvent`, `ModeChangeEvent` | Event payload types |
-| `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas, status sides and theme colours   |
+| `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas (`top`, `bottom`, `sidebar`, `left`, `footer`), status sides and theme colours |
+| `KeybindingSpec`, `RESERVED_KEYS`, `KEY_ACTIONS`            | A registered keybinding (`key`, `run`, `description`, `show`, `name`, `ext`, `id`), the keys no extension may bind, and minimal's own key actions with their default keys |
 | `LogoSpec`, `logo_content`, `theme`, `glyphs`               | Logo description, `logo_content(spec)` (a `LogoSpec` as Textual content) and the UI glyphs |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
 
@@ -494,6 +533,8 @@ API 2.0 removed the theme names of `minimal.api.theme` (`DEFAULT`, `MINIMAL`, `b
 API 2.1 added `minimal.add_provider(spec)` and `minimal.api.openai_compatible(...)` (several OpenAI-compatible servers at once), `minimal.api.AnthropicProvider`, and the `ProviderSpec` fields `sdk` and `install` (the optional package a provider imports and what to install when it is missing) and `login`, `logout` and `account` (a provider that signs in with a browser or an account instead of a key: `minimal --login [provider]`, `/login`, `/logout` and setup call them; `login()` blocks and prints its instructions, raises `ValueError` with a message for the user if it fails, and `account()` returns who is signed in or `None`). An extension using any of them declares `__api__ = "2.1"`.
 
 API 2.2 added modes (`minimal.register_mode`, `ctx.mode`, `ctx.modes()`, `ctx.mode_info()`, `ctx.set_mode()`, `ctx.cycle_mode()`, the `mode_change` event, `/mode`), agent identity (`agent_id` and `parent_id` in the payloads of the loop events, the `agent_start` and `agent_end` events, `ctx.agent_id`, `ctx.parent_id`, `ctx.agents()`, `ctx.cancel_agent()`), the extended `ctx.run_agent` keywords and `ctx.run_agent_result` with `AgentResult`, named prompt sections (`minimal.register_prompt_section`, `minimal.remove_prompt_section`, `ctx.prompt_sections()`) and `project_trusted` on `Extension` and `Context`; `minimal.api` gained `AgentResult`, `AgentInfo`, `MAIN_AGENT`, `AGENT_STATUSES`, `ModeSpec`, `PROMPT_SECTIONS`, `PromptText` and the three event payload types. Nothing was removed or changed: the new payload keys are additions, the new `run_agent` keywords are optional, and the `ctx` an agent's tools get is the app's with its own identity and cancel flag. An extension using any of them declares `__api__ = "2.2"`.
+
+API 2.3 added, for customisable interfaces: `minimal.register_keybinding` and the `@minimal.keybinding` decorator (`KeybindingSpec`, `RESERVED_KEYS`, `KEY_ACTIONS` in `minimal.api`), the `order` keyword of `register_widget`, `register_panel` and `register_status`, the areas `left` and `footer` in `WIDGET_AREAS`, and the metadata `__depends__` and `__conflicts__`. An extension using any of them declares `__api__ = "2.3"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

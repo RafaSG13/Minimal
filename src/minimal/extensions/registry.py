@@ -70,6 +70,7 @@ from dataclasses import dataclass
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from minimal import config
 from minimal.providers.base import Provider, ProviderSpec
 
 ToolRun = Callable[[dict, Any], Any]
@@ -107,8 +108,10 @@ EVENTS = (
 )
 """Events an extension can subscribe to with ``on``."""
 
-WIDGET_AREAS = ("top", "bottom", "sidebar")
-"""Where an extension widget can be placed in the terminal UI."""
+WIDGET_AREAS = config.UI_AREAS
+"""Where an extension widget or panel can be placed in the terminal UI: above the transcript (``top``), below it
+(``bottom``), in the ``sidebar`` (on the right unless ``ui.sidebar`` says otherwise), in a sidebar on the ``left``,
+or under the status line (``footer``)."""
 
 
 def check_event(event: str) -> None:
@@ -117,7 +120,7 @@ def check_event(event: str) -> None:
         raise ValueError(f"unknown event {event!r}; use one of {', '.join(EVENTS)}")
 
 
-STATUS_SIDES = ("left", "right")
+STATUS_SIDES = config.UI_STATUS_SIDES
 """Where an extension status-line segment can be placed."""
 
 THEME_COLORS = (
@@ -254,12 +257,14 @@ class WidgetSpec:
         name: Unique name; registering the same name again replaces it.
         create: Called as ``create(ctx)`` with the :class:`~minimal.core.context.Context`;
             returns a ``textual.widget.Widget``.
-        area: ``"top"``, ``"bottom"`` or ``"sidebar"``.
+        area: One of :data:`WIDGET_AREAS`.
+        order: The widgets and panels of an area go by ``order``, lower first (API 2.3).
     """
 
     name: str
     create: Callable[[Any], Any]
     area: str = "sidebar"
+    order: int = 0
 
 
 @dataclass
@@ -269,9 +274,10 @@ class PanelSpec:
     Attributes:
         name: Unique name; registering the same name again replaces it.
         render: Called as ``render(ctx)``; returns ``None`` (hidden), a ``str`` or a list of lines.
-        area: ``"top"``, ``"bottom"`` or ``"sidebar"``.
+        area: One of :data:`WIDGET_AREAS`.
         live: Called as ``live(ctx, event)`` on turn and tool events, or ``None``.
         interval: Seconds between redraws; ``0`` for none.
+        order: The widgets and panels of an area go by ``order``, lower first (API 2.3).
     """
 
     name: str
@@ -279,6 +285,7 @@ class PanelSpec:
     area: str = "sidebar"
     live: Callable[[Any, dict], Any] | None = None
     interval: float = 0.0
+    order: int = 0
 
 
 @dataclass
@@ -297,6 +304,7 @@ class RendererSpec:
 RENDERER_KIND = re.compile(r"fence:[a-z0-9_+-]+|blockquote:alert|tool:[A-Za-z0-9_.-]+")
 """The forms of :meth:`Registry.register_renderer`'s ``kind``; always ``fullmatch``."""
 
+
 @dataclass
 class StatusSpec:
     """A segment an extension adds to the terminal UI's status line (see :meth:`Registry.register_status`).
@@ -307,11 +315,97 @@ class StatusSpec:
             ``None`` (no segment this time), a ``str``, a ``(text, style)`` tuple or a list of those
             pieces (the terminal UI also accepts a ``textual.content.Content``).
         side: ``"left"`` (after the git branch) or ``"right"`` (before the model).
+        order: Segments of a side go by ``order``, lower first (API 2.3).
     """
 
     name: str
     render: Callable[[Any], Any]
     side: str = "right"
+    order: int = 0
+
+
+KEY_ACTIONS = {"interrupt": "escape", "toggle_sidebar": "ctrl+b", "cycle_mode": "shift+tab"}
+"""The terminal UI's own key actions and their default keys; ``ui.keys`` rebinds them (API 2.3)."""
+
+RESERVED_KEYS = frozenset(
+    {
+        # the UI's own (KEY_ACTIONS, the command palette, quit) and focus movement
+        "escape", "ctrl+c", "ctrl+p", "ctrl+q", "enter", "tab", "shift+tab", "ctrl+b",
+        # the prompt: submit, newline, history and cursor movement, editing and clipboard
+        "shift+enter", "alt+enter", "ctrl+j", "ctrl+m", "ctrl+i", "ctrl+h", "up", "down", "left", "right", "home",
+        "end", "pageup", "pagedown", "backspace", "delete", "alt+delete", "alt+backspace", "ctrl+backspace",
+        "ctrl+a", "ctrl+d", "ctrl+e", "ctrl+k", "ctrl+u", "ctrl+w", "ctrl+x", "ctrl+v", "ctrl+y", "ctrl+z",
+        "ctrl+left", "ctrl+right", "ctrl+shift+a", "ctrl+shift+k", "ctrl+shift+left", "ctrl+shift+right",
+        "shift+up", "shift+down", "shift+left", "shift+right", "shift+home", "shift+end",
+        "super+c", "super+x", "super+y", "super+z", "super+backspace",
+    }
+)  # fmt: skip
+"""Keys the terminal UI needs itself: no extension keybinding and no ``ui.keys`` entry may take them (API 2.3).
+
+A built-in action may keep its own default (``cycle_mode`` stays on ``shift+tab``)."""
+
+_FUNCTION_KEY = r"f(?:[1-9]|1[0-9]|2[0-4])"
+_KEY = re.compile(
+    rf"(?P<mods>(?:(?:ctrl|alt|shift|meta|super)\+)*)"
+    rf"(?P<name>[a-z0-9]|{_FUNCTION_KEY}|escape|enter|tab|space|backspace|delete|insert|home|end|pageup|pagedown|up|down|left|right)"
+)
+
+
+def normalize_key(key: Any, what: str = "key") -> str:
+    """``key`` stripped and lowercased, if it is a key a binding can take: modifiers (``ctrl``, ``alt``, ``shift``,
+    ``meta``, ``super``) joined with ``+`` to a letter, a digit, ``f1``-``f24`` or a named key (``enter``,
+    ``space``, ``up``, ``pageup``, …), spelled as Textual does.
+
+    Without ``ctrl``, ``alt``, ``meta`` or ``super`` only a function key or ``insert`` is accepted: any other
+    key, as a global one, would steal typing or editing.
+
+    Raises:
+        ValueError: starting with ``what``, if ``key`` is not such a key.
+    """
+    text = key.strip().lower() if isinstance(key, str) else ""
+    found = _KEY.fullmatch(text)
+    if found is None:
+        raise ValueError(
+            f"{what}: {key!r} is not a key name; use modifiers and a key joined with '+', "
+            "such as ctrl+o, alt+x, f5 or ctrl+shift+left"
+        )
+    if text in RESERVED_KEYS:  # a key worth refusing by name, not for stealing typing
+        return text
+    mods = set(found["mods"].split("+")) - {""}
+    if not mods - {"shift"} and not re.fullmatch(_FUNCTION_KEY, found["name"]) and found["name"] != "insert":
+        raise ValueError(f"{what}: {key!r} would steal typing; add ctrl+ or alt+, or use a function key")
+    return text
+
+
+@dataclass
+class KeybindingSpec:
+    """A global key an extension binds to a function (see :meth:`Registry.register_keybinding`). API 2.3.
+
+    Attributes:
+        key: The key, in Textual's spelling (``ctrl+o``).
+        run: Called as ``run(ctx)`` on a worker thread, like a slash command.
+        description: What it does, one line; shown by ``/ui``.
+        show: List the key in Textual's ``Footer`` widget (an extension widget may use one).
+        name: What ``ui.keys`` calls it (default: the description).
+        ext: The id of the extension that registered it.
+    """
+
+    key: str
+    run: Callable[[Any], Any]
+    description: str = ""
+    show: bool = False
+    name: str = ""
+    ext: str = ""
+
+    @property
+    def label(self) -> str:
+        """``name``, else ``description``, else ``key``."""
+        return self.name or self.description or self.key
+
+    @property
+    def id(self) -> str:
+        """What ``ui.keys`` calls it: ``<extension id>:<label>`` (just the label without an extension)."""
+        return f"{self.ext}:{self.label}" if self.ext else self.label
 
 
 @dataclass
@@ -461,6 +555,7 @@ class Registry:
         logo: Pixel art for the welcome header, or ``None`` for the built-in wordmark.
         panels: Styled-text panels for the terminal UI, by name.
         renderers: Transcript block renderers, by kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``).
+        keybindings: Global keys extensions bound, by key (API 2.3).
     """
 
     def __init__(self) -> None:
@@ -477,6 +572,8 @@ class Registry:
         self.panels: dict[str, PanelSpec] = {}
         self.renderers: dict[str, RendererSpec] = {}
         self._handlers: dict[str, list[EventHandler]] = {}
+        self.keybindings: dict[str, KeybindingSpec] = {}
+        self._placed: dict[tuple[str, str], int] = {}
         self._disposers: list[Callable[[], Any]] = []
 
     def reset(self) -> None:
@@ -498,6 +595,8 @@ class Registry:
         self.logo = None
         self.panels.clear()
         self.renderers.clear()
+        self.keybindings.clear()
+        self._placed.clear()
         self._handlers.clear()
         self._disposers.clear()
 
@@ -552,15 +651,17 @@ class Registry:
         self.builtin_commands[name] = Command(run, description, terminal, builtin=True)
 
     def register_widget(
-        self, name: str, create: Callable[[Any], Any], area: str = "sidebar"
+        self, name: str, create: Callable[[Any], Any], area: str = "sidebar", *, order: int = 0
     ) -> None:
         """Add a visual component to the terminal UI, replacing any widget with the same name.
 
         ``create(ctx)`` receives the :class:`~minimal.core.context.Context` and returns a
-        ``textual.widget.Widget``, placed in ``area`` (``"top"``, ``"bottom"`` or
-        ``"sidebar"``). Style it with its own ``DEFAULT_CSS``. The ``top`` and
-        ``bottom`` areas size to their content, so give the widget a height and
-        do not ``dock`` it (a docked widget leaves the area zero rows tall). If
+        ``textual.widget.Widget``, placed in ``area`` (:data:`WIDGET_AREAS`: ``"top"``, ``"bottom"``,
+        ``"sidebar"``, ``"left"`` (a sidebar on the left) or ``"footer"`` (below the status line)).
+        Widgets and panels of one area are stacked by ``order`` (lower first), then in registration order;
+        the user may move, reorder or hide any of them (``ui.widgets`` in the settings, ``/ui``). Style it
+        with its own ``DEFAULT_CSS``. The ``top``, ``bottom`` and ``footer`` areas size to their content, so
+        give the widget a height and do not ``dock`` it (a docked widget leaves the area zero rows tall). If
         the widget has a method ``refresh_state(ctx)``, the TUI calls it after
         mount, after every turn, after every slash command and after every reload.
         If it has a method ``refresh_live(ctx, event)``, the TUI calls it on the UI
@@ -572,18 +673,28 @@ class Registry:
         The widget is a Textual widget; a :meth:`register_panel` needs no Textual code.
 
         Raises:
-            ValueError: if ``name`` is empty, ``create`` is not callable or ``area`` is unknown.
+            ValueError: if ``name`` is empty, ``create`` is not callable, ``area`` is unknown or ``order``
+                is not an integer.
         """
         if not name or not callable(create):
             raise ValueError("register_widget: name and create are required")
         if area not in WIDGET_AREAS:
-            raise ValueError(
-                "register_widget: area must be one of top, bottom, sidebar"
-            )
-        self.widgets[name] = WidgetSpec(name, create, area)
+            raise ValueError(f"register_widget: area must be one of {', '.join(WIDGET_AREAS)}")
+        self._check_order("register_widget", order)
+        self.widgets[name] = WidgetSpec(name, create, area, order)
+        self._placed.setdefault(("widget", name), len(self._placed))
+
+    @staticmethod
+    def _check_order(what: str, order: Any) -> None:
+        if isinstance(order, bool) or not isinstance(order, int):
+            raise ValueError(f"{what}: order must be an integer")
+
+    def placement_index(self, kind: str, name: str) -> int:
+        """Where the ``"widget"``, ``"panel"`` or ``"status"`` called ``name`` was first registered (it breaks ties of ``order``)."""
+        return self._placed.get((kind, name), len(self._placed))
 
     def register_status(
-        self, name: str, render: Callable[[Any], Any], side: str = "right"
+        self, name: str, render: Callable[[Any], Any], side: str = "right", *, order: int = 0
     ) -> None:
         """Add a segment to the terminal UI's status line, replacing any segment with the same name.
 
@@ -592,16 +703,21 @@ class Registry:
         ``(text, style)`` pieces; ``style`` is space-separated names from :data:`STYLES`
         (``"bold muted"``). The terminal UI also accepts a ``textual.content.Content``. It is
         called whenever the status line is redrawn, so keep it cheap. ``side`` is
-        ``"left"`` (after the git branch) or ``"right"`` (before the model).
+        ``"left"`` (after the git branch) or ``"right"`` (before the model). Segments of a side go by
+        ``order`` (lower first; minimal's own segments are at -40 to 0 on the left and 100 to 110 on the right),
+        then in registration order; the user may move, reorder or hide any of them (``ui.status``, ``/ui``).
 
         Raises:
-            ValueError: if ``name`` is empty, ``render`` is not callable or ``side`` is unknown.
+            ValueError: if ``name`` is empty, ``render`` is not callable, ``side`` is unknown or ``order``
+                is not an integer.
         """
         if not name or not callable(render):
             raise ValueError("register_status: name and render are required")
         if side not in STATUS_SIDES:
             raise ValueError("register_status: side must be left or right")
-        self.status[name] = StatusSpec(name, render, side)
+        self._check_order("register_status", order)
+        self.status[name] = StatusSpec(name, render, side, order)
+        self._placed.setdefault(("status", name), len(self._placed))
 
     def register_panel(
         self,
@@ -610,6 +726,8 @@ class Registry:
         area: str = "sidebar",
         live: Callable[[Any, dict], Any] | None = None,
         interval: float = 0.0,
+        *,
+        order: int = 0,
     ) -> None:
         """Add a panel of styled text lines that any frontend can draw, replacing any panel with the same name.
 
@@ -627,19 +745,66 @@ class Registry:
         ``interval`` > 0 also redraws it every ``interval`` seconds. A panel that raises is
         hidden and reported once.
 
+        ``area`` is one of :data:`WIDGET_AREAS`; ``order`` stacks the panels and widgets of an area (see
+        :meth:`register_widget`).
+
         Raises:
             ValueError: if ``name`` is empty, ``render`` is not callable, ``area`` is unknown,
-                ``live`` is not callable or ``interval`` is not a number >= 0.
+                ``live`` is not callable, ``interval`` is not a number >= 0 or ``order`` is not an integer.
         """
         if not name or not callable(render):
             raise ValueError("register_panel: name and render are required")
         if area not in WIDGET_AREAS:
-            raise ValueError("register_panel: area must be one of top, bottom, sidebar")
+            raise ValueError(f"register_panel: area must be one of {', '.join(WIDGET_AREAS)}")
         if live is not None and not callable(live):
             raise ValueError("register_panel: live must be callable")
         if isinstance(interval, bool) or not isinstance(interval, (int, float)) or interval < 0:
             raise ValueError("register_panel: interval must be a number of seconds >= 0")
-        self.panels[name] = PanelSpec(name, render, area, live, float(interval))
+        self._check_order("register_panel", order)
+        self.panels[name] = PanelSpec(name, render, area, live, float(interval), order)
+        self._placed.setdefault(("panel", name), len(self._placed))
+
+    def register_keybinding(
+        self,
+        key: str,
+        run: Callable[[Any], Any],
+        description: str = "",
+        *,
+        show: bool = False,
+        name: str = "",
+        ext: str = "",
+    ) -> KeybindingSpec | None:
+        """Bind the global key ``key`` to ``run(ctx)``, replacing (and returning) any binding of that key.
+
+        ``key`` is spelled as Textual does (:func:`normalize_key`): ``ctrl+o``, ``alt+x``, ``f5``,
+        ``ctrl+shift+left``. Keys the terminal UI needs itself are refused (:data:`RESERVED_KEYS`), and so
+        is a bare letter, which would steal typing: use ``ctrl+``, ``alt+`` or a function key. ``name`` (else
+        ``description``) is what ``ui.keys`` calls the binding to give it another key. ``ext`` is the id of the
+        registering extension (the facade sets it).
+
+        Returns:
+            The binding that ``key`` replaced, if any.
+
+        Raises:
+            ValueError: if ``key`` is not a valid, unreserved key, ``run`` is not callable, ``description`` or
+                ``name`` is not a string, or another key of the same extension already has that name.
+        """
+        if not callable(run):
+            raise ValueError("register_keybinding: run is required")
+        if not isinstance(description, str) or not isinstance(name, str):
+            raise ValueError("register_keybinding: description and name must be strings")
+        key = normalize_key(key, "register_keybinding")
+        if key in RESERVED_KEYS:
+            raise ValueError(f"register_keybinding: {key} is reserved for minimal; choose another key")
+        spec = KeybindingSpec(key, run, description, bool(show), name, ext)
+        clash = next((s for k, s in self.keybindings.items() if k != key and s.id == spec.id), None)
+        if clash is not None:
+            raise ValueError(
+                f"register_keybinding: {spec.id!r} already names {clash.key}; give this binding another name="
+            )
+        replaced = self.keybindings.get(key)
+        self.keybindings[key] = spec
+        return replaced
 
     def register_renderer(self, kind: str, render: Callable[[Any, dict], Any]) -> None:
         """Draw a kind of transcript block yourself, replacing any renderer of the same kind.

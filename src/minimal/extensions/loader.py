@@ -20,7 +20,9 @@ Within each folder, its own extensions load first, then those of its ``themes/``
 (:data:`CATEGORIES`), which only group them; any extension may register anything.
 An extension's id (:func:`ext_id`) is its name, prefixed by its category folder
 outside ``extensions`` (``tools/subagent``); ``extensions.disabled`` in the
-settings lists ids not to load from the global and project folders.
+settings lists ids not to load from the global and project folders. ``__depends__`` and
+``__conflicts__`` (lists of ids, see :mod:`minimal.extensions.metadata`) reorder and skip extensions
+(:func:`load_sources`).
 
 Every file is read once, before anything runs: the bytes that are hashed for
 ``/trust`` are the bytes executed, imported through :class:`_SnapshotImporter`.
@@ -306,21 +308,26 @@ def load_source(
     scope: str,
     errors: list[str],
     cwd: str,
+    meta: Metadata | None = None,
 ) -> None:
     """Check ``source``'s ``__api__``, import it and call its ``register`` with an :class:`Extension`.
 
     Settings it rejects (:meth:`Extension.declare_settings`) are appended to ``errors``. ``cwd`` is the
     working directory, which picks the extension's project data folder (:meth:`Extension.data_dir`).
+    ``meta`` is its metadata if the caller already read it (:func:`read_metadata`); ``None`` reads it here.
 
     Raises:
         ValueError: if it declares no ``__api__`` or one this minimal does not provide, a malformed
             ``__dependencies__``, or has no ``register`` function.
         Exception: whatever importing or ``register`` raised.
     """
-    try:
-        meta = read_metadata(source.entry, str(source.entry_path))
-    except SourceSyntaxError:  # importing reports it as a SyntaxError with its line
-        meta = Metadata("", "", "", False)
+    if meta is None:
+        try:
+            meta = read_metadata(source.entry, str(source.entry_path))
+        except SourceSyntaxError:  # importing reports it as a SyntaxError with its line
+            meta = Metadata("", "", "", False)
+        else:
+            check_api(meta.api)
     else:
         check_api(meta.api)
     module = _import(source)
@@ -341,35 +348,125 @@ def load_source(
     )
 
 
+def _load_order(ids: list[str], depends: list[tuple[str, ...]]) -> tuple[list[int], dict[int, str]]:
+    """``(order, cycles)``: the indexes of ``ids`` in load order, and a description of the cycle each member of one is in.
+
+    The order is the given one, except that an extension comes after the ones it depends on that are also in
+    ``ids``.
+    """
+    by_id: dict[str, list[int]] = {}
+    for i, name in enumerate(ids):
+        by_id.setdefault(name, []).append(i)
+    state: dict[int, int] = {}
+    order: list[int] = []
+    cycles: dict[int, str] = {}
+
+    def visit(i: int, stack: list[int]) -> None:
+        if state.get(i) == 2:
+            return
+        if state.get(i) == 1:
+            loop = stack[stack.index(i) :]
+            text = " -> ".join(ids[k] for k in [*loop, i])
+            cycles.update({k: text for k in loop})
+            return
+        state[i] = 1
+        for dep in depends[i]:
+            for j in by_id.get(dep, ()):
+                if j != i:
+                    visit(j, [*stack, i])
+        state[i] = 2
+        order.append(i)
+
+    for i in range(len(ids)):
+        visit(i, [])
+    return order, cycles
+
+
+def _skip_reason(
+    name: str, meta: Metadata, loaded_meta: dict[str, Metadata], failed: set[str], cycle: str | None
+) -> str | None:
+    """Why the extension ``name`` cannot load now (a dependency missing or failed, a conflict, a cycle); ``None`` if it can."""
+    if cycle:
+        return f"DependencyError: dependency cycle {cycle}"
+    for dep in meta.depends:
+        if dep not in loaded_meta:
+            if dep in failed:
+                return f"DependencyError: needs {dep!r}, which did not load"
+            return f"DependencyError: needs {dep!r}: install it with /ext (or enable it if it is in extensions.disabled)"
+    for other in meta.conflicts:
+        if other in loaded_meta:
+            return f"ConflictError: conflicts with {other!r}, which is already loaded"
+    for other, other_meta in loaded_meta.items():
+        if name in other_meta.conflicts:
+            return f"ConflictError: conflicts with {other!r}, which is already loaded and lists it in __conflicts__"
+    return None
+
+
 def load_sources(
     registry: Registry,
     sources: Iterable[tuple[ExtensionSource, str]],
     settings: config.Settings,
     cwd: str,
+    loaded_meta: dict[str, Metadata] | None = None,
 ) -> tuple[list[Path], list[str]]:
-    """Load each ``(source, scope)`` in order into ``registry``.
+    """Load each ``(source, scope)`` into ``registry``, in order, each one after the extensions it ``__depends__`` on.
+
+    One whose dependency is missing or failed, whose ``__conflicts__`` names one already loaded (or that one
+    names it) or that is in a dependency cycle is skipped with an error: the first loaded wins.
+
+    Args:
+        loaded_meta: Metadata of the extensions loaded so far by id; updated with these, so a later call
+            (the bundled extensions, then the others) sees what loaded before.
 
     Returns:
-        ``(loaded, errors)``: the paths that loaded, and one ``"<path>: <ErrorType>: <message>"``
-        line per extension that failed plus one per setting it rejected. A failed
+        ``(loaded, errors)``: the paths that loaded, in load order, and one ``"<path>: <ErrorType>: <message>"``
+        line per extension that failed or was skipped plus one per setting it rejected. A failed
         extension is skipped; anything it registered before failing stays registered.
     """
+    loaded_meta = {} if loaded_meta is None else loaded_meta
+    items = list(sources)
+    ids = [ext_id(source.path) for source, _ in items]
     loaded: list[Path] = []
     errors: list[str] = []
-    for source, scope in sources:
+    failed: set[str] = set()
+    metas: list[Metadata | None] = []
+    for (source, _), name in zip(items, ids):
         try:
-            load_source(source, registry, settings, scope, errors, cwd)
+            metas.append(read_metadata(source.entry, str(source.entry_path)))
+        except SourceSyntaxError:  # importing reports it as a SyntaxError with its line
+            metas.append(None)
+        except ValueError as e:
+            metas.append(None)
+            errors.append(f"{source.path}: {type(e).__name__}: {e}")
+            failed.add(name)
+    order, cycles = _load_order(ids, [m.depends if m else () for m in metas])
+    for i in order:
+        source, scope = items[i]
+        meta = metas[i]
+        if meta is None and ids[i] in failed:
+            continue  # its metadata was malformed: reported above
+        if meta is not None and (why := _skip_reason(ids[i], meta, loaded_meta, failed, cycles.get(i))):
+            errors.append(f"{source.path}: {why}")
+            failed.add(ids[i])
+            continue
+        try:
+            load_source(source, registry, settings, scope, errors, cwd, meta)
             loaded.append(source.path)
+            loaded_meta[ids[i]] = meta or Metadata("", "", "", False)
         except Exception as e:
             errors.append(f"{source.path}: {type(e).__name__}: {e}")
+            failed.add(ids[i])
     return loaded, errors
 
 
-def load_bundled(registry: Registry, settings: config.Settings, cwd: str) -> list[str]:
+def load_bundled(
+    registry: Registry, settings: config.Settings, cwd: str, loaded_meta: dict[str, Metadata] | None = None
+) -> list[str]:
     """Load minimal's own extensions (:data:`BUNDLED_DIR`) into ``registry``, except the ``disabled`` ones.
 
     They are first-party code that ships with minimal, so they need no ``/trust``, are not part of the
     ``loaded`` list a reload reports, and are turned off like any extension, by id in ``extensions.disabled``.
+    ``loaded_meta`` is as for :func:`load_sources`.
 
     Returns:
         One ``"<path>: <ErrorType>: <message>"`` line per one that failed, plus one per setting it rejected.
@@ -383,7 +480,7 @@ def load_bundled(registry: Registry, settings: config.Settings, cwd: str) -> lis
             sources += [(s, "bundled") for s in read_extensions([path])]
         except OSError as e:
             errors.append(f"{path}: {type(e).__name__}: {e}")
-    return errors + load_sources(registry, sources, settings, cwd)[1]
+    return errors + load_sources(registry, sources, settings, cwd, loaded_meta)[1]
 
 
 def load_extensions(
@@ -408,7 +505,8 @@ def load_extensions(
         ``(loaded, errors)`` as from :func:`load_sources`, plus ``"<path>: not found"``
         for a missing ``extra`` entry and one error per ``x.py``/``x/`` clash.
     """
-    errors: list[str] = load_bundled(registry, settings, cwd)
+    loaded_meta: dict[str, Metadata] = {}
+    errors: list[str] = load_bundled(registry, settings, cwd, loaded_meta)
     sources: list[tuple[ExtensionSource, str]] = []
     disabled = settings.disabled
     global_dir = global_extensions_dir()
@@ -439,7 +537,7 @@ def load_extensions(
                 sources += [(s, "cli") for s in read_extensions([p])]
             except OSError as e:
                 errors.append(f"{p}: {type(e).__name__}: {e}")
-    loaded, load_errors = load_sources(registry, sources, settings, cwd)
+    loaded, load_errors = load_sources(registry, sources, settings, cwd, loaded_meta)
     return loaded, errors + load_errors
 
 

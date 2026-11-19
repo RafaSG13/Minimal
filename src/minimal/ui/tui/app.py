@@ -3,14 +3,19 @@
 Layout, top to bottom: the ``top`` extension area, the transcript (a welcome
 header (the built-in wordmark or an extension's pixel-art logo), then user messages, assistant
 replies, tool calls and command output), the ``bottom`` extension area, the
-working indicator, the prompt and the status line (model, provider, directory,
-git branch). An optional ``sidebar`` on the right holds extension widgets and panels (see
-:meth:`~minimal.extensions.registry.Registry.register_widget` and ``register_panel``). Colours come from the
+working indicator, the prompt, the status line (model, provider, directory,
+git branch, and extension segments) and the ``footer`` area. The ``sidebar`` area is a column on the right (or the
+left, or hidden: ``ui.sidebar``) and ``left`` another on the left; they hold extension widgets and panels (see
+:meth:`~minimal.extensions.registry.Registry.register_widget` and ``register_panel``), stacked by their ``order``.
+The ``ui.*`` settings and ``/ui`` move, reorder and hide widgets and status segments, set the density and the
+prompt's glyph and placeholder, rebind keys and add a stylesheet (:meth:`MinimalTui.apply_ui`); a reload applies
+them. Colours come from the
 active theme's CSS variables and glyphs from :mod:`minimal.ui.tui.theme`.
 
 Turns and slash commands run in a worker thread so the UI stays responsive;
 :class:`~minimal.ui.tui.frontend.TuiFrontend` hands their output and confirmations back to the UI
-thread. Esc interrupts the turn in progress; ``shift+tab`` cycles the mode (:data:`MODE_KEY`). Anything printed (slash-command
+thread. Esc interrupts the turn in progress; ``shift+tab`` cycles the mode (``ui.keys`` rebinds these and the
+extensions' keybindings, :meth:`MinimalTui.apply_keys`). Anything printed (slash-command
 output, extension messages) is shown in the transcript. Commands marked
 ``terminal`` run with the UI suspended.
 """
@@ -33,6 +38,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.stylesheet import Stylesheet, StylesheetParseError
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
 from textual.widget import Widget
@@ -40,8 +46,9 @@ from textual.widgets import Input, Markdown, Static
 
 from minimal import config
 from minimal.core.app import ExitRepl
-from minimal.core.host import Host
-from minimal.extensions.registry import StyledLine, styled_line, styled_lines
+from minimal.core.host import Host, HostStatus
+from minimal.core.layout import Layout, Placed
+from minimal.extensions.registry import KEY_ACTIONS, KeybindingSpec, StyledLine, styled_line, styled_lines
 from minimal.ui.tui import theme
 from minimal.ui.tui.frontend import TuiFrontend, theme_command
 from minimal.ui.tui.markdown import RenderedFence, TranscriptMarkdown
@@ -50,11 +57,26 @@ from minimal.ui.tui.widgets import Header, PanelView, ToolBlock, to_content
 REPLAY_LIMIT = 200
 """Most messages of a resumed session drawn in the transcript."""
 
-MODE_KEY = "shift+tab"
-"""The key that cycles the mode. ``tab`` and ``shift+tab`` both move the focus between the prompt and the
-transcript (the screen's own bindings), so binding either one takes that over; ``shift+tab`` leaves ``tab`` doing it.
-It cycles modes only with a mode registered, no dialog open and the prompt idle (:meth:`MinimalTui.check_action`);
-otherwise it still moves the focus."""
+PLACEHOLDER = "Message, or / for commands"
+"""The prompt's hint (``ui.placeholder`` replaces it)."""
+
+PRIORITY_ACTIONS = frozenset({"cycle_mode"})
+"""Key actions that fire even while the prompt has the focus. ``shift+tab`` moves the focus (the screen's own
+binding) unless it is priority; ``cycle_mode`` still lets the key move the focus when it does not apply
+(:meth:`MinimalTui.check_action`)."""
+
+EXT_KEY_ID = "ext-key:"
+"""Prefix of the ids of the Textual bindings that run extension keybindings (:meth:`MinimalTui.apply_keys`)."""
+
+
+def _css_problem(error: Exception) -> str:
+    """A one-line reason a stylesheet did not parse: the first error's line and message."""
+    if isinstance(error, StylesheetParseError):
+        for rule in error.errors.rules:
+            for token, message in rule.errors:
+                line = (token.referenced_by or token).location[0] + 1
+                return f"line {line}: {getattr(message, 'summary', message)}"
+    return str(error) or type(error).__name__
 
 
 @contextmanager
@@ -119,22 +141,22 @@ class MinimalTui(TextualApp):
     TITLE = "minimal"
 
     BINDINGS = [
-        Binding("escape", "interrupt", "Interrupt turn", show=False),
-        Binding("ctrl+b", "toggle_sidebar", "Toggle sidebar", show=False),
-        Binding(MODE_KEY, "cycle_mode", "Cycle mode", show=False, priority=True),
+        Binding("escape", "interrupt", "Interrupt turn", show=False, id="interrupt"),
+        Binding("ctrl+b", "toggle_sidebar", "Toggle sidebar", show=False, id="toggle_sidebar"),
+        Binding("shift+tab", "cycle_mode", "Cycle mode", show=False, priority=True, id="cycle_mode"),
     ]
 
     CSS = """
     #body { height: 1fr; }
     #main { width: 1fr; }
     #transcript { height: 1fr; padding: 0 1; scrollbar-size-vertical: 1; }
-    #top, #bottom { height: auto; }
-    #sidebar {
-        width: 36; padding: 0 1; display: none;
-        border-left: solid $border-muted; scrollbar-size-vertical: 1;
-    }
-    #sidebar.-has-widgets { display: block; }
-    #sidebar.-collapsed { display: none; }
+    #top, #bottom, #footer { height: auto; }
+    #left, #sidebar { width: 36; padding: 0 1; display: none; scrollbar-size-vertical: 1; }
+    #left { border-right: solid $border-muted; }
+    #sidebar { border-left: solid $border-muted; }
+    #sidebar.-left { border-left: none; border-right: solid $border-muted; }
+    #left.-has-widgets, #sidebar.-has-widgets { display: block; }
+    #left.-collapsed, #sidebar.-collapsed, #sidebar.-hidden { display: none; }
 
     Header { height: auto; padding: 1 1 0 1; }
     Header.-align-center Static { text-align: center; }
@@ -168,6 +190,14 @@ class MinimalTui(TextualApp):
     #statusline { height: 1; background: $status-bg; }
     #status-left { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
     #status-right { width: auto; color: $dim; padding: 0 1 0 2; }
+
+    MinimalTui.-compact Header { padding: 0 1; }
+    MinimalTui.-compact Header .wordmark { margin-bottom: 0; }
+    MinimalTui.-compact .user { padding: 0 2; margin-top: 0; }
+    MinimalTui.-compact Markdown.assistant { margin-top: 0; }
+    MinimalTui.-compact .tool { padding: 0 2; margin-top: 0; }
+    MinimalTui.-compact .output, MinimalTui.-compact .error { margin-top: 0; }
+    MinimalTui.-compact #working, MinimalTui.-compact #composer { margin-top: 0; }
     """
 
     def __init__(self, host: Host, theme_name: str | None = None) -> None:
@@ -188,6 +218,9 @@ class MinimalTui(TextualApp):
         self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
         self.status_errors: set[str] = set()  # status segments whose error was already shown
         self.renderer_errors: set[str] = set()  # renderer kinds whose error was already shown
+        self.busy = False  # a turn or command is running: the prompt is locked
+        self.ext_keys: list[KeybindingSpec] = []  # the extension keybindings apply_keys bound, by action index
+        self.user_css: tuple[str, str] | None = None  # where the stylesheet of ui.css was added, if one was
 
     @property
     def cwd(self) -> str:
@@ -196,6 +229,7 @@ class MinimalTui(TextualApp):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
+            yield VerticalScroll(id="left")
             with Vertical(id="main"):
                 yield Vertical(id="top")
                 with VerticalScroll(id="transcript"):
@@ -212,6 +246,7 @@ class MinimalTui(TextualApp):
                 with Horizontal(id="statusline"):
                     yield Static(id="status-left")
                     yield Static(id="status-right")
+                yield Vertical(id="footer")
             yield VerticalScroll(id="sidebar")
 
     async def on_mount(self) -> None:
@@ -223,12 +258,16 @@ class MinimalTui(TextualApp):
             "theme", theme_command(frontend), "pick the colour theme, or switch: /theme <name>"
         )
         self.spinner = self.set_interval(0.08, self.refresh_working, pause=True)
+        problems = self.apply_ui()
+        self.refresh_css(animate=False)
         await self.remount_widgets()
         pending = self.replay_history()
         if pending is not None:
             await pending
         for e in self.host.extension_errors:
             self.show_error(f"[extension] could not load {e}")
+        for problem in problems:
+            self.show_error(f"[ui] {problem}")
         if notice := self.host.untrusted_notice():
             self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" {notice}"), classes="output"))
         self.refresh_status()
@@ -356,36 +395,125 @@ class MinimalTui(TextualApp):
             self.unregister_theme(name)
 
     async def extensions_reloaded(self) -> None:
-        """Pick up the reloaded registry: its themes (an edited one repaints), its widgets and the header (logo and extensions list)."""
+        """Pick up the reloaded registry and settings: themes (an edited one repaints), the ``ui.*`` settings, the
+        widgets and the header (logo and extensions list)."""
         self.sync_themes()
+        problems = self.apply_ui()
         self.refresh_css(animate=False)
         await self.remount_widgets()
+        self._render_status()
         for header in self.query(Header):
             await header.recompose()
+        for problem in problems:
+            self.show_error(f"[ui] {problem}")
+
+    def apply_ui(self) -> list[str]:
+        """Apply the ``ui.*`` settings of the last reload except the widget layout (:meth:`remount_widgets`):
+        density, sidebar side and width, prompt glyph and placeholder, keys and the user stylesheet.
+
+        Returns:
+            What the user asked for that could not be done, one line each.
+        """
+        settings = self.host.settings
+        self.set_class(settings.ui_density == "compact", "-compact")
+        body, main = self.query_one("#body"), self.query_one("#main")
+        left, sidebar = self.query_one("#left"), self.query_one("#sidebar")
+        sidebar.set_class(settings.ui_sidebar == "left", "-left")
+        sidebar.set_class(settings.ui_sidebar == "hidden", "-hidden")
+        order = list(body.children)
+        if settings.ui_sidebar == "left" and order.index(sidebar) > order.index(main):
+            body.move_child(sidebar, before=main)
+        elif settings.ui_sidebar != "left" and order.index(sidebar) < order.index(main):
+            body.move_child(sidebar, after=main)
+        for bar in (left, sidebar):
+            if settings.ui_sidebar_width is None:
+                bar.styles.clear_rule("width")
+            else:
+                bar.styles.width = settings.ui_sidebar_width
+        glyph = self.query_one("#prompt-glyph", Static)
+        custom = settings.ui_prompt_glyph
+        glyph.update(Content(custom or theme.PROMPT))
+        if custom:
+            glyph.styles.width = len(custom) + 2
+        else:
+            glyph.styles.clear_rule("width")
+        self.query_one("#prompt").placeholder = settings.ui_placeholder or PLACEHOLDER  # type: ignore[attr-defined]
+        return [*self.host.layout().problems, *self.apply_keys(), *self.apply_css()]
+
+    def apply_keys(self) -> list[str]:
+        """Bind the built-in actions and the extensions' keybindings to the keys :meth:`Host.key_map` gives them,
+        dropping the previous ones. Returns the key problems."""
+        bound, problems = self.host.key_map()
+        for key, bindings in list(self._bindings.key_to_bindings.items()):
+            kept = [b for b in bindings if b.id not in KEY_ACTIONS and not (b.id or "").startswith(EXT_KEY_ID)]
+            if kept:
+                self._bindings.key_to_bindings[key] = kept
+            else:
+                del self._bindings.key_to_bindings[key]
+        self.ext_keys = []
+        for item in bound:
+            if item.key is None:
+                continue
+            if item.spec is None:
+                binding = Binding(
+                    item.key, item.id, item.description, show=False, priority=item.id in PRIORITY_ACTIONS, id=item.id
+                )
+            else:
+                binding = Binding(
+                    item.key, f"ext_key({len(self.ext_keys)})", item.description or item.spec.label,
+                    show=item.spec.show, priority=True, id=f"{EXT_KEY_ID}{len(self.ext_keys)}",
+                )  # fmt: skip
+                self.ext_keys.append(item.spec)
+            self._bindings._add_binding(binding)
+        self.refresh_bindings()
+        return problems
+
+    def apply_css(self) -> list[str]:
+        """Use the stylesheet ``ui.css`` names (or stop using the one used before). A file that cannot be read or
+        parsed is reported and ignored: the UI keeps its own styles. The caller refreshes the CSS."""
+        path = self.host.settings.ui_css
+        if self.user_css is not None:
+            self.stylesheet.source.pop(self.user_css, None)
+            self.user_css = None
+        if path is None:
+            return []
+        try:
+            css = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            return [f"ui.css: cannot read {path}: {e}"]
+        location = (str(path), "")
+        try:
+            probe = Stylesheet(variables=self.get_css_variables())
+            probe.add_source(css, read_from=location)
+            probe.parse()
+        except Exception as e:
+            return [f"ui.css: {path} was not applied: {_css_problem(e)}"]
+        self.stylesheet.add_source(css, read_from=location)
+        self.user_css = location
+        return []
 
     async def remount_widgets(self) -> None:
-        """Replace every extension widget and panel with fresh ones from the registry."""
-        for area in ("top", "bottom", "sidebar"):
+        """Replace every extension widget and panel with fresh ones, placed as :meth:`Host.layout` says."""
+        layout = self.host.layout()
+        for area in config.UI_AREAS:
             await self.query_one(f"#{area}").remove_children()
         self.ext_widgets = []
         self.status_errors.clear()
         self.renderer_errors.clear()
-        for spec in list(self.host.widgets.values()):
-            try:
-                widget = spec.create(self.host.ctx)
-                await self.query_one(f"#{spec.area}").mount(widget)
-                self.ext_widgets.append((spec.name, widget))
-            except Exception as e:
-                self.show_error(f"[extension] widget {spec.name}: {e}")
-        panels = list(self.host.panels.values())
-        for panel in panels:
-            view = PanelView(panel, self.host.ctx, self.show_error)
-            await self.query_one(f"#{panel.area}").mount(view)
-            self.ext_widgets.append((panel.name, view))
-        has_sidebar = any(spec.area == "sidebar" for spec in self.host.widgets.values()) or any(
-            panel.area == "sidebar" for panel in panels
-        )
-        self.query_one("#sidebar").set_class(has_sidebar, "-has-widgets")
+        for area in config.UI_AREAS:
+            container = self.query_one(f"#{area}")
+            for placed in layout.in_area(area):
+                try:
+                    if placed.kind == "widget":
+                        widget = placed.spec.create(self.host.ctx)
+                    else:
+                        widget = PanelView(placed.spec, self.host.ctx, self.show_error)
+                    await container.mount(widget)
+                    self.ext_widgets.append((placed.name, widget))
+                except Exception as e:
+                    self.show_error(f"[extension] {placed.kind} {placed.name}: {e}")
+        for area in ("sidebar", "left"):
+            self.query_one(f"#{area}").set_class(bool(layout.in_area(area)), "-has-widgets")
         self.refresh_widgets()
 
     def render_block(self, kind: str, block: dict) -> list[StyledLine] | None:
@@ -433,14 +561,13 @@ class MinimalTui(TextualApp):
         self._render_status()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Let :data:`MODE_KEY` cycle modes only when one is registered, no dialog is open and no turn is running;
-        otherwise the key keeps moving the focus."""
+        """Let the ``cycle_mode`` key cycle modes only when one is registered, no dialog is open and no turn is
+        running (otherwise it still moves the focus), and extension keybindings run only when no dialog is open and
+        nothing is running."""
         if action == "cycle_mode":
-            return (
-                bool(self.host.modes())
-                and not isinstance(self.screen, ModalScreen)
-                and not self.query_one("#prompt", Input).disabled
-            )
+            return bool(self.host.modes()) and not isinstance(self.screen, ModalScreen) and not self.busy
+        if action == "ext_key":
+            return not isinstance(self.screen, ModalScreen) and not self.busy
         return True
 
     @work(thread=True, exclusive=True, group="agent")
@@ -452,8 +579,30 @@ class MinimalTui(TextualApp):
         self.call_from_thread(self.notify, f"Mode: {mode or 'none'}", timeout=2, markup=False)
 
     def action_toggle_sidebar(self) -> None:
-        """Hide or show the sidebar of extension widgets."""
+        """Hide or show the sidebars (``sidebar`` and ``left`` areas)."""
         self.query_one("#sidebar").toggle_class("-collapsed")
+        self.query_one("#left").toggle_class("-collapsed")
+
+    def action_ext_key(self, index: int) -> None:
+        """Run the extension keybinding ``index`` (of :attr:`ext_keys`) like a slash command: the prompt is locked and
+        the function runs on a worker, so it may ask the user questions."""
+        if index >= len(self.ext_keys):
+            return
+        self.in_turn = False
+        self.set_busy(True)
+        self.refresh_live({"kind": "start", "turn": False})
+        self.run_key_worker(self.ext_keys[index])
+
+    @work(thread=True, exclusive=True, group="agent")
+    def run_key_worker(self, spec: KeybindingSpec) -> None:
+        try:
+            spec.run(self.host.ctx)
+        except ExitRepl:
+            self.call_from_thread(self.exit)
+            return
+        except Exception as e:
+            self.call_from_thread(self.show_error, f"[extension] key {spec.key} ({spec.id}): {e}")
+        self.call_from_thread(self.after_action)
 
     # --- status line and working indicator -----------------------------------
 
@@ -476,61 +625,78 @@ class MinimalTui(TextualApp):
             self.git = git
             self._render_status()
 
-    def _status_segments(self, side: str) -> list[Content]:
-        """The extension segments for ``side`` of the status line; a failing one is skipped and reported once."""
-        segments = []
-        for spec in list(self.host.status_segments.values()):
-            if spec.side != side:
-                continue
-            try:
-                value = spec.render(self.host.ctx)
-            except Exception as e:
-                if spec.name not in self.status_errors:
-                    self.status_errors.add(spec.name)
-                    self.show_error(f"[extension] status {spec.name}: {e}")
-                continue
-            if value is not None:
-                try:
-                    segments.append(value if isinstance(value, Content) else to_content(styled_line(value)))
-                except ValueError as e:
-                    if spec.name not in self.status_errors:
-                        self.status_errors.add(spec.name)
-                        self.show_error(f"[extension] status {spec.name}: {e}")
-        return segments
+    def _report_status_error(self, name: str, error: Exception) -> None:
+        if name not in self.status_errors:
+            self.status_errors.add(name)
+            self.show_error(f"[extension] status {name}: {error}")
+
+    def _status_segment(self, placed: Placed, status: HostStatus) -> Content | None:
+        """What one status segment shows now, or ``None``; a failing extension segment is skipped and reported once."""
+        spec = placed.spec
+        if spec is None:
+            return self._builtin_segment(placed.name, status)
+        try:
+            value = spec.render(self.host.ctx)
+        except Exception as e:
+            self._report_status_error(placed.name, e)
+            return None
+        if value is None:
+            return None
+        try:
+            return value if isinstance(value, Content) else to_content(styled_line(value))
+        except ValueError as e:
+            self._report_status_error(placed.name, e)
+            return None
+
+    def _builtin_segment(self, name: str, status: HostStatus) -> Content | None:
+        """minimal's own status segment ``name`` (:data:`~minimal.core.layout.BUILTIN_SEGMENTS`), or ``None`` if it has nothing to show."""
+        if name == "model":
+            return Content.assemble(
+                (f"{theme.MODEL} {status.model}", "$status-model"), (f"{theme.DOT}{status.provider}", "$muted")
+            )
+        if name == "path":
+            return Content.assemble((_short_path(status.cwd), "$status-path"))
+        if name == "git":
+            if self.git is None:
+                return None
+            branch, dirty = self.git
+            color = "$status-git-dirty" if dirty else "$status-git-clean"
+            return Content.assemble((f"{theme.BRANCH} {branch}{' *' if dirty else ''}", color))
+        if name == "mode":
+            return Content.assemble((f"mode {status.mode}", "$accent")) if status.mode else None
+        if name == "context":
+            tokens = status.context_tokens
+            return Content(f"{tokens / 1000:.1f}k ctx") if tokens is not None else None
+        if name == "extensions":
+            return Content(f"{status.extensions} ext")
+        return Content(f"session {status.session_id}")
+
+    def _status_segments(self, layout: Layout, side: str, status: HostStatus) -> list[Content]:
+        """The segments of ``side`` of the status line in order: minimal's and the extensions', less the hidden ones."""
+        pieces: list[tuple[int, int, Content]] = []
+        for placed in layout.segments(side):
+            if (content := self._status_segment(placed, status)) is not None:
+                pieces.append((placed.order, placed.seq, content))
+        if side == "right" and status.untrusted:  # not a segment of its own: it must not be hidden
+            warning = Content.assemble((f"{theme.WARNING} {status.untrusted} untrusted", "$warning"))
+            pieces.append((99, -2, warning))
+        return [content for _, _, content in sorted(pieces, key=lambda p: p[:2])]
 
     def _render_status(self) -> None:
         status = self.host.status()
+        layout = self.host.layout()
         sep = (f" {theme.SEPARATOR} ", "$border-muted")
-        parts: list[str | tuple[str, str] | Content] = [
-            " ",
-            (f"{theme.MODEL} {status.model}", "$status-model"),
-            (f"{theme.DOT}{status.provider}", "$muted"),
-            sep,
-            (_short_path(status.cwd), "$status-path"),
-        ]
-        git = self.git
-        if git is not None:
-            branch, dirty = git
-            color = "$status-git-dirty" if dirty else "$status-git-clean"
-            parts += [sep, (f"{theme.BRANCH} {branch}{' *' if dirty else ''}", color)]
-        if status.mode:
-            parts += [sep, (f"mode {status.mode}", "$accent")]
-        for segment in self._status_segments("left"):
-            parts += [sep, segment]
+        parts: list[str | tuple[str, str] | Content] = [" "]
+        for i, segment in enumerate(self._status_segments(layout, "left", status)):
+            parts += [sep, segment] if i else [segment]
         self.query_one("#status-left", Static).update(Content.assemble(*parts))
-        right = f"{status.extensions} ext{theme.DOT}session {status.session_id}"
-        tokens = status.context_tokens
-        if tokens is not None:
-            right = f"{tokens / 1000:.1f}k ctx{theme.DOT}{right}"
-        untrusted = []
-        if status.untrusted:
-            untrusted.append(Content.assemble((f"{theme.WARNING} {status.untrusted} untrusted", "$warning")))
         self.query_one("#status-right", Static).update(
-            Content(theme.DOT).join([*self._status_segments("right"), *untrusted, Content(right)])
+            Content(theme.DOT).join(self._status_segments(layout, "right", status))
         )
 
     def set_busy(self, busy: bool) -> None:
         """Lock the prompt and show the working indicator while a turn or command runs."""
+        self.busy = busy
         self.query_one("#prompt", Input).disabled = busy
         self.query_one("#working").set_class(busy, "-busy")
         if busy:
