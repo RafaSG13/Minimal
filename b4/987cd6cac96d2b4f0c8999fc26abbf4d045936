@@ -1,0 +1,50 @@
+CHANGELOG.md
+  h_e81853c41416fb 23-45
+README.md
+  h_e81853c41416fb 130,134,156-158
+docs/extensions.md
+  h_e81853c41416fb 137,211-212,220-223,492,511-512
+docs/settings.md
+  h_e81853c41416fb 86-95
+src/minimal/api.py
+  h_e81853c41416fb 22,76-77
+src/minimal/config.py
+  h_e81853c41416fb 8-9,359-395,482-486
+src/minimal/core/agents.py
+  h_e81853c41416fb 145-193
+src/minimal/core/app.py
+  h_e81853c41416fb 14,28,30-31,301-312,325-326,423-432,461-463,502-503,559,719-724,729-818,1110-1116
+src/minimal/core/context.py
+  h_e81853c41416fb 19,22-23,154,158-160,166,172,174-234,236-260,425-450
+src/minimal/core/host.py
+  h_e81853c41416fb 20,52-54,66-67,114-115
+src/minimal/core/permissions.py
+  h_e81853c41416fb 27,108-180,182-183,185,188-198,211
+src/minimal/core/session.py
+  h_e81853c41416fb 7,20,26,62-111,166-201
+src/minimal/ui/commands.py
+  h_e81853c41416fb 20,29,31,120-169,533-535
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 185-187,540,544,547-552,561-562,619-620,626
+src/minimal/ui/tui/frontend.py
+  h_e81853c41416fb 14,82-84,114-118
+src/minimal/ui/tui/screens.py
+  h_e81853c41416fb 88-166
+tests/test_permissions.py
+  h_e81853c41416fb 3,11-12,23,50-53,143-333
+tests/test_session_api.py
+  h_e81853c41416fb 1-284
+tests/test_tui.py
+  h_e81853c41416fb 2,13,23,82,406,408,442-443,450-540
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b4987cd6cac96d2b4f0c8999fc26abbf4d045936",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
