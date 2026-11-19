@@ -1,0 +1,58 @@
+CHANGELOG.md
+  h_e81853c41416fb 5-23
+README.md
+  h_e81853c41416fb 290,294,347,351,372-373
+docs/extensions.md
+  h_e81853c41416fb 86-89,139,201-202,211,308,477-479,503-504
+docs/settings.md
+  h_e81853c41416fb 11,25-27,39-41
+src/minimal/api.py
+  h_e81853c41416fb 20,58,69-70,77
+src/minimal/config.py
+  h_e81853c41416fb 66-75,94-96,112,229-243
+src/minimal/core/agent.py
+  h_e81853c41416fb 12-14,32,40,42,96-97,127-132,209-223,237-376,395-396,399,401-402,407-408,410-413,417,426-431,434,443-448,471
+src/minimal/core/app.py
+  h_e81853c41416fb 261-263,469,715-716,718-738,853-854,957-958
+src/minimal/core/context.py
+  h_e81853c41416fb 108-119,161,256,380-389
+src/minimal/core/host.py
+  h_e81853c41416fb 50-51,62,108
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 59,304,309-310,312,447,450,460
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 76-77,222-225,234,522,527,531-532,534
+src/minimal/providers/anthropic.py
+  h_e81853c41416fb 3-8,20-66,103-104,110-114,117
+src/minimal/providers/base.py
+  h_e81853c41416fb 14-17,19,29-36,47,55-57,74,88-115,117-120,123-125,159-161
+src/minimal/providers/gemini.py
+  h_e81853c41416fb 13,16-19,35,74-76,135-155,157,164,172-174,270-276
+src/minimal/providers/openai.py
+  h_e81853c41416fb 16-17,20-27,41,45-49,108-109,128-139,143-166,192-193,196,211-213,229-231
+src/minimal/tools/files.py
+  h_e81853c41416fb 10,81-82,84-98,101-104,142-153,192
+src/minimal/tools/search.py
+  h_e81853c41416fb 189,227
+src/minimal/ui/commands.py
+  h_e81853c41416fb 242-245
+src/minimal/ui/tui/widgets.py
+  h_e81853c41416fb 29,270
+tests/test_blocks.py
+  h_e81853c41416fb 1-436
+tests/test_parallel_tools.py
+  h_e81853c41416fb 1-391
+tests/test_smoke.py
+  h_e81853c41416fb 120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a4ca70a4ef4e03760892c6f3c6a4c1796b967da5",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
