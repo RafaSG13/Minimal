@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from textual.widgets import Input, Label, Markdown, SelectionList, Static
+from textual.widgets import Label, Markdown, SelectionList, Static
 from textual.widgets._markdown import MarkdownParagraph
 
 from minimal import config
@@ -18,7 +18,8 @@ from minimal.extensions import loader
 from minimal.extensions.registry import LogoSpec, Registry
 from minimal.providers.base import Reply
 from minimal.ui.commands import register_builtin_commands
-from minimal.ui.tui.app import CommandSuggester, MinimalTui, _outside_event_loop
+from minimal.ui.tui.app import MinimalTui, _outside_event_loop
+from minimal.ui.tui.composer import Composer, CommandSuggester
 from minimal.ui.tui.markdown import RenderedFence, RenderedQuote
 from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, PermissionScreen, TextScreen
 from minimal.ui.tui.widgets import PanelView, ToolBlock, _edit_diff, logo_content
@@ -80,6 +81,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global"),
             mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
             mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions"),
+            mock.patch.object(config, "HOME_DIR", self.tmp / "home"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -99,7 +101,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.core.provider = StreamingFakeProvider(replies)
 
     async def submit(self, pilot, text):
-        pilot.app.query_one("#prompt", Input).value = text
+        pilot.app.query_one("#prompt", Composer).set_text(text)
         await pilot.press("enter")
 
     async def wait_until(self, pilot, condition):
@@ -110,7 +112,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.fail("timed out")
 
     def idle(self, app):
-        return lambda: not app.query_one("#prompt", Input).disabled
+        return lambda: not app.busy
 
     async def test_turn_streams_and_widget_refreshes(self):
         self.use_replies(Reply(content=[{"type": "text", "text": "Hello **there**"}], stop_reason="end_turn"))
@@ -590,7 +592,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("mode ", status())
                 else:
                     self.assertIn(f"mode {expected}", status())
-            self.assertIs(app.focused, app.query_one("#prompt", Input))  # the focus stayed in the composer
+            self.assertIs(app.focused, app.query_one("#prompt", Composer))  # the focus stayed in the composer
 
     async def test_mode_change_handler_can_ask_and_the_status_follows_a_later_change(self):
         answers = []
@@ -614,7 +616,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.1)
             await pilot.press("shift+tab")
             self.assertIsNone(self.core.mode)
-            self.assertIsNot(app.focused, app.query_one("#prompt", Input))
+            self.assertIsNot(app.focused, app.query_one("#prompt", Composer))
 
     async def test_shift_tab_does_not_cycle_modes_in_a_dialog_or_while_a_turn_runs(self):
         self.core.registry.register_mode("plan", description="read only")

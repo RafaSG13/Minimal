@@ -39,6 +39,27 @@
   `.minimal/settings.local.json`, keeps the project trusted and tells the transcript where it went; `deny` rules still
   win. `Frontend` gained `permission(question, rule, saved_in)` and `progress(text)`, and `config.add_allow_rule`
   edits the file.
+- Multi-line prompt: the composer grows with the text up to `ui.composer_max_lines` rows (default 8). `Enter` sends;
+  `Shift+Enter`, `Ctrl+J` or `Alt+Enter` insert a newline; pasted text keeps its lines. The prompt is now a
+  `TextArea`, so a marketplace item that patches the old `Input` (`widgets/command_menu`) needs updating.
+- Prompt history: `Up` on the first line and `Down` on the last walk the messages and commands sent in this project,
+  keeping the draft. It is saved in `~/.minimal/data/projects/<key>/history.json` (mode 0600), capped by
+  `ui.history_size` (default 500), consecutive duplicates collapsed.
+- The prompt stays usable while a turn runs: a message sent meanwhile shows as `queued: …` above it and goes out when
+  the turn ends (`Host.queue_message()`, `Host.queued_messages()`); a `/command` typed meanwhile is refused with a notice.
+- `@file` mentions: `@` and a few letters complete a project file (`.gitignore` respected), and on sending each
+  `@path` naming a text file inside the working directory is attached to the message as a `<file path="…">` block
+  (cut at `ui.mention_max_chars`, default 20000). Binary files and paths outside the directory are never read.
+- `ui.notify` (`off`, `bell`, `osc9`) and `ui.notify_after` (seconds, default 10): ring the bell or send an OSC 9
+  desktop notification when a long turn ends while the terminal is in the background.
+- `/copy [n]` copies the last (or n-th from the end) assistant message to the clipboard (OSC 52, and `pbcopy`,
+  `wl-copy`, `xclip` or `xsel` when installed), and `/export [path] [--force]` writes the session as Markdown.
+- Every slash command, built-in and extension, is in the `Ctrl+P` command palette; one that needs an argument is typed
+  into the prompt instead of run.
+- Command argument completion: `register_command(..., complete=fn)` and `@minimal.command(complete=fn)` take
+  `complete(args, ctx) -> list[str]`, offered in the composer's popup (`Tab` cycles); `Host.complete_args()` and
+  `Command.complete` expose it. `/theme`, `/mode`, `/resume`, `/provider`, `/login`, `/logout` and `/ext` complete their
+  arguments.
 
 ### Changed
 

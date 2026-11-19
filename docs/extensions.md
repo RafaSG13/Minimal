@@ -98,9 +98,14 @@ def stats(args, ctx):
     print(f"{len(ctx.messages)} messages")
 
 minimal.register_command("wizard", run_wizard, description="...", terminal=True)
+
+@minimal.command(description="greet someone", complete=lambda args, ctx: [n for n in ("alice", "alan", "bob") if n.startswith(args)])
+def greet(args, ctx):
+    print(f"hi {args}")
 ```
 
-- `@minimal.command(name=None, *, description="", terminal=False)` / `register_command(name, run, description="", terminal=False)` add `/name`, run as `run(args, ctx)` with the text after the name. What it prints appears in the transcript. `terminal=True` runs it with the UI suspended, in the real terminal.
+- `@minimal.command(name=None, *, description="", terminal=False, complete=None)` / `register_command(name, run, description="", terminal=False, complete=None)` add `/name`, run as `run(args, ctx)` with the text after the name. What it prints appears in the transcript. `terminal=True` runs it with the UI suspended, in the real terminal.
+- `complete(args, ctx)` (API 2.3) returns candidate completions for the argument text typed after `/name `: `args` is everything after the single space that follows the name, and each returned string **replaces the whole argument text** (`/greet a` → `["alice", "alan"]`; for several words, return the earlier words again). Filter by `args` yourself and keep it fast: it runs on the UI thread after each keystroke. The terminal UI lists the candidates in the composer's popup, `Tab` puts them in the text one after the other, and `Enter` sends the text as it is. A function that raises or does not return a list of strings is reported once (until the next reload) and offers nothing. The built-in `/theme`, `/mode`, `/resume`, `/provider`, `/login`, `/logout` and `/ext` complete the same way.
 
 ### Events
 
@@ -509,6 +514,8 @@ API 2.2 added modes (`minimal.register_mode`, `ctx.mode`, `ctx.modes()`, `ctx.mo
 API 2.3 added (read-only tools, turn limit, pictures and reasoning) `read_only` on `Tool`, `register_tool` and `@minimal.tool` (concurrent calls to read-only tools), tools that return a list of `text` and `image` blocks, `ctx.max_turns`, `ctx.reasoning_effort` and `ctx.set_reasoning_effort()`, the `reasoning_effort` request option of `Provider.stream`, `image` blocks (in user messages and tool results) and `thinking` blocks (in assistant replies) in the canonical history, and `minimal.api.image_block`, `IMAGE_TYPES` and `REASONING_EFFORTS`; `result_text` shows a picture as `[image: media_type, N bytes]`. An extension using any of them declares `__api__ = "2.3"`.
 
 API 2.3 added `ctx.fork(at_index=None)` and `ctx.truncate(at_index)` (with `/fork` and `/rewind`), `ctx.complete_text(prompt, ...)` and the `model=` keyword of `ctx.complete`, `ctx.usage` (`UsageTotals`, also in `HostStatus`) with `/usage`, `ctx.progress(text)`, and the permission dialog's "this session" and "always" answers (the `Frontend.permission` and `Frontend.progress` methods a frontend implements). An extension using any of them declares `__api__ = "2.3"`.
+
+API 2.3 added `complete` to `@minimal.command` and `register_command` (and the `complete` field of the `Command` the registry keeps): `complete(args, ctx) -> list[str]` returns the completions of the text typed after `/name ` ([Commands](#commands)). An extension using it declares `__api__ = "2.3"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

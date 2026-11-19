@@ -66,6 +66,11 @@ class TuiFrontend:
     def set_theme(self, name: str) -> None:
         self._on_ui(setattr, self.tui, "theme", name)
 
+    def copy_text(self, text: str) -> bool:
+        """Put ``text`` on the clipboard through the terminal (OSC 52); ``/copy`` calls it. The TUI's own, like :meth:`themes`."""
+        self._on_ui(self.tui.copy_to_clipboard, text)
+        return True
+
     def widget(self, name: str) -> object | None:
         return next((widget for widget_name, widget in self.tui.ext_widgets if widget_name == name), None)
 

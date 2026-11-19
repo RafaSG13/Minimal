@@ -21,6 +21,7 @@ from minimal.core.agents import AgentInfo, UsageTotals
 from minimal.core.context import Context
 from minimal.extensions.registry import (
     Command,
+    CommandComplete,
     CommandRun,
     LogoSpec,
     PanelSpec,
@@ -221,9 +222,36 @@ class Host:
         typed = prefix[1:]
         return [f"/{name}" for name in sorted(self._app.commands()) if name.startswith(typed)]
 
-    def register_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
+    def complete_args(self, line: str) -> list[str]:
+        """The completions of the arguments typed in ``line`` (``"/theme da"`` → ``["dark", "dracula"]``), as the
+        command's ``complete`` function returns them (API 2.3); each replaces the whole argument text.
+
+        Empty for text that is not ``/name `` followed by arguments, and for a command without ``complete``.
+
+        Raises:
+            Exception: whatever ``complete`` raises, or ``ValueError`` if it does not return a list of strings: report it.
+        """
+        if not line.startswith("/") or " " not in line:
+            return []
+        name, _, args = line[1:].partition(" ")
+        cmd = self._app.find_command(name)
+        if cmd is None or cmd.complete is None:
+            return []
+        found = cmd.complete(args, self._app.context)
+        if not isinstance(found, list) or not all(isinstance(c, str) for c in found):
+            raise ValueError(f"/{name} completion must return a list of strings")
+        return found
+
+    def register_command(
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
+    ) -> None:
         """Add a built-in command that only this frontend has, called as ``run(args, ctx)``; it survives reloads."""
-        self._app.add_frontend_command(name, run, description, terminal)
+        self._app.add_frontend_command(name, run, description, terminal, complete)
 
     def interrupt(self) -> None:
         """Ask the turn in progress to stop at its next streamed chunk, tool call or model request."""
@@ -240,3 +268,12 @@ class Host:
         Send it with :meth:`submit` (or :meth:`run_command`) as soon as no turn or command is running.
         """
         return self._app.take_queued()
+
+    def queue_message(self, text: str) -> None:
+        """Queue ``text`` behind the messages already queued, to be sent with :meth:`next_queued` once the turn
+        or command in progress ends. Unlike ``ctx.queue_user_message`` it does not ask the frontend to send it."""
+        self._app.queued.append(text)
+
+    def queued_messages(self) -> list[str]:
+        """The messages waiting to be sent, oldest first (a copy)."""
+        return list(self._app.queued)

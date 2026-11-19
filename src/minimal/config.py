@@ -26,6 +26,7 @@ Secrets and state live in their own files:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -82,6 +83,14 @@ def _is_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _is_non_negative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_non_negative_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
 def _is_max_tokens(value: object) -> bool:
     return _is_positive_int(value) or (
         isinstance(value, dict) and all(isinstance(k, str) and _is_positive_int(v) for k, v in value.items())
@@ -107,10 +116,15 @@ _TYPES = {
     "permissions.deny": (_is_str_list, "a list of strings"),
     "extensions.disabled": (_is_str_list, "a list of strings"),
     "extensions.settings": (_is_settings_map, "an object mapping extension ids to objects"),
+    "ui.composer_max_lines": (_is_positive_int, "a positive integer"),
+    "ui.history_size": (_is_non_negative_int, "a non-negative integer"),
+    "ui.mention_max_chars": (_is_positive_int, "a positive integer"),
+    "ui.notify": (lambda v: v in ("off", "bell", "osc9"), 'one of "off", "bell", "osc9"'),
+    "ui.notify_after": (_is_non_negative_number, "a non-negative number of seconds"),
 }
 """Every setting as a dotted key: ``(type check, type name for errors)``."""
 
-_GROUPS = ("prompt", "permissions", "extensions", "agent", "tools")
+_GROUPS = ("prompt", "permissions", "extensions", "agent", "tools", "ui")
 """Top-level keys holding an object of settings."""
 
 
@@ -470,6 +484,15 @@ def private_dir(path: Path) -> None:
     path.mkdir(exist_ok=True, mode=0o700)
     if path.stat().st_mode & 0o077:
         os.chmod(path, 0o700)
+
+
+def project_data_dir(cwd: str) -> Path:
+    """``~/.minimal/data/projects/<key>``: where the project in ``cwd`` keeps its saved state outside the repository.
+
+    ``<key>`` is a hash of the real path of ``cwd``. The folder is not created; see :func:`private_dir`.
+    """
+    key = hashlib.sha256(os.path.realpath(cwd).encode()).hexdigest()[:16]
+    return HOME_DIR / "data" / "projects" / key
 
 
 def write_private(path: Path, data: dict) -> None:

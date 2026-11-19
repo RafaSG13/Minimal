@@ -79,6 +79,9 @@ ToolRun = Callable[[dict, Any], Any]
 CommandRun = Callable[[str, Any], Any]
 """Slash-command implementation: ``run(args, ctx)``."""
 
+CommandComplete = Callable[[str, Any], list[str]]
+"""Slash-command argument completion: ``complete(args, ctx)`` returns candidates for the text typed after ``/name ``."""
+
 EventHandler = Callable[[dict], Any]
 """Event handler: ``handler(payload) -> dict | None``."""
 
@@ -244,12 +247,14 @@ class Command:
         description: One-line summary shown by ``/help``.
         terminal: Needs the real terminal (the TUI suspends itself while it runs).
         builtin: One of minimal's own commands (:meth:`Registry.register_builtin_command`).
+        complete: Completes the argument text, called as ``complete(args, ctx)`` (see :data:`CommandComplete`); API 2.3.
     """
 
     run: CommandRun
     description: str = ""
     terminal: bool = False
     builtin: bool = False
+    complete: CommandComplete | None = None
 
 
 @dataclass
@@ -534,22 +539,36 @@ class Registry:
         self.add_tool(Tool(name, description, schema, run, confirm, subject_key, read_only))
 
     def register_command(
-        self, name: str, run: CommandRun, description: str = "", terminal: bool = False
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
     ) -> None:
         """Register a slash command, available as ``/name``.
 
         Set ``terminal`` when the command needs the real terminal (prompts,
         menus, a browser login): the TUI suspends itself while it runs.
+        ``complete(args, ctx)`` returns the completions of the argument text typed after ``/name `` (API 2.3); each
+        one replaces the whole argument text, and the terminal UI offers them as the user types.
 
         Raises:
-            ValueError: if ``run`` is not callable.
+            ValueError: if ``run`` is not callable, or ``complete`` is neither ``None`` nor callable.
         """
         if not callable(run):
             raise ValueError("register_command: run is required")
-        self.commands[name] = Command(run, description, terminal)
+        if complete is not None and not callable(complete):
+            raise ValueError("register_command: complete must be callable")
+        self.commands[name] = Command(run, description, terminal, complete=complete)
 
     def register_builtin_command(
-        self, name: str, run: CommandRun, description: str = "", terminal: bool = False
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
     ) -> None:
         """Register one of minimal's own slash commands (see :meth:`register_command`).
 
@@ -558,7 +577,7 @@ class Registry:
         """
         if not callable(run):
             raise ValueError("register_builtin_command: run is required")
-        self.builtin_commands[name] = Command(run, description, terminal, builtin=True)
+        self.builtin_commands[name] = Command(run, description, terminal, builtin=True, complete=complete)
 
     def register_widget(
         self, name: str, create: Callable[[Any], Any], area: str = "sidebar"

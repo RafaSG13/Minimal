@@ -12,7 +12,8 @@ Turns and slash commands run in a worker thread so the UI stays responsive;
 :class:`~minimal.ui.tui.frontend.TuiFrontend` hands their output and confirmations back to the UI
 thread. Esc interrupts the turn in progress; ``shift+tab`` cycles the mode (:data:`MODE_KEY`). Anything printed (slash-command
 output, extension messages) is shown in the transcript. Commands marked
-``terminal`` run with the UI suspended.
+``terminal`` run with the UI suspended. The prompt is :class:`~minimal.ui.tui.composer.Composer`: it stays usable during a
+turn (a message is queued, a command refused), and it owns history, ``@file`` mentions and completions.
 """
 
 from __future__ import annotations
@@ -34,17 +35,20 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
-from textual.suggester import Suggester
 from textual.widget import Widget
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static
 
 from minimal import config
 from minimal.core.app import ExitRepl
 from minimal.core.host import Host
+from minimal.core.mentions import DEFAULT_MAX_CHARS, expand_mentions, split_attachments
 from minimal.extensions.registry import StyledLine, styled_line, styled_lines
 from minimal.ui.tui import theme
+from minimal.ui.tui.composer import Composer, ComposerPanel, QueuedView, ui_setting
 from minimal.ui.tui.frontend import TuiFrontend, theme_command
 from minimal.ui.tui.markdown import RenderedFence, TranscriptMarkdown
+from minimal.ui.tui.notify import DEFAULT_AFTER, sequence
+from minimal.ui.tui.palette import SlashCommands, needs_args
 from minimal.ui.tui.widgets import Header, PanelView, ToolBlock, to_content
 
 REPLAY_LIMIT = 200
@@ -53,7 +57,7 @@ REPLAY_LIMIT = 200
 MODE_KEY = "shift+tab"
 """The key that cycles the mode. ``tab`` and ``shift+tab`` both move the focus between the prompt and the
 transcript (the screen's own bindings), so binding either one takes that over; ``shift+tab`` leaves ``tab`` doing it.
-It cycles modes only with a mode registered, no dialog open and the prompt idle (:meth:`MinimalTui.check_action`);
+It cycles modes only with a mode registered, no dialog open and no turn running (:meth:`MinimalTui.check_action`);
 otherwise it still moves the focus."""
 
 
@@ -102,17 +106,6 @@ def _short_path(path: str) -> str:
     )
 
 
-class CommandSuggester(Suggester):
-    """Completes a slash command's name in the prompt (→ accepts), built-in and extension commands alike."""
-
-    def __init__(self, host: Host) -> None:
-        super().__init__(use_cache=False, case_sensitive=True)  # extension commands change on reload
-        self.host = host
-
-    async def get_suggestion(self, value: str) -> str | None:
-        return next((line for line in self.host.complete(value) if line != value), None)
-
-
 class MinimalTui(TextualApp):
     """The terminal UI, driven through a :class:`~minimal.core.host.Host`."""
 
@@ -123,6 +116,8 @@ class MinimalTui(TextualApp):
         Binding("ctrl+b", "toggle_sidebar", "Toggle sidebar", show=False),
         Binding(MODE_KEY, "cycle_mode", "Cycle mode", show=False, priority=True),
     ]
+
+    COMMANDS = TextualApp.COMMANDS | {SlashCommands}  # the palette (ctrl+p) lists the slash commands too
 
     CSS = """
     #body { height: 1fr; }
@@ -164,7 +159,7 @@ class MinimalTui(TextualApp):
     #prompt-glyph { width: 3; padding: 0 1; color: $accent; text-style: bold; }
     #prompt { border: none; height: 1; padding: 0; background: transparent; }
     #prompt:focus { border: none; }
-    #prompt > .input--placeholder { color: $dim; }
+    #prompt .text-area--placeholder { color: $dim; }
     #statusline { height: 1; background: $status-bg; }
     #status-left { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
     #status-right { width: auto; color: $dim; padding: 0 1 0 2; }
@@ -186,10 +181,13 @@ class MinimalTui(TextualApp):
         self.shown_session = (status.session_id, status.truncations)
         self.progress_text: str | None = None  # what ctx.progress last set, shown by refresh_working
         self.busy_since = 0.0
+        self.busy = False  # a turn or command is running: the prompt is locked
         self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
         self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
         self.status_errors: set[str] = set()  # status segments whose error was already shown
         self.renderer_errors: set[str] = set()  # renderer kinds whose error was already shown
+        self.completion_errors: set[str] = set()  # commands whose completion error was already shown
+        self.focus_reported = False  # the terminal reported a focus change at least once: app_focus can be trusted
 
     @property
     def cwd(self) -> str:
@@ -204,13 +202,7 @@ class MinimalTui(TextualApp):
                     yield Header(self.host)
                 yield Vertical(id="bottom")
                 yield Static(id="working")
-                with Horizontal(id="composer"):
-                    yield Static(theme.PROMPT, id="prompt-glyph")
-                    yield Input(
-                        placeholder="Message, or / for commands",
-                        id="prompt",
-                        suggester=CommandSuggester(self.host),
-                    )
+                yield ComposerPanel(self.host, self.report_completion_error)
                 with Horizontal(id="statusline"):
                     yield Static(id="status-left")
                     yield Static(id="status-right")
@@ -222,7 +214,10 @@ class MinimalTui(TextualApp):
         frontend = TuiFrontend(self)
         self.host.attach(frontend)
         self.host.register_command(
-            "theme", theme_command(frontend), "pick the colour theme, or switch: /theme <name>"
+            "theme",
+            theme_command(frontend),
+            "pick the colour theme, or switch: /theme <name>",
+            complete=lambda args, ctx: [n for n in frontend.themes()[0] if n.startswith(args)],
         )
         self.spinner = self.set_interval(0.08, self.refresh_working, pause=True)
         await self.remount_widgets()
@@ -234,7 +229,7 @@ class MinimalTui(TextualApp):
         if notice := self.host.untrusted_notice():
             self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" {notice}"), classes="output"))
         self.refresh_status()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", Composer).focus()
         self.host.begin()
 
     def on_unmount(self) -> None:
@@ -272,7 +267,10 @@ class MinimalTui(TextualApp):
         for message in messages[hidden:]:
             content = message["content"]
             if isinstance(content, str):
-                widgets.append(Static(content, markup=False, classes="user"))
+                body, attached = split_attachments(content)
+                widgets.append(Static(body, markup=False, classes="user"))
+                if attached:
+                    widgets.append(Static(f"attached {', '.join(attached)}", markup=False, classes="output"))
                 continue
             for block in content:
                 kind = block.get("type")
@@ -360,6 +358,7 @@ class MinimalTui(TextualApp):
     async def extensions_reloaded(self) -> None:
         """Pick up the reloaded registry: its themes (an edited one repaints), its widgets and the header (logo and extensions list)."""
         self.sync_themes()
+        self.completion_errors.clear()
         self.refresh_css(animate=False)
         await self.remount_widgets()
         for header in self.query(Header):
@@ -441,7 +440,7 @@ class MinimalTui(TextualApp):
             return (
                 bool(self.host.modes())
                 and not isinstance(self.screen, ModalScreen)
-                and not self.query_one("#prompt", Input).disabled
+                and not self.busy
             )
         return True
 
@@ -532,8 +531,8 @@ class MinimalTui(TextualApp):
         )
 
     def set_busy(self, busy: bool) -> None:
-        """Lock the prompt and show the working indicator while a turn or command runs."""
-        self.query_one("#prompt", Input).disabled = busy
+        """Show the working indicator while a turn or command runs. The composer stays usable: a message sent meanwhile is queued."""
+        self.busy = busy
         self.query_one("#working").set_class(busy, "-busy")
         if busy:
             self.busy_since = time.monotonic()
@@ -572,14 +571,58 @@ class MinimalTui(TextualApp):
 
     # --- input ---------------------------------------------------------------
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        event.input.clear()
-        self.submit(event.value.strip())
+    def on_composer_submitted(self, event: Composer.Submitted) -> None:
+        if event.value and self.submit(event.value):
+            event.composer.commit(event.value)
 
-    def submit(self, line: str) -> None:
-        """Send ``line`` as if the user typed it: a ``/command`` or a message to the model."""
+    def on_app_focus(self) -> None:
+        self.focus_reported = True
+
+    def on_app_blur(self) -> None:
+        self.focus_reported = True
+
+    def run_slash_command(self, name: str) -> None:
+        """Run ``/name`` as chosen in the command palette; a command that needs arguments is typed into the composer."""
+        command = self.host.command(name)
+        if command is not None and needs_args(name, command.description):
+            composer = self.query_one("#prompt", Composer)
+            composer.set_text(f"/{name} ")
+            composer.focus()
+        else:
+            self.submit(f"/{name}")
+
+    def report_completion_error(self, name: str, error: Exception) -> None:
+        """Show once (until the next reload) that the completion function of ``/name`` failed."""
+        if name not in self.completion_errors:
+            self.completion_errors.add(name)
+            self.show_error(f"[extension] /{name} completion: {error}")
+
+    def refresh_queued(self) -> None:
+        """Redraw the list of messages waiting above the composer."""
+        self.query_one("#queued", QueuedView).set_messages(self.host.queued_messages())
+
+    def submit(self, line: str) -> bool:
+        """Send ``line`` as if the user typed it: a ``/command`` or a message to the model.
+
+        While a turn or command runs, a message is queued (it is sent when that ends) and a command is refused.
+
+        Returns:
+            Whether ``line`` was sent or queued.
+        """
         if not line:
-            return
+            return False
+        if self.busy:
+            if line.startswith("/"):
+                self.notify(
+                    "A turn is running: commands wait until it ends (esc interrupts).",
+                    severity="warning",
+                    timeout=3,
+                    markup=False,
+                )
+                return False
+            self.host.queue_message(line)
+            self.refresh_queued()
+            return True
         self.in_turn = not line.startswith("/")
         self.set_busy(True)
         self.refresh_live({"kind": "start", "turn": self.in_turn})
@@ -591,14 +634,22 @@ class MinimalTui(TextualApp):
                         self.host.run_command(line)
                 except ExitRepl:
                     self.exit()
-                    return
+                    return True
                 self.after_action()
             else:
                 self.run_command_worker(line)
-            return
+            return True
+        expansion = expand_mentions(line, self.cwd, ui_setting(self.host, "mention_max_chars", DEFAULT_MAX_CHARS))
         self._add(Static(line, markup=False, classes="user"))
+        if expansion.attached or expansion.notices:
+            notes = [
+                f"attached {path} ({chars} characters{', cut' if cut else ''})"
+                for path, chars, cut in expansion.attached
+            ]
+            self._add(Static("\n".join(notes + expansion.notices), markup=False, classes="output"))
         self.assistant = None
-        self.run_turn_worker(line)
+        self.run_turn_worker(expansion.text)
+        return True
 
     @work(thread=True, exclusive=True, group="agent")
     def run_turn_worker(self, line: str) -> None:
@@ -615,7 +666,8 @@ class MinimalTui(TextualApp):
         self.call_from_thread(self.after_action)
 
     def after_action(self) -> None:
-        """After a turn or command: follow a session switch, refresh the status and widgets, re-enable input."""
+        """After a turn or command: follow a session switch, refresh the status and widgets, notify, send what was queued."""
+        was_turn = self.in_turn
         status = self.host.status()
         if (status.session_id, status.truncations) != self.shown_session:
             transcript = self.query_one("#transcript", VerticalScroll)
@@ -631,15 +683,34 @@ class MinimalTui(TextualApp):
         self.refresh_widgets()
         self.in_turn = False
         self.set_busy(False)
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", Composer).focus()
+        if was_turn:
+            self.notify_turn_end()
         self.submit_queued()
 
+    def notify_turn_end(self) -> None:
+        """Ring the bell or send the OSC 9 notification (``ui.notify``) if the turn that just ended was long
+        (``ui.notify_after``) and the terminal is in the background. A terminal that never reports its focus counts as
+        in the background."""
+        mode = ui_setting(self.host, "notify", "off")
+        elapsed = time.monotonic() - self.busy_since
+        if mode == "off" or elapsed < ui_setting(self.host, "notify_after", DEFAULT_AFTER):
+            return
+        if self.host.queued_messages() or (self.focus_reported and self.app_focus):
+            return
+        self.write_terminal(sequence(mode, elapsed))
+
+    def write_terminal(self, data: str) -> None:
+        """Write escape sequences straight to the terminal through Textual's driver."""
+        if self._driver is not None:
+            self._driver.write(data)
+
     def submit_queued(self) -> None:
-        """Send the next message an extension queued (``ctx.queue_user_message``), unless a turn or command is running."""
-        if self.query_one("#prompt", Input).disabled:
-            return  # after_action sends it
-        if (queued := self.host.next_queued()) is not None:
+        """Send the next queued message (the user's, or an extension's with ``ctx.queue_user_message``), unless a
+        turn or command is running."""
+        if not self.busy and (queued := self.host.next_queued()) is not None:
             self.submit(queued)
+        self.refresh_queued()
 
 
 def run_tui(host: Host) -> None:
