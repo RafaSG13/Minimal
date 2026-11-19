@@ -11,6 +11,7 @@ What the user sees goes through a :class:`Frontend`: the terminal UI's, or
 from __future__ import annotations
 
 import collections
+import copy
 import json
 import re
 import sys
@@ -24,10 +25,10 @@ import minimal.extensions.facade
 import minimal.extensions.loader
 from minimal import config
 from minimal.core.agent import MaxTurnsExceeded, run_agent
-from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent
+from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent, UsageMeter
 from minimal.core.context import Context
-from minimal.core.permissions import Permissions
-from minimal.core.session import Session
+from minimal.core.permissions import Permissions, suggest_rule
+from minimal.core.session import Session, check_cut, new_id, open_session
 from minimal.extensions.loader import (
     ProjectSnapshot,
     global_extensions_dir,
@@ -294,6 +295,18 @@ class Frontend(Protocol):
     def mode_changed(self) -> None:
         """The current mode changed, from any thread: redraw whatever shows it."""
 
+    def progress(self, text: str | None) -> None:
+        """Transient progress text of the tool or command running (:meth:`~minimal.core.context.Context.progress`):
+        show it next to the working indicator; ``None`` clears it. May be called from any thread, often."""
+
+    def permission(self, question: str, rule: str | None, saved_in: str | None) -> str:
+        """Ask whether a tool call may run; return ``"once"``, ``"session"``, ``"always"`` or ``"deny"``.
+
+        ``rule`` is the allow rule ``"session"`` and ``"always"`` would add (``None``: none can safely be offered, so
+        answer only ``"once"`` or ``"deny"``); ``saved_in`` is the file ``"always"`` would write it to (``None``:
+        ``"always"`` is not offered).
+        """
+
 
 class ExitRepl(Exception):
     """Raised by a command (``/exit``) to quit the interactive UI."""
@@ -305,6 +318,8 @@ class ConsoleFrontend:
     Model and tool text is shown with control characters escaped (:func:`_visible`),
     except the answer itself when stdout is not a terminal, so piped output stays exact.
     """
+
+    _progress: str | None = None
 
     def text(self, chunk: str) -> None:
         print(_visible(chunk) if sys.stdout.isatty() else chunk, end="", flush=True)
@@ -402,6 +417,16 @@ class ConsoleFrontend:
     def mode_changed(self) -> None:
         """Nothing to redraw in a console."""
 
+    def progress(self, text: str | None) -> None:
+        """A dimmed line on stderr (only when it is a terminal) each time the text changes; ``None`` only forgets it."""
+        if text is not None and text != self._progress and sys.stderr.isatty():
+            print(f"\x1b[2m… {_visible(text)}\x1b[0m", file=sys.stderr, flush=True)
+        self._progress = text
+
+    def permission(self, question: str, rule: str | None, saved_in: str | None) -> str:
+        """Same as :meth:`ask`: ``"once"`` for yes, ``"deny"`` otherwise; a console offers no wider answer."""
+        return "once" if self.ask(question) else "deny"
+
 
 class App:
     """Everything a running ``minimal`` process needs.
@@ -430,6 +455,9 @@ class App:
             trusted the project (``/trust``); ``None`` if nothing.
         cancelled: Set to interrupt the turn in progress, and with it every agent running under it.
         agents: The session's agent records (``ctx.agents()``, per-agent cancel flags).
+        usage: The tokens and requests this process has spent (``ctx.usage``).
+        truncations: How many times a session's history was cut (:meth:`truncate_session`); a frontend that
+            shows the history redraws it when this or the session's id changes.
         mode: The current mode's name, or ``None`` for no mode (:meth:`set_mode`).
     """
 
@@ -467,6 +495,8 @@ class App:
         self.queued: collections.deque[str] = collections.deque()
         self.context = Context(self)
         self.permissions = Permissions(self.settings)
+        self.usage = UsageMeter()
+        self.truncations = 0
         self._register_commands = register_commands
         self._frontend_commands: dict[str, tuple[CommandRun, str, bool]] = {}
         self._register_builtins()  # usable before the first reload
@@ -522,7 +552,7 @@ class App:
             read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
         project_trusted = self.trust_project or (snapshot is not None and trusted)
         self.settings = config.Settings(tuple(layers), trusted, project_trusted)
-        self.permissions = Permissions(self.settings)
+        self.permissions = Permissions(self.settings, self.permissions.session)
         self.setting_errors = setting_errors
         self.registry.dispose()
         self.registry.reset()
@@ -682,12 +712,106 @@ class App:
         return None
 
     def confirm(self, call: dict) -> bool:
-        """Ask the user, through the frontend, whether a tool call may run."""
+        """Ask the user, through the frontend, whether a tool call may run.
+
+        Besides allowing it once, the user may allow what a rule (:func:`~minimal.core.permissions.suggest_rule`)
+        covers for the rest of the session (:meth:`Permissions.allow_session`), or save that rule in the project's
+        ``settings.local.json`` (:meth:`save_allow_rule`) and tell the transcript which one.
+        """
         if self.auto_approve:
             return True
         name, inp = call["name"], call["input"]
         detail = inp.get("command") if name == "bash" else (inp.get("path") or json.dumps(inp))
-        return self.frontend.ask(f"Allow {name}: {detail}?")
+        tool = self.registry.tools.get(name)
+        rule = suggest_rule(tool, inp, self.cwd) if tool is not None else None
+        file = config.project_settings_files(self.cwd)["local"] if rule is not None and self._rule_will_apply() else None
+        answer = self.frontend.permission(f"Allow {name}: {detail}?", rule, str(file) if file is not None else None)
+        if answer not in ("once", "session", "always"):
+            return False
+        if rule is None or answer == "once":
+            return True
+        self.permissions.allow_session(rule)
+        shown = _visible(rule)
+        if answer == "always" and file is not None:
+            try:
+                self.save_allow_rule(rule)
+            except (OSError, ValueError) as e:
+                print(f"Could not save the rule {shown} ({e}): it is allowed for this session only.", file=sys.stderr)
+            else:
+                print(f"Saved the rule {shown} in permissions.allow of {file}. Deny rules still win.")
+        else:
+            print(f"Allowing {shown} for this session (until minimal exits). Deny rules still win.")
+        return True
+
+    def _project_trusted_by_digest(self) -> bool | None:
+        """Whether the project's extensions and trust-gated settings are the ones the user trusted (or there are none);
+        ``None`` if they cannot be read."""
+        try:
+            snapshot = read_project_snapshot(self.cwd, config.risky_subset(config.read_layers(self.cwd)[0]))
+        except OSError:
+            return None
+        return snapshot is None or config.load_trusted().get(snapshot.key) == snapshot.digest
+
+    def _rule_will_apply(self) -> bool:
+        """Whether an allow rule written to the project's ``settings.local.json`` applies from the next start:
+        the project is trusted (or asks for nothing), so :meth:`save_allow_rule` can keep it trusted."""
+        return self._project_trusted_by_digest() is True
+
+    def save_allow_rule(self, rule: str) -> Path:
+        """Add ``rule`` to ``permissions.allow`` of the project's ``settings.local.json`` and return that file.
+
+        The project's trust-gated settings count as trusted only for the digest the user accepted, so a project that
+        was trusted (or had nothing to trust) stays trusted with the new rule: the user just chose it.
+
+        Raises:
+            ValueError: if the project is not trusted (the rule would not apply), or the file cannot be edited
+                (:func:`~minimal.config.add_allow_rule`).
+            OSError: if the file cannot be written.
+        """
+        if not self._rule_will_apply():
+            raise ValueError("the project is not trusted: run /trust first, or the rule would not apply")
+        path = config.add_allow_rule(self.cwd, rule)
+        snapshot = read_project_snapshot(self.cwd, config.risky_subset(config.read_layers(self.cwd)[0]))
+        if snapshot is not None:
+            config.save_trusted(snapshot.key, snapshot.digest)
+        return path
+
+    def _require_idle(self, action: str) -> None:
+        """Raise ``ValueError`` if a turn or agent is running: ``action`` would change the history under it."""
+        if any(a.status == "running" for a in self.agents.snapshot()):
+            raise ValueError(f"cannot {action} while a turn is running")
+
+    def fork_session(self, at_index: int | None = None) -> str:
+        """Continue in a new session holding the first ``at_index`` messages of this one (all by default).
+
+        What :meth:`~minimal.core.context.Context.fork` does: the old session stays saved, the new one names it as
+        its ``parent`` and ``session_switch`` fires. Returns the new session's id.
+
+        Raises:
+            ValueError: if a turn is running, ``at_index`` is out of range or the cut would split a tool call from its result.
+        """
+        self._require_idle("fork the session")
+        old = self.session
+        end = len(old.messages) if at_index is None else at_index
+        check_cut(old.messages, end)
+        session = open_session(new_id(), self.cwd)
+        session.parent = old.id
+        session.messages.extend(copy.deepcopy(old.messages[:end]))
+        self.switch_session(session)
+        session.save()
+        return session.id
+
+    def truncate_session(self, at_index: int) -> int:
+        """Drop the messages from ``at_index`` on from this session and its file; return how many.
+
+        Raises:
+            ValueError: if a turn is running, ``at_index`` is out of range or the cut would split a tool call from its result.
+        """
+        self._require_idle("rewind the session")
+        dropped = self.session.truncate(at_index)
+        if dropped:
+            self.truncations += 1
+        return dropped
 
     def permit(self, tool: Tool, input: dict) -> bool:
         """Whether the permission rules let ``tool`` run with ``input`` without asking.
@@ -955,8 +1079,13 @@ class App:
         return on_tool
 
     def _on_reply(self, run: AgentRun) -> Callable[[Any], None]:
-        """The loop's ``on_reply`` for ``run``: add the reply's usage to the agent's."""
-        return lambda reply: self.agents.replied(run, reply.usage)
+        """The loop's ``on_reply`` for ``run``: add the reply's usage to the agent's and to the process totals."""
+
+        def on_reply(reply: Any) -> None:
+            self.agents.replied(run, reply.usage)
+            self.usage.add(reply.usage)
+
+        return on_reply
 
     def _emit_agent_start(self, ctx: Context, run: AgentRun) -> None:
         self.registry.emit(

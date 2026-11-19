@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from minimal import config
-from minimal.core.app import App, ExitRepl
+from minimal.core.app import App, ExitRepl, _visible
 from minimal.core.context import Context
 from minimal.core.session import (
     TORN_NOTICE,
@@ -26,7 +26,9 @@ from minimal.core.session import (
     open_session,
     preview,
     project_dir,
+    prompt_text,
     session_header,
+    user_prompts,
 )
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
@@ -113,6 +115,56 @@ def _title(args: str, ctx: Context) -> None:
     if args.strip():
         session.set_title(args)
     print(f"Title: {session.title}" if session.title else "No title. Name this session with /title <text>.")
+
+
+def _before_prompt(args: str, ctx: Context, usage: str) -> tuple[int | None, int]:
+    """``(cut index, n)`` for ``/fork [n]`` and ``/rewind [n]``: the index of the ``n``-th last message the user
+    wrote (``None`` when ``args`` is empty: no cut), checked against the session's messages."""
+    word = args.strip()
+    if not word:
+        return None, 0
+    if not word.isdigit() or int(word) < 1:
+        raise ValueError(f"usage: {usage}")
+    n = int(word)
+    prompts = user_prompts(ctx.messages)
+    if n > len(prompts):
+        noun = "message" if len(prompts) == 1 else "messages"
+        raise ValueError(f"this session has only {len(prompts)} of your {noun}")
+    return prompts[-n], n
+
+
+def _fork(args: str, ctx: Context) -> None:
+    at, n = _before_prompt(args, ctx, "/fork [n]")
+    old = ctx.session_id
+    kept = len(ctx.messages) if at is None else at
+    last = None if at is None else _preview(ctx.messages[at])
+    ctx.fork(at)
+    print(f"Forked {old} into {ctx.session_id} with its first {kept} messages; {old} stays saved (/resume {old}).")
+    if last is not None:
+        print(f"The fork ends before your message {n} from the end: {last}")
+
+
+def _rewind(args: str, ctx: Context) -> None:
+    at, n = _before_prompt(args or "1", ctx, "/rewind [n]")
+    assert at is not None  # args is never empty here
+    last = _preview(ctx.messages[at])
+    dropped = ctx.truncate(at)
+    print(f"Rewound: dropped {dropped} messages, from your message {n} from the end: {last}")
+
+
+def _preview(message: dict) -> str:
+    """The start of a user message on one line (60 characters at most), safe to print."""
+    return _visible(" ".join(prompt_text(message).split())[:60]) or "(no text)"
+
+
+def _usage(args: str, ctx: Context) -> None:
+    if args:
+        raise ValueError("usage: /usage")
+    u = ctx.usage
+    print(f"Since this minimal started ({u.requests} model requests, every agent included):")
+    cache = f"{u.cache_read_tokens:,} read from the cache, {u.cache_write_tokens:,} written to it"
+    print(f"  input  {u.input_tokens:>10,} tokens ({cache})")
+    print(f"  output {u.output_tokens:>10,} tokens")
 
 
 def _model(args: str, ctx: Context) -> None:
@@ -475,6 +527,9 @@ def register_builtin_commands(registry: Registry) -> None:
         ("sessions", _sessions, "list this project's saved sessions: /sessions [--all]", False),
         ("resume", _resume, "resume a saved session of this project: /resume [--all] [id]", False),
         ("title", _title, "show or set this session's title (shown by /sessions and /resume): /title [text]", False),
+        ("fork", _fork, "continue in a new session copied from this one, up to your n-th last message: /fork [n]", False),
+        ("rewind", _rewind, "drop your n-th last message (default 1) and all after it: /rewind [n]", False),
+        ("usage", _usage, "show the tokens and model requests spent since minimal started", False),
         ("model", _model, "list models, or change: /model [number|name]", False),
         ("provider", _provider, "list providers, or switch: /provider <name> [model]", False),
         ("tools", _tools, "list the tools", False),

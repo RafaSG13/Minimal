@@ -5,7 +5,8 @@ Settings are JSON files read as layers, lowest first (see :func:`read_layers`):
 - ``~/.minimal/settings.json`` (``global``): written by setup, ``/theme`` and
   the ``/ext`` picker too (:func:`update_global`).
 - ``<project>/.minimal/settings.json`` (``project``): shared with the project.
-- ``<project>/.minimal/settings.local.json`` (``local``): personal, not committed.
+- ``<project>/.minimal/settings.local.json`` (``local``): personal, not committed; the permission dialog's
+  "Always allow" adds its rule here (:func:`add_allow_rule`).
 
 ``$MINIMAL_PROVIDER``/``$MINIMAL_MODEL`` and the command line beat every layer.
 What each key means and how layers merge is :class:`Settings`. A project's
@@ -327,6 +328,43 @@ def update_global(changes: dict) -> None:
     write_private(SETTINGS_FILE, data)
 
 
+def add_allow_rule(cwd: str, rule: str) -> Path:
+    """Add ``rule`` to ``permissions.allow`` in the project's ``settings.local.json`` (not committed); return that file.
+
+    The file is read, validated with the same checks as when settings are loaded, and written back atomically with
+    mode 0600 as :func:`write_private` does; the project's ``.minimal`` folder is created if missing but its mode is
+    left alone (it is the project's, not minimal's private state).
+    Everything else in the file is kept, and nothing is written if ``rule`` is already there.
+
+    Raises:
+        ValueError: if ``rule`` is not ``name`` or ``name(pattern)``, or the file exists but is not a JSON object,
+            has a ``permissions`` that is not an object or a ``permissions.allow`` that is not a list of strings:
+            it is left untouched for the user to fix.
+    """
+    if RULE_RE.fullmatch(rule) is None:
+        raise ValueError(f"invalid permission rule {rule!r}: use name or name(pattern)")
+    path = project_settings_files(cwd)["local"]
+    data: Any = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, ValueError) as e:
+            raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
+        if not isinstance(data, dict):
+            raise ValueError(f"{path} is not a JSON object; fix it first")
+    permissions = data.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        raise ValueError(f"{path}: permissions must be an object; fix it first")
+    allow = permissions.setdefault("allow", [])
+    if not _TYPES["permissions.allow"][0](allow):
+        raise ValueError(f"{path}: permissions.allow must be {_TYPES['permissions.allow'][1]}; fix it first")
+    if rule not in allow:
+        allow.append(rule)
+        path.parent.mkdir(exist_ok=True)
+        _write_atomic(path, data)
+    return path
+
+
 def load_keys() -> dict[str, str]:
     """Return the saved API keys by environment-variable name.
 
@@ -413,6 +451,11 @@ def write_private(path: Path, data: dict) -> None:
     file or symlink planted next to ``path`` is never written through.
     """
     private_dir(path.parent)
+    _write_atomic(path, data)
+
+
+def _write_atomic(path: Path, data: dict) -> None:
+    """:func:`write_private` without touching the folder: the file is mode 0600 and replaced atomically."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

@@ -182,7 +182,9 @@ class MinimalTui(TextualApp):
         self.output_buffer: list[str] = []
         self.output_stderr = False
         self.ext_widgets: list[tuple[str, Widget]] = []
-        self.shown_session = host.status().session_id
+        status = host.status()
+        self.shown_session = (status.session_id, status.truncations)
+        self.progress_text: str | None = None  # what ctx.progress last set, shown by refresh_working
         self.busy_since = 0.0
         self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
         self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
@@ -535,10 +537,18 @@ class MinimalTui(TextualApp):
         self.query_one("#working").set_class(busy, "-busy")
         if busy:
             self.busy_since = time.monotonic()
+            self.progress_text = None
             self.refresh_working()
             self.spinner.resume()
         else:
+            self.progress_text = None
             self.spinner.pause()
+
+    def set_progress(self, text: str | None) -> None:
+        """Show ``text`` after the working indicator (``None`` clears it): what ``ctx.progress`` sends."""
+        self.progress_text = text
+        if self.query_one("#working").has_class("-busy"):
+            self.refresh_working()
 
     def refresh_working(self) -> None:
         elapsed = time.monotonic() - self.busy_since
@@ -548,6 +558,8 @@ class MinimalTui(TextualApp):
             parts.append(("Interrupting…", "$muted"))
         else:
             parts += [("Working…", "$muted"), (f" {elapsed:.0f}s", "$dim")]
+            if self.progress_text:
+                parts.append((f" · {self.progress_text}", "$muted"))
             if self.in_turn:
                 parts.append((" · esc interrupts", "$dim"))
         self.query_one("#working", Static).update(Content.assemble(*parts))
@@ -604,13 +616,14 @@ class MinimalTui(TextualApp):
 
     def after_action(self) -> None:
         """After a turn or command: follow a session switch, refresh the status and widgets, re-enable input."""
-        if self.host.status().session_id != self.shown_session:
+        status = self.host.status()
+        if (status.session_id, status.truncations) != self.shown_session:
             transcript = self.query_one("#transcript", VerticalScroll)
             transcript.remove_children()
             transcript.anchor(False)
             transcript.mount(Header(self.host))
             self.replay_history()
-            self.shown_session = self.host.status().session_id
+            self.shown_session = (status.session_id, status.truncations)
             self.assistant = None
         self.refresh_status()
         for fence in self.query(RenderedFence):  # a reply that left a fence open: draw it closed
