@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest import mock
 
-from textual.widgets import Input, Static
+from textual.widgets import Static
 
 from minimal import config
 from minimal.core import session as session_mod
@@ -25,6 +25,7 @@ from minimal.tools import files
 from minimal.tools.builtin import register_builtin_tools
 from minimal.ui.commands import register_builtin_commands
 from minimal.ui.tui.app import MinimalTui
+from minimal.ui.tui.composer import Composer
 from minimal.ui.tui.widgets import ToolBlock
 from tests.test_security import TempDirTest
 
@@ -419,11 +420,11 @@ class TuiBlocksTest(unittest.IsolatedAsyncioTestCase):
         self.core.provider = NS(name="fake", stream=lambda **kw: replies.pop(0))
         app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
-            app.query_one("#prompt", Input).value = "look"
+            app.query_one("#prompt", Composer).set_text("look")
             await pilot.press("enter")
             for _ in range(100):
                 await pilot.pause(0.05)
-                if not app.query_one("#prompt", Input).disabled and not replies:
+                if not app.busy and not replies:
                     break
             block = app.query_one(ToolBlock)
             self.assertIn("[image: image/png,", self.body(block))
