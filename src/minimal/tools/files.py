@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from minimal.extensions.registry import Tool
+from minimal.providers.base import image_block
 from minimal.tools.common import MAX_CHARS, clip, outside_workspace, resolve_path
 
 
@@ -77,9 +78,29 @@ def _check_unchanged(ctx: Any, path: Path) -> None:
 BINARY_PROBE = 8192
 """How many leading bytes are checked for a NUL byte, which marks a file as binary."""
 
+IMAGE_MAX_BYTES = 3_750_000
+"""Largest image file ``read`` returns as a picture (it is 5 MB once base64-encoded, the limit of the Anthropic API)."""
 
-def read(input: dict, ctx: Any) -> str:
+
+def _image_type(head: bytes) -> str | None:
+    """The media type of a PNG, JPEG, GIF or WebP file from its first bytes; ``None`` for anything else."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def read(input: dict, ctx: Any) -> str | list[dict]:
     """Return lines ``offset .. offset+limit-1`` of a file, numbered ``N<TAB>line``.
+
+    A PNG, JPEG, GIF or WebP file of at most :data:`IMAGE_MAX_BYTES` bytes (recognised by its first bytes, not its
+    name) comes back as a short text block and an ``image`` block, so the model sees the picture; a bigger one is
+    reported as a binary file.
 
     The file is read line by line: only the window is decoded and at most about
     :data:`MAX_CHARS` of it kept, the other lines are only counted. Lines are
@@ -118,8 +139,18 @@ def read(input: dict, ctx: Any) -> str:
 
     stamp = _stamp(path)
     with open(path, "rb") as f:
-        if b"\0" in f.read(BINARY_PROBE):
-            return f"{path} is a binary file ({stamp[1]} bytes): not shown"
+        head = f.read(BINARY_PROBE)
+        media_type = _image_type(head)
+        if media_type is not None and stamp[1] <= IMAGE_MAX_BYTES:
+            f.seek(0)
+            picture = f.read(IMAGE_MAX_BYTES + 1)
+            if len(picture) <= IMAGE_MAX_BYTES:  # it did not grow since the stat
+                _remember(ctx, path, stamp)
+                note = {"type": "text", "text": f"{path} ({media_type}, {len(picture)} bytes)"}
+                return [note, image_block(picture, media_type)]
+        if media_type is not None or b"\0" in head:
+            limit = f"; images over {IMAGE_MAX_BYTES} bytes are not shown" if media_type is not None else ""
+            return f"{path} is a binary file ({stamp[1]} bytes): not shown{limit}"
         f.seek(0)
         for raw in f:
             if start <= total < stop:
@@ -158,6 +189,7 @@ READ = Tool(
     run=read,
     confirm=outside_workspace,
     subject_key="path",
+    read_only=True,
 )
 
 

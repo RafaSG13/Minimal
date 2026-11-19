@@ -8,7 +8,7 @@ minimal reads its settings from up to three JSON files, lowest first:
 | `project` | `.minimal/settings.json`       | This project's settings, committed and shared with it                   |
 | `local`   | `.minimal/settings.local.json` | Your personal settings for this project (keep it out of git)           |
 
-Then come the environment (`MINIMAL_PROVIDER`, `MINIMAL_MODEL`) and the command line (`--provider`, `-m`), which beat every file. Missing files are skipped. `/settings` lists the files and every effective value with the scope it comes from. Prompt, permission and extension settings are re-read on `/reload`; the provider, model and theme are read at startup.
+Then come the environment (`MINIMAL_PROVIDER`, `MINIMAL_MODEL`) and the command line (`--provider`, `-m`), which beat every file. Missing files are skipped. `/settings` lists the files and every effective value with the scope it comes from. Prompt, permission, extension, `reasoning_effort`, `agent.max_turns` and `tools.max_parallel` settings are re-read on `/reload`; the provider, model and theme are read at startup.
 
 Secrets and state stay out of settings: API keys in `~/.minimal/keys.json` (a key saved there beats the same variable in your shell, which is why setup warns that it is used instead of the environment), the logins of providers that extensions add in their own data folder (`~/.minimal/data/global/<id>/`), trust decisions in `~/.minimal/trusted.json`, sessions in `~/.minimal/sessions/`.
 
@@ -22,6 +22,9 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `model`               | string                       | all          | highest layer wins                                                   |
 | `theme`               | string                       | all          | highest layer wins                                                   |
 | `max_tokens`          | positive integer, or object: `"provider"` or `"provider/model"` → positive integer | all | highest layer wins; default: each provider's own (8192 for Anthropic, Claude and Gemini, none sent to OpenAI-compatible servers) |
+| `reasoning_effort`    | `"low"`, `"medium"` or `"high"` | all       | highest layer wins; default: unset (each provider's own default) |
+| `agent.max_turns`     | positive integer             | all          | highest layer wins; default `50`                                      |
+| `tools.max_parallel`  | positive integer             | all          | highest layer wins; default `4`                                       |
 | `marketplaces`        | list of strings (git URLs or paths) or `{"name": "…", "url": "…"}` objects | global only | — (a name is shown instead of the URL and can be passed as `marketplace` to `ext_install`/`ext_publish`) |
 | `prompt.base`         | string: path of the base system prompt (`~` allowed) | global only | — (default: the packaged prompt)          |
 | `prompt.append`       | string or list of strings    | all          | concatenated global → project → local, added to the system prompt     |
@@ -33,6 +36,9 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 
 - **`prompt.files`** are read relative to the working directory and added to the system prompt as `Project instructions (<name>)`. Missing files are skipped. Files set by the project or local layer must stay inside the project; others are ignored.
 - **`max_tokens`** is the output-token limit of each model request. `{"max_tokens": 16000}` applies to every model; `{"max_tokens": {"anthropic": 16000, "openai/gpt-5.5": 32000}}` picks by `provider/model` first, then by provider, and leaves the rest at their default.
+- **`reasoning_effort`** asks the model to think less or more. Anthropic turns extended thinking on with a token budget of 1024, 4096 or 16000 (the budget is added to `max_tokens`, or at most half of a `max_tokens` you set; thinking stays off if half of it is under 1024, and a request with thinking takes no `temperature`). OpenAI-compatible servers get it as `reasoning_effort` when the model is a reasoning one (`o1`, `o3`…, `gpt-5…`, also as `vendor/gpt-5`) and not otherwise. Gemini gets it as `thinking_level` (with thought summaries on). A provider or model that cannot use it ignores it. Extensions read it as `ctx.reasoning_effort` and change it for the session with `ctx.set_reasoning_effort(...)`.
+- **`agent.max_turns`** is the most model requests one user turn may make; a turn still calling tools after that many ends with an error. It is also the default of `ctx.run_agent`'s `max_turns` (`ctx.max_turns` reads it).
+- **`tools.max_parallel`** is how many tool calls run at once when one reply calls several tools marked `read_only` in a row (`read`, `grep`, `glob`, and extension tools registered with `read_only=True`). Every other call runs alone, in order; `1` runs everything one by one.
 - **`extensions.disabled`** lists ids (`compact`, `tools/subagent`, see [extensions](extensions.md#layout-and-where-to-save)) not to load from `~/.minimal/extensions` or `.minimal/extensions`, and the id of a bundled extension: `marketplace_tools` removes the model's `ext_search`, `ext_install` and `ext_publish`. Extensions passed with `--ext` always load.
 - **`extensions.settings`** holds the values an extension declares with `declare_settings` ([extensions](extensions.md#settings)).
 

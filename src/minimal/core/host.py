@@ -47,6 +47,8 @@ class HostStatus:
         extensions: How many extensions the last reload loaded.
         untrusted: How many project extensions and settings were not applied for lack of ``/trust``; ``0`` if none.
         mode: The current mode's name; ``None`` for no mode.
+        reasoning_effort: ``"low"``, ``"medium"`` or ``"high"`` when the model is asked to think that much; ``None`` for
+            the provider's default.
     """
 
     model: str
@@ -57,6 +59,7 @@ class HostStatus:
     extensions: int
     untrusted: int
     mode: str | None = None
+    reasoning_effort: str | None = None
 
 
 class Host:
@@ -102,6 +105,7 @@ class Host:
             extensions=len(app.extensions),
             untrusted=app.untrusted.count if app.untrusted is not None else 0,
             mode=app.mode,
+            reasoning_effort=app.reasoning_effort,
         )
 
     @property

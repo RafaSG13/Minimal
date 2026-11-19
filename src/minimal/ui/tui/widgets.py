@@ -26,6 +26,7 @@ from minimal.extensions.registry import (
     StyledLine,
     styled_lines,
 )
+from minimal.providers.base import result_text
 from minimal.ui.tui import theme
 
 PREVIEW_LINES = 8
@@ -266,11 +267,7 @@ class ToolBlock(Static):
 
     def finish(self, result: dict) -> None:
         """Show ``result`` (a ``tool_result`` block) and switch to the success or error state."""
-        output = (
-            result["content"]
-            if isinstance(result["content"], str)
-            else json.dumps(result["content"])
-        )
+        output = result_text(result["content"])  # pictures show as [image: type, N bytes], never as their data
         output = output.strip("\n")
         name = self.call["name"]
         custom = self.renderer(result) if self.renderer else None

@@ -186,6 +186,7 @@ GREP = Tool(
     run=grep,
     confirm=outside_workspace,
     subject_key="path",
+    read_only=True,
 )
 
 
@@ -223,4 +224,5 @@ GLOB = Tool(
     run=glob,
     confirm=outside_workspace,
     subject_key="path",
+    read_only=True,
 )

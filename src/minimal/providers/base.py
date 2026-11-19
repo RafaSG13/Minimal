@@ -11,7 +11,12 @@ History is stored in one provider-neutral format (shaped like the Anthropic
 Messages API), so sessions can be resumed and providers switched mid-session::
 
     {"role": "user", "content": "text"}
+    {"role": "user", "content": [
+        {"type": "text", "text": "what is in this picture?"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "<base64>"}},
+    ]}
     {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "...", "signature": "..." or None},
         {"type": "text", "text": "..."},
         {"type": "tool_use", "id": "...", "name": "...", "input": {...}},
     ], "provider_data": {"provider": "gemini", "data": ...},      # optional
@@ -20,6 +25,14 @@ Messages API), so sessions can be resumed and providers switched mid-session::
     {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "...", "content": "...", "is_error": False},
     ]}
+
+A ``tool_result``'s ``content`` is a string, or a list of ``text`` and ``image`` blocks (a tool that returns a
+picture). ``image`` blocks (:data:`IMAGE_TYPES`, :func:`image_block`) may also appear in user messages. A
+``thinking`` block is the model's reasoning, as far as the provider shows it: ``signature`` is what Anthropic needs to
+accept the block again, ``None`` for reasoning that came without one (Gemini, OpenAI-compatible servers), which only
+the UI reads. Anthropic may also reply with ``{"type": "redacted_thinking", "data": ...}``, kept as received. A provider
+sends back only the blocks it understands and drops the others from the request, and anything that reads history skips
+block types it does not know.
 
 ``provider_data`` holds whatever a provider needs to replay its own reply
 exactly (for example Gemini's thought signatures). Only the provider named in
@@ -31,12 +44,16 @@ it reads it; every other provider rebuilds the turn from ``content``.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
 TextCallback = Callable[[str], Any]
+
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+"""Media types of an ``image`` block that every provider can send."""
 
 
 @dataclass
@@ -54,7 +71,7 @@ class Reply:
     """One model reply in canonical form.
 
     Attributes:
-        content: Canonical content blocks (``text`` and ``tool_use``).
+        content: Canonical content blocks (``text``, ``tool_use`` and, when the model's reasoning is shown, ``thinking``).
         stop_reason: ``"tool_use"`` when the model wants tools run; otherwise
             why it stopped (``"end_turn"``, ``"max_tokens"``, ...).
         provider_data: Opaque data stored with the message and handed back to
@@ -68,11 +85,44 @@ class Reply:
     usage: Usage | None = None
 
 
+def image_block(data: str | bytes, media_type: str) -> dict:
+    """An ``image`` block holding ``data`` (raw bytes, or already base64 text) of one of :data:`IMAGE_TYPES`.
+
+    API 2.3.
+
+    Raises:
+        ValueError: if ``media_type`` is not one of :data:`IMAGE_TYPES`.
+    """
+    if media_type not in IMAGE_TYPES:
+        raise ValueError(f"image_block: media_type must be one of {', '.join(IMAGE_TYPES)}, not {media_type!r}")
+    encoded = base64.b64encode(data).decode("ascii") if isinstance(data, bytes) else data
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": encoded}}
+
+
+def image_source(block: dict) -> dict:
+    """The ``source`` of an ``image`` block; ``{}`` if the block has none (or not a dict)."""
+    source = block.get("source")
+    return source if isinstance(source, dict) else {}
+
+
+def image_summary(block: dict) -> str:
+    """``[image: media_type, N bytes]`` for an ``image`` block: what is shown or logged instead of its data."""
+    source = image_source(block)
+    data = source.get("data") if isinstance(source.get("data"), str) else ""
+    size = len(data) * 3 // 4 - data[-2:].count("=") if data else 0
+    return f"[image: {source.get('media_type', 'unknown')}, {size} bytes]"
+
+
 def result_text(content: Any) -> str:
-    """The text of a ``tool_result`` block's content, which may be a string or a list of text blocks."""
+    """The text of a message's or ``tool_result`` block's content: a string, or the ``text`` blocks of a list.
+
+    An ``image`` block counts as :func:`image_summary`, never as its data; other block types count as nothing.
+    """
     if isinstance(content, str):
         return content
-    return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return "".join(
+        b.get("text", "") if b.get("type") != "image" else image_summary(b) for b in content if isinstance(b, dict)
+    )
 
 
 class Provider(Protocol):
@@ -106,8 +156,9 @@ class Provider(Protocol):
             messages: Canonical history (see module docstring). Must not be modified.
             tools: ``{"name", "description", "input_schema"}`` for each tool.
             on_text: Called with each text chunk as it streams in.
-            options: Request options: ``max_tokens`` (int, the output limit) and ``temperature``
-                (float). A provider ignores keys it does not know. minimal passes it only when it is
+            options: Request options: ``max_tokens`` (int, the output limit), ``temperature``
+                (float) and ``reasoning_effort`` (``"low"``, ``"medium"`` or ``"high"``: how much the model
+                should think, which a provider maps to its own setting or ignores). A provider ignores keys it does not know. minimal passes it only when it is
                 not empty, so a provider written before it existed keeps working.
         """
         ...

@@ -106,6 +106,18 @@ class Context:
         return self._app.model
 
     @property
+    def max_turns(self) -> int:
+        """Most model requests one user turn may make (the ``agent.max_turns`` setting, default 50): also the default of
+        ``run_agent``'s ``max_turns``. API 2.3."""
+        return self._app.settings.max_turns
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        """How much the model is asked to think: ``"low"``, ``"medium"`` or ``"high"`` (the ``reasoning_effort`` setting or
+        :meth:`set_reasoning_effort`); ``None`` for the provider's default. API 2.3."""
+        return self._app.reasoning_effort
+
+    @property
     def context_tokens(self) -> int | None:
         """Size of the context after the last reply that reported usage; ``None`` if none did."""
         return self._app.context_tokens
@@ -146,7 +158,7 @@ class Context:
             messages: The conversation to send, in the canonical format.
             system: System prompt (default: :meth:`system_prompt`).
             tools: Offer the registered tools, as a turn does (keeps the provider's prompt cache warm).
-            options: Request options (``max_tokens``, ``temperature``) over the ones a turn uses.
+            options: Request options (``max_tokens``, ``temperature``, ``reasoning_effort``) over the ones a turn uses.
 
         Raises:
             TurnInterrupted: if the user interrupts while the reply streams.
@@ -241,7 +253,7 @@ class Context:
             model: A model name; with ``provider`` omitted, the current provider's.
             provider: Name of a provider to use for this agent only (its default model unless ``model`` is
                 given); the app's current provider and model do not change.
-            max_turns: Most model requests it may make (default 50).
+            max_turns: Most model requests it may make (default :attr:`max_turns`).
 
         Returns:
             Its :class:`~minimal.core.agents.AgentResult`.
@@ -364,6 +376,16 @@ class Context:
     def set_model(self, name: str) -> None:
         """Use model ``name`` of the current provider from the next request on."""
         self._app.model = name
+
+    def set_reasoning_effort(self, value: str | None) -> None:
+        """Ask for ``"low"``, ``"medium"`` or ``"high"`` reasoning effort from the next request on, or ``None`` for the
+        provider's default. It beats the ``reasoning_effort`` setting until minimal restarts. A provider or model that
+        cannot think more or less ignores it. API 2.3.
+
+        Raises:
+            ValueError: if ``value`` is none of those.
+        """
+        self._app.set_reasoning_effort(value)
 
     def widget(self, name: str) -> object | None:
         """The widget the frontend shows for extension widget ``name`` (see ``register_widget``); ``None`` if none."""

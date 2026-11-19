@@ -73,7 +73,8 @@ from typing import Any
 from minimal.providers.base import Provider, ProviderSpec
 
 ToolRun = Callable[[dict, Any], Any]
-"""Tool implementation: ``run(input, ctx) -> str``. Raise to report an error."""
+"""Tool implementation: ``run(input, ctx) -> str``. Raise to report an error. It may return a list of ``text`` and
+``image`` blocks instead of a string (see :func:`~minimal.providers.base.image_block`): the model then sees the picture too (API 2.3)."""
 
 CommandRun = Callable[[str, Any], Any]
 """Slash-command implementation: ``run(args, ctx)``."""
@@ -218,6 +219,10 @@ class Tool:
         subject_key: The ``input`` field that permission rules ``name(pattern)``
             match (``command`` for ``bash``, ``path`` for the file tools); ``None``
             lets only bare ``name`` rules match the tool.
+        read_only: The tool changes nothing and is safe to run next to other calls (API 2.3). When one model reply calls
+            several tools, a run of consecutive calls to ``read_only`` tools runs concurrently (at most ``tools.max_parallel``
+            at once, default 4); any other call runs alone, in order. ``run`` must then be thread-safe. Not to be
+            confused with a mode's ``read_only``, which blocks tools that ask for confirmation.
     """
 
     name: str
@@ -226,6 +231,7 @@ class Tool:
     run: ToolRun
     confirm: bool | Callable[[dict, Any], bool] = False
     subject_key: str | None = None
+    read_only: bool = False
 
 
 @dataclass
@@ -513,16 +519,19 @@ class Registry:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
+        read_only: bool = False,
     ) -> None:
         """Build and register a tool. ``input_schema`` defaults to an empty object.
 
         Raises:
-            ValueError: if ``name`` is empty or ``run`` is not callable.
+            ValueError: if ``name`` is empty or ``run`` is not callable, or ``read_only`` is not a bool.
         """
         if not name or not callable(run):
             raise ValueError("register_tool: name and run are required")
+        if not isinstance(read_only, bool):
+            raise ValueError("register_tool: read_only must be a bool")
         schema = input_schema or {"type": "object", "properties": {}}
-        self.add_tool(Tool(name, description, schema, run, confirm, subject_key))
+        self.add_tool(Tool(name, description, schema, run, confirm, subject_key, read_only))
 
     def register_command(
         self, name: str, run: CommandRun, description: str = "", terminal: bool = False

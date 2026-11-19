@@ -63,6 +63,16 @@ def _is_marketplace_list(value: object) -> bool:
     )
 
 
+REASONING_EFFORTS = ("low", "medium", "high")
+"""Values of the ``reasoning_effort`` setting and of ``ctx.set_reasoning_effort`` (API 2.3)."""
+
+DEFAULT_MAX_TURNS = 50
+"""Model requests one turn may make when ``agent.max_turns`` is unset."""
+
+DEFAULT_MAX_PARALLEL = 4
+"""Read-only tool calls of one reply run at once when ``tools.max_parallel`` is unset."""
+
+
 def _is_settings_map(value: object) -> bool:
     return isinstance(value, dict) and all(isinstance(v, dict) for v in value.values())
 
@@ -81,6 +91,9 @@ _TYPES = {
     "provider": (lambda v: isinstance(v, str), "a string"),
     "model": (lambda v: isinstance(v, str), "a string"),
     "theme": (lambda v: isinstance(v, str), "a string"),
+    "reasoning_effort": (lambda v: v in REASONING_EFFORTS, "one of " + ", ".join(REASONING_EFFORTS)),
+    "agent.max_turns": (_is_positive_int, "a positive integer"),
+    "tools.max_parallel": (_is_positive_int, "a positive integer"),
     "max_tokens": (
         _is_max_tokens,
         'a positive integer or an object mapping "provider" or "provider/model" to positive integers',
@@ -96,7 +109,7 @@ _TYPES = {
 }
 """Every setting as a dotted key: ``(type check, type name for errors)``."""
 
-_GROUPS = ("prompt", "permissions", "extensions")
+_GROUPS = ("prompt", "permissions", "extensions", "agent", "tools")
 """Top-level keys holding an object of settings."""
 
 
@@ -212,6 +225,21 @@ class Settings:
     @property
     def theme(self) -> str | None:
         return self.scalar("theme")[0]
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        """The ``reasoning_effort`` setting (one of :data:`REASONING_EFFORTS`); ``None`` if unset."""
+        return self.scalar("reasoning_effort")[0]
+
+    @property
+    def max_turns(self) -> int:
+        """The ``agent.max_turns`` setting: most model requests of one turn; :data:`DEFAULT_MAX_TURNS` if unset."""
+        return self.scalar("agent.max_turns")[0] or DEFAULT_MAX_TURNS
+
+    @property
+    def max_parallel(self) -> int:
+        """The ``tools.max_parallel`` setting: most read-only tool calls run at once; :data:`DEFAULT_MAX_PARALLEL` if unset."""
+        return self.scalar("tools.max_parallel")[0] or DEFAULT_MAX_PARALLEL
 
     def max_tokens_for(self, provider: str, model: str) -> int | None:
         """The ``max_tokens`` setting for ``model`` of ``provider``: the integer, or the object's

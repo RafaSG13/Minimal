@@ -9,7 +9,9 @@ One call to :func:`run_agent` handles one user turn:
 2. Append the reply to ``messages`` as an ``assistant`` message and fire ``after_response``.
 3. If the reply contains no tool calls, fire ``turn_end`` and return it.
 4. Otherwise run each call (see :func:`execute_tool_call`), append the results
-   as a ``user`` message and go back to step 1. If the reply was cut off by the
+   as a ``user`` message and go back to step 1. A run of consecutive calls to ``read_only`` tools runs
+   concurrently (see :func:`run_agent`); every other call runs alone, in order, and the results are always
+   appended in the order of the calls. If the reply was cut off by the
    output token limit, its calls may be incomplete: none runs, each is answered
    with an error asking for smaller steps, and the loop goes on.
 
@@ -27,6 +29,7 @@ The loop only sees the canonical message format described in
 
 from __future__ import annotations
 
+import concurrent.futures
 import dataclasses
 import sys
 import threading
@@ -34,8 +37,9 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
+from minimal.config import DEFAULT_MAX_PARALLEL, DEFAULT_MAX_TURNS
 from minimal.extensions.registry import Registry, Tool, TurnInterrupted
-from minimal.providers.base import Provider, Reply
+from minimal.providers.base import Provider, Reply, result_text
 from minimal.tools.common import clip
 
 USER_DENIED = "the user denied the execution"
@@ -89,7 +93,8 @@ def run_agent(
     exclude_tools: frozenset[str] = frozenset(),
     gate: ToolGate | None = None,
     nested: bool = False,
-    max_turns: int = 50,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    max_parallel: int = DEFAULT_MAX_PARALLEL,
     options: Mapping[str, Any] | None = None,
     switch_provider: Callable[[str, str | None], tuple[Provider, str]] | None = None,
     agent_id: str = "main",
@@ -119,6 +124,12 @@ def run_agent(
         gate: Further restriction on tools, asked on every request and every call (the current mode, an allow-list).
         nested: This loop runs inside a tool (a subagent); passed on in ``turn_end``.
         max_turns: Most model requests allowed for this turn.
+        max_parallel: Most calls to ``read_only`` tools run at once. When one reply holds several calls, the longest
+            run of consecutive ones to ``read_only`` tools is run concurrently on worker threads; each call is still
+            announced (``on_tool``), checked (``tool_call`` handlers, permissions, confirmation) one after the other in
+            the order of the reply on the calling thread, before any of them starts, and its result is handed to the
+            ``tool_result`` handlers and ``on_tool_result`` in that order as well. A call to any other tool is a
+            barrier: it runs alone, after the calls before it have finished. ``1`` runs every call one by one.
         options: Request options for the provider (``max_tokens``, ``temperature``); ``before_request``
             handlers may add to them. Passed to ``provider.stream`` only when not empty.
         switch_provider: Switches to ``(provider name, model or None)`` and returns the new provider
@@ -195,24 +206,21 @@ def run_agent(
 
         results = []
         try:
-            for call in calls:
-                raise_if_cancelled(cancelled)
-                if on_tool:
-                    on_tool({**call, **who})
-                result = execute_tool_call(
-                    call,
-                    registry,
-                    ctx,
-                    confirm=confirm,
-                    permit=permit,
-                    exclude=exclude_tools,
-                    gate=gate,
-                    agent_id=agent_id,
-                    parent_id=parent_id,
-                )
-                if on_tool_result:
-                    on_tool_result({**call, **who}, {**result, **who})
-                results.append(result)
+            _run_calls(
+                calls,
+                results,
+                registry,
+                ctx,
+                confirm=confirm,
+                permit=permit,
+                exclude=exclude_tools,
+                gate=gate,
+                who=who,
+                on_tool=on_tool,
+                on_tool_result=on_tool_result,
+                cancelled=cancelled,
+                max_parallel=max_parallel,
+            )
         except BaseException:
             # Keep the results of the calls that finished and answer the rest, so the history stays valid.
             pending = [
@@ -224,6 +232,146 @@ def run_agent(
         messages.append({"role": "user", "content": results})
 
     raise MaxTurnsExceeded(f"exceeded the maximum of {max_turns} turns")
+
+
+def _run_calls(
+    calls: list[dict],
+    results: list[dict],
+    registry: Registry,
+    ctx: Any,
+    *,
+    confirm: Confirm | None,
+    permit: Permit | None,
+    exclude: frozenset[str],
+    gate: ToolGate | None,
+    who: dict[str, Any],
+    on_tool: Callable[[dict], Any] | None,
+    on_tool_result: Callable[[dict, dict], Any] | None,
+    cancelled: threading.Event | None,
+    max_parallel: int,
+) -> None:
+    """Run ``calls`` and append each ``tool_result`` to ``results``, in the order of ``calls``, as soon as it is final.
+
+    A run of consecutive calls to ``read_only`` tools goes to :func:`_run_concurrently`; any other call runs alone.
+    On an exception ``results`` holds exactly the results of the calls that finished, so the caller can answer the rest.
+    """
+    index = 0
+    while index < len(calls):
+        end = index + 1
+        if max_parallel > 1 and _is_read_only(calls[index], registry, exclude):
+            while end < len(calls) and _is_read_only(calls[end], registry, exclude):
+                end += 1
+        if end - index > 1:
+            _run_concurrently(
+                calls[index:end], results, registry, ctx, confirm, permit, exclude, gate, who,
+                on_tool, on_tool_result, cancelled, max_parallel,
+            )  # fmt: skip
+        else:
+            call = calls[index]
+            raise_if_cancelled(cancelled)
+            if on_tool:
+                on_tool({**call, **who})
+            result = execute_tool_call(
+                call,
+                registry,
+                ctx,
+                confirm=confirm,
+                permit=permit,
+                exclude=exclude,
+                gate=gate,
+                agent_id=who["agent_id"],
+                parent_id=who["parent_id"],
+            )
+            if on_tool_result:
+                on_tool_result({**call, **who}, {**result, **who})
+            results.append(result)
+        index = end
+
+
+def _is_read_only(call: dict, registry: Registry, exclude: frozenset[str]) -> bool:
+    """Whether ``call`` is to a registered, not excluded tool marked ``read_only``."""
+    tool = None if call["name"] in exclude else registry.tools.get(call["name"])
+    return tool is not None and tool.read_only
+
+
+def _run_concurrently(
+    calls: list[dict],
+    results: list[dict],
+    registry: Registry,
+    ctx: Any,
+    confirm: Confirm | None,
+    permit: Permit | None,
+    exclude: frozenset[str],
+    gate: ToolGate | None,
+    who: dict[str, Any],
+    on_tool: Callable[[dict], Any] | None,
+    on_tool_result: Callable[[dict, dict], Any] | None,
+    cancelled: threading.Event | None,
+    max_parallel: int,
+) -> None:
+    """Run calls to ``read_only`` tools together; the rest of the contract is :func:`run_agent`'s ``max_parallel``.
+
+    Every call is announced and vetted in order on this thread (so confirmations are asked one at a time, in
+    order), then the approved ones run on at most ``max_parallel`` worker threads, and the results are finished
+    (``tool_result`` handlers, ``on_tool_result``) in order on this thread as each one in turn is ready. An
+    interruption stops waiting: calls not started never run, ones already running finish unobserved.
+    """
+    vetted: list[tuple[Tool | None, str | None]] = []  # (tool to run, or the error that stops the call)
+    for call in calls:
+        raise_if_cancelled(cancelled)
+        if on_tool:
+            on_tool({**call, **who})
+        try:
+            vetted.append((_vet_tool_call(call, registry, ctx, confirm, permit, exclude, gate, who), None))
+        except Exception as e:
+            vetted.append((None, f"Error: {e}"))
+    pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(max_parallel, len(calls)), thread_name_prefix="minimal-tool"
+    )
+    try:
+        running = [
+            None if tool is None else pool.submit(_invoke, tool, call, ctx) for call, (tool, _) in zip(calls, vetted)
+        ]
+        for call, (_, error), future in zip(calls, vetted, running):
+            output: str | list[dict]
+            if future is None:
+                output, is_error = cast(str, error), True
+            else:
+                while not concurrent.futures.wait([future], timeout=0.05).done:
+                    raise_if_cancelled(cancelled)
+                output, is_error = future.result()
+            result = _finish_tool_call(call, output, is_error, registry, ctx, who)
+            if on_tool_result:
+                on_tool_result({**call, **who}, {**result, **who})
+            results.append(result)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _invoke(tool: Tool, call: dict, ctx: Any) -> tuple[str | list[dict], bool]:
+    """Run ``tool`` for ``call``: ``(output, is_error)``; an exception from the tool is the error text."""
+    try:
+        return _output(tool.run(call["input"], ctx)), False
+    except Exception as e:
+        return f"Error: {e}", True
+
+
+def _output(value: Any) -> str | list[dict]:
+    """What a tool returned as the content of its result: a list of ``text``/``image`` blocks as it is, else ``str(value)``."""
+    if (
+        isinstance(value, list)
+        and value
+        and all(
+            isinstance(b, dict)
+            and (
+                (b.get("type") == "text" and isinstance(b.get("text"), str))
+                or (b.get("type") == "image" and isinstance(b.get("source"), dict))
+            )
+            for b in value
+        )
+    ):
+        return value
+    return str(value)
 
 
 def execute_tool_call(
@@ -244,20 +392,29 @@ def execute_tool_call(
     handler, permission rule, user refusal, exception in the tool) becomes an ``is_error``
     result so the model can react to it. ``tool_result`` handlers see the whole
     output and may rewrite it; what the model gets is then clipped. ``agent_id`` and ``parent_id`` go
-    into the payloads of ``tool_call`` and ``tool_result``.
+    into the payloads of ``tool_call`` and ``tool_result``. A tool may return a list of ``text`` and ``image``
+    blocks: the result's ``content`` is then that list (its text clipped), and the handlers see its text.
     """
     who = {"agent_id": agent_id, "parent_id": parent_id}
+    output: str | list[dict]
     try:
-        output = _run_tool(call, registry, ctx, confirm, permit, exclude, gate, who)
+        tool = _vet_tool_call(call, registry, ctx, confirm, permit, exclude, gate, who)
+        output = _output(tool.run(call["input"], ctx))
         is_error = False
     except Exception as e:
         output = f"Error: {e}"
         is_error = True
+    return _finish_tool_call(call, output, is_error, registry, ctx, who)
 
+
+def _finish_tool_call(
+    call: dict, output: str | list[dict], is_error: bool, registry: Registry, ctx: Any, who: dict[str, Any]
+) -> dict:
+    """Fire ``tool_result`` for ``call`` and build its ``tool_result`` block from ``output`` (clipped), as the handlers left it."""
     payload = {
         "name": call["name"],
         "input": call["input"],
-        "output": output,
+        "output": output if isinstance(output, str) else result_text(output),
         "is_error": is_error,
         "ctx": ctx,
         **who,
@@ -266,15 +423,15 @@ def execute_tool_call(
         if isinstance(rewrite, dict) and isinstance(rewrite.get("output"), str):
             output = rewrite["output"]
 
-    return {
-        "type": "tool_result",
-        "tool_use_id": call["id"],
-        "content": clip(output),
-        "is_error": is_error,
-    }
+    content = (
+        clip(output)
+        if isinstance(output, str)
+        else [{**b, "text": clip(b["text"])} if b["type"] == "text" else b for b in output]
+    )
+    return {"type": "tool_result", "tool_use_id": call["id"], "content": content, "is_error": is_error}
 
 
-def _run_tool(
+def _vet_tool_call(
     call: dict,
     registry: Registry,
     ctx: Any,
@@ -283,8 +440,12 @@ def _run_tool(
     exclude: frozenset[str],
     gate: ToolGate | None,
     who: dict[str, Any],
-) -> str:
-    """Look up, vet, check permissions, confirm and run the tool for ``call``. Raises on any failure."""
+) -> Tool:
+    """Look up the tool for ``call``, check it against the gate, ``tool_call`` handlers, permissions and the user; return it.
+
+    Raises:
+        Exception: for any reason the call must not run: the message is the error the model gets.
+    """
     tool = None if call["name"] in exclude else registry.tools.get(call["name"])
     if tool is None:
         raise ValueError(f"unknown tool: {call['name']}")
@@ -307,8 +468,7 @@ def _run_tool(
     needed = tool.confirm(call["input"], ctx) if callable(tool.confirm) else tool.confirm
     if needed and not allowed and confirm is not None and not confirm(call):
         raise RuntimeError(USER_DENIED)
-
-    return str(tool.run(call["input"], ctx))
+    return tool
 
 
 def tool_specs(registry: Registry, exclude: frozenset[str] = frozenset(), gate: ToolGate | None = None) -> list[dict]:

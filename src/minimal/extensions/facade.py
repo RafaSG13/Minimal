@@ -56,6 +56,7 @@ class ToolResultEvent(TypedDict):
     name: str
     input: dict
     output: str
+    """The tool's text; a picture a tool returned shows as ``[image: media_type, N bytes]``. A rewrite replaces everything, pictures too."""
     is_error: bool
     ctx: Any
     agent_id: str
@@ -300,12 +301,15 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
+        read_only: bool = False,
     ) -> None:
         """Add a tool the model can call as ``run(input, ctx)``; see :meth:`Registry.register_tool`.
 
         ``subject_key`` names the ``input`` field that permission rules ``name(pattern)`` match.
+        ``read_only`` (API 2.3) says the tool changes nothing and is thread-safe, so calls to it may run concurrently
+        with each other (see :attr:`~minimal.extensions.registry.Tool.read_only`).
         """
-        self._registry.register_tool(name, run, description, input_schema, confirm, subject_key)
+        self._registry.register_tool(name, run, description, input_schema, confirm, subject_key, read_only)
 
     def register_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
         """Add the slash command ``/name``, run as ``run(args, ctx)``; see :meth:`Registry.register_command`."""
@@ -440,9 +444,10 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
+        read_only: bool = False,
     ) -> Callable[[ToolRun], ToolRun]:
         """Decorator registering ``fn(input, ctx)`` as a tool: the name defaults to the function's,
-        the description to the first line of its docstring."""
+        the description to the first line of its docstring. ``read_only`` (API 2.3): see :meth:`register_tool`."""
 
         def decorate(fn: ToolRun) -> ToolRun:
             self.register_tool(
@@ -452,6 +457,7 @@ class Extension:
                 input_schema,
                 confirm,
                 subject_key,
+                read_only,
             )
             return fn
 

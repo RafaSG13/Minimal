@@ -258,6 +258,9 @@ class Frontend(Protocol):
         ``agent_id`` and ``parent_id`` say which agent calls it (``"main"`` and ``None`` for the user's turn, else
         a ``ctx.run_agent`` agent and the one that started it): extra keys of the same call, so a frontend that
         ignores them keeps working. :meth:`text` is the user's turn's only: nested agents do not stream text.
+
+        When one reply calls several ``read_only`` tools in a row, each call is announced here, in order, before the
+        calls run together; :meth:`tool_result` then follows in the same order as each result is ready.
         """
 
     def tool_result(self, call: dict, result: dict) -> None:
@@ -463,6 +466,7 @@ class App:
         self.mode: str | None = None
         self._mode_lock = threading.Lock()
         self.settings = config.Settings()
+        self._effort_override: tuple[str | None] | None = None
         self.setting_errors: list[str] = []
         self.queued: collections.deque[str] = collections.deque()
         self.context = Context(self)
@@ -708,9 +712,30 @@ class App:
     def request_options(self, provider_name: str | None = None, model: str | None = None) -> dict:
         """Provider request options of the next request: ``max_tokens`` from the settings
         (:meth:`~minimal.config.Settings.max_tokens_for`) for the current provider and model, or for the given
-        ones; empty for the provider's defaults."""
+        ones, and :attr:`reasoning_effort` when set; empty for the provider's defaults."""
+        options: dict[str, Any] = {}
         n = self.settings.max_tokens_for(provider_name or self.provider_name, model or self.model)
-        return {} if n is None else {"max_tokens": n}
+        if n is not None:
+            options["max_tokens"] = n
+        if self.reasoning_effort is not None:
+            options["reasoning_effort"] = self.reasoning_effort
+        return options
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        """How much the model should think (one of :data:`~minimal.config.REASONING_EFFORTS`): what
+        :meth:`set_reasoning_effort` set, else the ``reasoning_effort`` setting; ``None`` for the provider's default."""
+        return self.settings.reasoning_effort if self._effort_override is None else self._effort_override[0]
+
+    def set_reasoning_effort(self, value: str | None) -> None:
+        """Use ``value`` from the next request on, over the setting (``None``: the provider's default).
+
+        Raises:
+            ValueError: if ``value`` is not ``None`` or one of :data:`~minimal.config.REASONING_EFFORTS`.
+        """
+        if value is not None and value not in config.REASONING_EFFORTS:
+            raise ValueError(f"reasoning effort must be one of {', '.join(config.REASONING_EFFORTS)} (or None), not {value!r}")
+        self._effort_override = (value,)
 
     # --- modes ---------------------------------------------------------------
 
@@ -825,6 +850,8 @@ class App:
                 cancelled=self.cancelled,
                 permit=self.permit,
                 gate=self.mode_block_reason,
+                max_turns=self.settings.max_turns,
+                max_parallel=self.settings.max_parallel,
                 options=self.request_options(),
                 switch_provider=self.fallback_provider,
             )
@@ -927,7 +954,8 @@ class App:
                 exclude_tools=exclude,
                 gate=gate,
                 nested=True,
-                max_turns=50 if max_turns is None else max_turns,
+                max_turns=self.settings.max_turns if max_turns is None else max_turns,
+                max_parallel=self.settings.max_parallel,
                 options=self.request_options(llm_name, llm_model),
                 switch_provider=switch,
                 agent_id=run.id,

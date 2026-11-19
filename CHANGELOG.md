@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- Tools marked `read_only` run concurrently: when one model reply calls several of them in a row, their calls overlap
+  (up to `tools.max_parallel`, default 4), while confirmations, `tool_call`/`tool_result` handlers and the UI still
+  see the calls in order and the results go back in order; any other call runs alone as a barrier. `read`, `grep` and
+  `glob` are `read_only`. Extensions get `read_only=` on `Tool`, `Extension.register_tool` and `@minimal.tool`.
+- `agent.max_turns` setting (default 50): the most model requests one turn may make; `ctx.max_turns` reads it and
+  `ctx.run_agent` uses it as the default of `max_turns`.
+- `image` and `thinking` blocks in the history. `read` returns a PNG, JPEG, GIF or WebP file (up to 3.75 MB) as a
+  picture the model sees, and tools may return lists of `text`/`image` blocks (`minimal.api.image_block`); Anthropic,
+  OpenAI-compatible servers (`image_url` data URLs) and Gemini take pictures in messages and tool results. The model's
+  reasoning is kept as `thinking` blocks where a provider shows it (Anthropic with its signatures, which are sent back
+  with the request; Gemini thought summaries; `reasoning_content` of OpenAI-compatible servers) and is dropped from
+  requests to providers that cannot use it. Pictures show as `[image: media_type, N bytes]` in the UI, logs and
+  `result_text`, never as base64.
+- `reasoning_effort` setting (`low`, `medium` or `high`) and `ctx.reasoning_effort` / `ctx.set_reasoning_effort()`:
+  Anthropic extended-thinking budget, OpenAI `reasoning_effort` for reasoning models, Gemini `thinking_level`;
+  ignored by anything that cannot use it. `HostStatus.reasoning_effort` carries it to a status line.
+
 ## 0.8.0
 
 ### Added

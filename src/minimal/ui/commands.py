@@ -239,7 +239,10 @@ def _trust(args: str, ctx: Context) -> None:
     print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
-_SCALARS = ("provider", "model", "theme", "max_tokens", "prompt.base", "prompt.files")
+_SCALARS = (
+    "provider", "model", "theme", "max_tokens", "reasoning_effort", "agent.max_turns", "tools.max_parallel",
+    "prompt.base", "prompt.files",
+)  # fmt: skip
 """Settings where the highest layer wins; the others are concatenated, merged or global-only lists."""
 
 
