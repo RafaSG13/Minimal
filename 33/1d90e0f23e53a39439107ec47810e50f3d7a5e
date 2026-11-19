@@ -1,0 +1,48 @@
+CHANGELOG.md
+  h_e81853c41416fb 63-78,83-85
+README.md
+  h_e81853c41416fb 166,178,214,353,368,413
+docs/extensions.md
+  h_e81853c41416fb 21,60-63,365,381,387-421,480,511,533-534,559-560
+docs/settings.md
+  h_e81853c41416fb 7,11,41-49,66-95,104,153-165
+extensions/example.py
+  h_e81853c41416fb 1,13,41-52
+src/minimal/api.py
+  h_e81853c41416fb 42,44,49,72-73,75-76
+src/minimal/config.py
+  h_e81853c41416fb 5,49-50,100-177,204,400-442,474-476,479-480,491-498,500,502-504
+src/minimal/core/host.py
+  h_e81853c41416fb 22,27,189-207
+src/minimal/core/layout.py
+  h_e81853c41416fb 1-232
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 334-345,347-348,357-372,374-390,538-549
+src/minimal/extensions/loader.py
+  h_e81853c41416fb 23-25,311,317,324-330,351-404,410,412-419,422-423,426-428,431-451,453,455,458,462-464,469,483,508-509,540
+src/minimal/extensions/marketplace.py
+  h_e81853c41416fb 298-299,329-333
+src/minimal/extensions/metadata.py
+  h_e81853c41416fb 8-12,38-41,85-101,112-113,122-123,132-135,148-149
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 73,115-118,127,271-272,278,288,291,299,318,329,335-419,569,586-587,609-610,682,687-692,704-705,710-722,725,734-736,739-740,746-748,757-758,776-778,781,786,791-835
+src/minimal/ui/commands.py
+  h_e81853c41416fb 23,37-38,304-306,318,327-329,344-493,501-512,522,805
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 6-12,17-18,42,49-50,52,64-83,137-139,148-154,188-195,221-223,232,243,258-259,266-267,398-399,402,405,408-494,497-499,504-517,565-567,569-571,583,585-606,629-684,688,690-692,695
+tests/test_bundled_status_kit.py
+  h_e81853c41416fb 351
+tests/test_customisation.py
+  h_e81853c41416fb 1-677
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "331d90e0f23e53a39439107ec47810e50f3d7a5e",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
