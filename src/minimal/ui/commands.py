@@ -260,7 +260,8 @@ def _settings(args: str, ctx: Context) -> None:
     for layer in settings.layers:
         for key in ("marketplaces", "prompt.append", "permissions.allow", "permissions.deny", "extensions.disabled"):
             for item in layer.data.get(key, []):
-                lines.append(f"{key}  {item}  ({layer.scope}){_untrusted_mark(settings, layer, key)}")
+                shown = f"{item['name']}={item['url']}" if isinstance(item, dict) else item
+                lines.append(f"{key}  {shown}  ({layer.scope}){_untrusted_mark(settings, layer, key)}")
         for ext_id, values in layer.data.get("extensions.settings", {}).items():
             mark = _untrusted_mark(settings, layer, "extensions.settings")
             lines.append(f"extensions.settings  {ext_id} {json.dumps(values, separators=(',', ':'))}  ({layer.scope}){mark}")

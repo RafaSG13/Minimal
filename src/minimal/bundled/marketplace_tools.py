@@ -7,7 +7,7 @@ install or publish extensions, and the prompt stops mentioning them. The user's 
 As first-party code it reaches the marketplace internals directly instead of `minimal.api`.
 """
 
-__version__ = "1.0"
+__version__ = "1.1"
 __api__ = "2"
 
 from minimal.extensions import loader, marketplace
@@ -38,7 +38,7 @@ def register(minimal):
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Words to match in the name or description; empty lists everything",
+                    "description": "Words to match in the name, description or tags; empty lists everything",
                 },
                 "category": CATEGORY_SCHEMA,
             },
