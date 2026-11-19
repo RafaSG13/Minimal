@@ -5,7 +5,11 @@
 - ``__api__ = "1"``: the :data:`minimal.API_VERSION` it is written for (required; :func:`check_api`);
 - ``__dependencies__ = ["termaid>=0.3"]``: third-party packages it needs (optional; :data:`DEPENDENCY_RE`).
   ``/ext`` offers to install the missing ones into minimal's Python;
-- ``__tags__ = ["git", "ui"]``: keywords the marketplace search matches (optional; :data:`TAG_RE`).
+- ``__tags__ = ["git", "ui"]``: keywords the marketplace search matches (optional; :data:`TAG_RE`);
+- ``__depends__ = ["modes"]``: ids of extensions that must be loaded before it (optional; :data:`EXT_ID_RE`). It is
+  skipped, with an error, when one is missing or failed;
+- ``__conflicts__ = ["tools/subagent"]``: ids of extensions it cannot be loaded with (optional). Whichever
+  of the two loads first stays and the other is skipped, with an error.
 """
 
 from __future__ import annotations
@@ -31,6 +35,10 @@ class Metadata:
     """Top-level ``__dependencies__``: package requirements such as ``"termaid>=0.3"``."""
     tags: tuple[str, ...] = ()
     """Top-level ``__tags__``: lowercase keywords the marketplace search matches."""
+    depends: tuple[str, ...] = ()
+    """Top-level ``__depends__``: ids of extensions that must load first (API 2.3)."""
+    conflicts: tuple[str, ...] = ()
+    """Top-level ``__conflicts__``: ids of extensions it cannot be loaded with (API 2.3)."""
 
 
 DEPENDENCY_RE = re.compile(
@@ -74,6 +82,23 @@ def _tags(node: ast.expr, filename: str) -> tuple[str, ...]:
     )
 
 
+EXT_ID_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)?")
+"""A valid ``__depends__`` / ``__conflicts__`` entry (always ``fullmatch``): an extension id, ``name`` or ``category/name``."""
+
+
+def _ext_ids(node: ast.expr, filename: str, what: str) -> tuple[str, ...]:
+    if isinstance(node, (ast.List, ast.Tuple)) and all(
+        isinstance(e, ast.Constant) and isinstance(e.value, str) and EXT_ID_RE.fullmatch(e.value) for e in node.elts
+    ):
+        return tuple(e.value for e in node.elts)  # type: ignore[attr-defined]
+    try:
+        value = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        value = ast.unparse(node)
+    raise ValueError(
+        f'{filename}: {what} must be a list of extension ids such as ["modes", "tools/subagent"]; got {value!r}'
+    )
+
 
 class SourceSyntaxError(ValueError):
     """:func:`read_metadata` could not parse the source."""
@@ -84,7 +109,8 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
 
     Raises:
         SourceSyntaxError: if ``source`` does not parse.
-        ValueError: if ``__dependencies__`` is not a list of package requirements or ``__tags__`` not a list of tags.
+        ValueError: if ``__dependencies__`` is not a list of package requirements, ``__tags__`` not a list of tags or
+            ``__depends__``/``__conflicts__`` not a list of extension ids.
     """
     try:
         tree = ast.parse(source, filename=filename)
@@ -93,6 +119,8 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
     strings = {}
     dependencies: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
+    depends: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -101,6 +129,10 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
             dependencies = _dependencies(node.value, filename)
         if "__tags__" in names:
             tags = _tags(node.value, filename)
+        if "__depends__" in names:
+            depends = _ext_ids(node.value, filename, "__depends__")
+        if "__conflicts__" in names:
+            conflicts = _ext_ids(node.value, filename, "__conflicts__")
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             for name in names:
                 if name in ("__version__", "__api__"):
@@ -113,6 +145,8 @@ def read_metadata(source: bytes, filename: str) -> Metadata:
         has_register=any(isinstance(n, ast.FunctionDef) and n.name == "register" for n in tree.body),
         dependencies=dependencies,
         tags=tags,
+        depends=depends,
+        conflicts=conflicts,
     )
 
 

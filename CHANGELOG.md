@@ -60,10 +60,29 @@
   `complete(args, ctx) -> list[str]`, offered in the composer's popup (`Tab` cycles); `Host.complete_args()` and
   `Command.complete` expose it. `/theme`, `/mode`, `/resume`, `/provider`, `/login`, `/logout` and `/ext` complete their
   arguments.
+- `register_keybinding(key, run, description="", *, show=False, name="")` and the `@minimal.keybinding(key, ...)`
+  decorator bind a global key to `run(ctx)`, run on a worker thread like a slash command; errors are shown once. Keys the
+  UI needs (`RESERVED_KEYS`) and bare letters are refused, and a duplicate key between extensions is reported on
+  reload. `Host.keybindings` lists them. `extensions/example.py` shows a key and an ordered panel.
+- `order` keyword for `register_widget`, `register_panel` and `register_status`, and the new widget areas `left`
+  (a second sidebar) and `footer` (under the status line) in `WIDGET_AREAS`; `Registry.placement_index` breaks ties.
+- `ui.*` settings, applied on `/reload`: `ui.sidebar` (`right`, `left`, `hidden`), `ui.sidebar_width`, `ui.widgets` and
+  `ui.status` (move, reorder or hide any widget, panel or status segment, minimal's own included, by name), `ui.keys`
+  (rebind `interrupt`, `toggle_sidebar`, `cycle_mode` and extension keybindings), `ui.prompt_glyph`, `ui.placeholder`,
+  `ui.density` (`compact` removes the blank lines between transcript blocks) and `ui.css` (a Textual stylesheet from
+  `~/.minimal`, global only; one that fails to parse is reported and ignored).
+- `/ui` shows the effective layout (areas, status segments, keys, problems) and `/ui sidebar|density|hide|show|move|reset`
+  save changes to the global settings and reload. `config.update_global` accepts dotted keys such as `ui.sidebar`.
+- Extension metadata `__depends__` and `__conflicts__` (lists of extension ids): a dependency loads first and a
+  missing or failed one skips the extension (`needs 'x': install it with /ext`); of two conflicting extensions the
+  first loaded stays. `minimal ext check` validates them and `/ext list` shows them.
 
 ### Changed
 
 - `HostStatus` has `usage` and `truncations`; the terminal UI redraws its transcript when the latter changes.
+- `WIDGET_AREAS` gained `left` and `footer`; the marketplace's `project_badge` offers them in its `area` setting.
+- The status line's own segments (`model`, `path`, `git`, `mode`, `context`, `extensions`, `session`) are named
+  segments that `ui.status` can hide, move or reorder; an extension segment with the same name replaces one.
 
 ## 0.8.0
 

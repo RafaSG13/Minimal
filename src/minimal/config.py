@@ -2,7 +2,7 @@
 
 Settings are JSON files read as layers, lowest first (see :func:`read_layers`):
 
-- ``~/.minimal/settings.json`` (``global``): written by setup, ``/theme`` and
+- ``~/.minimal/settings.json`` (``global``): written by setup, ``/theme``, ``/ui`` and
   the ``/ext`` picker too (:func:`update_global`).
 - ``<project>/.minimal/settings.json`` (``project``): shared with the project.
 - ``<project>/.minimal/settings.local.json`` (``local``): personal, not committed; the permission dialog's
@@ -46,8 +46,8 @@ SCOPES = ("global", "project", "local")
 RULE_RE = re.compile(r"^([A-Za-z0-9_\-]+)(?:\((.*)\))?$", re.DOTALL)
 """A permission rule: ``name`` or ``name(pattern)`` (see :mod:`minimal.core.permissions`)."""
 
-GLOBAL_ONLY = ("marketplaces", "prompt.base")
-"""Keys read only from :data:`SETTINGS_FILE`: a project must not choose where code or the base prompt comes from."""
+GLOBAL_ONLY = ("marketplaces", "prompt.base", "ui.css")
+"""Keys read only from :data:`SETTINGS_FILE`: a project must not choose where code, the base prompt or a stylesheet comes from."""
 
 RISKY = ("permissions.allow", "extensions.disabled", "extensions.settings")
 """Project keys that apply only once the project is trusted."""
@@ -97,6 +97,84 @@ def _is_max_tokens(value: object) -> bool:
     )
 
 
+UI_AREAS = ("top", "bottom", "sidebar", "left", "footer")
+"""Where a widget or panel can be placed in the terminal UI (``ui.widgets``; :data:`~minimal.extensions.registry.WIDGET_AREAS`)."""
+
+UI_STATUS_SIDES = ("left", "right")
+"""Where a status-line segment can be placed (``ui.status``; :data:`~minimal.extensions.registry.STATUS_SIDES`)."""
+
+UI_SIDEBARS = ("right", "left", "hidden")
+"""Values of ``ui.sidebar``: which side the ``sidebar`` area is on, or ``hidden``."""
+
+UI_DENSITIES = ("normal", "compact")
+"""Values of ``ui.density``."""
+
+UI_SIDEBAR_WIDTHS = (20, 80)
+"""Smallest and largest ``ui.sidebar_width``."""
+
+UI_GLYPH_LENGTHS = (1, 3)
+"""Fewest and most characters of ``ui.prompt_glyph``."""
+
+
+def _is_choice(*choices: str):
+    return lambda value: isinstance(value, str) and value in choices
+
+
+def _is_sidebar_width(value: object) -> bool:
+    low, high = UI_SIDEBAR_WIDTHS
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def _is_prompt_glyph(value: object) -> bool:
+    low, high = UI_GLYPH_LENGTHS
+    return isinstance(value, str) and low <= len(value) <= high and value.isprintable()
+
+
+def _is_ui_overrides(places: tuple[str, ...], place_field: str):
+    """A check for ``ui.widgets`` / ``ui.status``: names → ``{<place_field>?, order?, enabled?}``."""
+
+    def check(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        for name, entry in value.items():
+            if not isinstance(name, str) or not name or not isinstance(entry, dict):
+                return False
+            if not set(entry) <= {place_field, "order", "enabled"}:
+                return False
+            if place_field in entry and entry[place_field] not in places:
+                return False
+            if "order" in entry and (isinstance(entry["order"], bool) or not isinstance(entry["order"], int)):
+                return False
+            if "enabled" in entry and not isinstance(entry["enabled"], bool):
+                return False
+        return True
+
+    return check
+
+
+def _is_ui_keys(value: object) -> bool:
+    return isinstance(value, dict) and all(isinstance(k, str) and k and isinstance(v, str) for k, v in value.items())
+
+
+_UI_TYPES = {
+    "ui.sidebar": (_is_choice(*UI_SIDEBARS), "one of " + ", ".join(UI_SIDEBARS)),
+    "ui.sidebar_width": (_is_sidebar_width, "an integer from {} to {}".format(*UI_SIDEBAR_WIDTHS)),
+    "ui.widgets": (
+        _is_ui_overrides(UI_AREAS, "area"),
+        f'an object mapping names to {{"area": one of {", ".join(UI_AREAS)}, "order": integer, "enabled": boolean}}',
+    ),
+    "ui.status": (
+        _is_ui_overrides(UI_STATUS_SIDES, "side"),
+        'an object mapping names to {"side": left or right, "order": integer, "enabled": boolean}',
+    ),
+    "ui.keys": (_is_ui_keys, 'an object mapping action names to key names ("" unbinds)'),
+    "ui.prompt_glyph": (_is_prompt_glyph, "1 to 3 printable characters"),
+    "ui.placeholder": (lambda v: isinstance(v, str), "a string"),
+    "ui.css": (lambda v: isinstance(v, str) and bool(v), "a path (relative to ~/.minimal) of a Textual CSS file"),
+    "ui.density": (_is_choice(*UI_DENSITIES), "one of " + ", ".join(UI_DENSITIES)),
+}
+
+
 _TYPES = {
     "provider": (lambda v: isinstance(v, str), "a string"),
     "model": (lambda v: isinstance(v, str), "a string"),
@@ -123,6 +201,7 @@ _TYPES = {
     "ui.notify_after": (_is_non_negative_number, "a non-negative number of seconds"),
 }
 """Every setting as a dotted key: ``(type check, type name for errors)``."""
+_TYPES.update(_UI_TYPES)
 
 _GROUPS = ("prompt", "permissions", "extensions", "agent", "tools", "ui")
 """Top-level keys holding an object of settings."""
@@ -319,6 +398,49 @@ class Settings:
         return merged
 
     @property
+    def ui_sidebar(self) -> str:
+        """Which side the ``sidebar`` area is on (``ui.sidebar``): ``right`` (default), ``left`` or ``hidden``."""
+        return self.scalar("ui.sidebar")[0] or "right"
+
+    @property
+    def ui_sidebar_width(self) -> int | None:
+        """``ui.sidebar_width``; ``None`` if unset (the UI's own width, 36)."""
+        return self.scalar("ui.sidebar_width")[0]
+
+    @property
+    def ui_density(self) -> str:
+        """``ui.density``: ``normal`` (default) or ``compact``."""
+        return self.scalar("ui.density")[0] or "normal"
+
+    @property
+    def ui_prompt_glyph(self) -> str | None:
+        """``ui.prompt_glyph``; ``None`` if unset (the theme's)."""
+        return self.scalar("ui.prompt_glyph")[0]
+
+    @property
+    def ui_placeholder(self) -> str | None:
+        """``ui.placeholder``; ``None`` if unset (the built-in hint)."""
+        return self.scalar("ui.placeholder")[0]
+
+    @property
+    def ui_css(self) -> Path | None:
+        """The user stylesheet (``ui.css``, global only): relative to :data:`HOME_DIR`, ``~`` allowed; ``None`` if unset."""
+        value = self._global().get("ui.css")
+        return None if value is None else HOME_DIR / Path(value).expanduser()
+
+    def ui_map(self, key: str) -> dict[str, Any]:
+        """``ui.widgets``, ``ui.status`` or ``ui.keys``: each layer's entries update the lower ones, entry by entry.
+
+        ``ui.keys`` entries are strings; the others objects, merged field by field: a higher layer's
+        ``{"order": 3}`` keeps the lower layer's ``area``.
+        """
+        merged: dict[str, Any] = {}
+        for layer in self.layers:
+            for name, entry in layer.data.get(key, {}).items():
+                merged[name] = {**merged.get(name, {}), **entry} if isinstance(entry, dict) else entry
+        return merged
+
+    @property
     def untrusted_risky(self) -> bool:
         """Whether project or local files set trust-gated keys that do not apply because the project is not trusted."""
         return not self.trusted and bool(risky_subset(self.layers))
@@ -349,10 +471,13 @@ def load_global() -> dict:
 
 
 def update_global(changes: dict) -> None:
-    """Set top-level keys of :data:`SETTINGS_FILE` (``None`` deletes one), keeping everything else.
+    """Set keys of :data:`SETTINGS_FILE` (``None`` deletes one), keeping everything else.
+
+    A dotted key (``ui.sidebar``) sets a key inside its group object; a group left empty is removed.
 
     Raises:
-        ValueError: if the file exists but is not a JSON object: it is left untouched for the user to fix.
+        ValueError: if the file exists but is not a JSON object, or a group in it is not one: it is left untouched
+            for the user to fix.
     """
     data = {}
     if SETTINGS_FILE.exists():
@@ -363,10 +488,20 @@ def update_global(changes: dict) -> None:
         if not isinstance(data, dict):
             raise ValueError(f"{SETTINGS_FILE} is not a JSON object; fix it first")
     for key, value in changes.items():
+        group, dot, sub = key.partition(".")
+        target = data
+        if dot:
+            target = data.get(group, {})
+            if not isinstance(target, dict):
+                raise ValueError(f"{SETTINGS_FILE}: {group} is not a JSON object; fix it first")
+            data[group] = target
+        name = sub if dot else key
         if value is None:
-            data.pop(key, None)
+            target.pop(name, None)
         else:
-            data[key] = value
+            target[name] = value
+        if dot and not target:
+            del data[group]
     write_private(SETTINGS_FILE, data)
 
 

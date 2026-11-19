@@ -39,11 +39,14 @@ from minimal.extensions.facade import (
 )
 from minimal.extensions.registry import (
     EVENTS,
+    KEY_ACTIONS,
     PROMPT_SECTIONS,
+    RESERVED_KEYS,
     STATUS_SIDES,
     STYLES,
     THEME_COLORS,
     WIDGET_AREAS,
+    KeybindingSpec,
     LogoSpec,
     ModeSpec,
     PanelSpec,
@@ -66,10 +69,11 @@ if TYPE_CHECKING:
     from textual.content import Content
 
 __all__ = [
-    "AGENT_STATUSES", "API_VERSION", "EVENTS", "IMAGE_TYPES", "MAIN_AGENT", "PROMPT_SECTIONS", "REASONING_EFFORTS",
-    "STATUS_SIDES", "STYLES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
+    "AGENT_STATUSES", "API_VERSION", "EVENTS", "IMAGE_TYPES", "KEY_ACTIONS", "MAIN_AGENT", "PROMPT_SECTIONS",
+    "REASONING_EFFORTS", "RESERVED_KEYS", "STATUS_SIDES", "STYLES", "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
     "AfterResponseEvent", "AgentEndEvent", "AgentInfo", "AgentResult", "AgentStartEvent", "AnthropicProvider",
-    "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "ModeChangeEvent", "ModeSpec", "PanelSpec",
+    "BeforeRequestEvent", "Context", "Extension", "KeybindingSpec", "LogoSpec", "ModeChangeEvent", "ModeSpec",
+    "PanelSpec",
     "PromptText", "Provider",
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
     "ShutdownEvent", "Tool",

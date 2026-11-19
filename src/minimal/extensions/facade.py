@@ -331,13 +331,21 @@ class Extension:
         """
         self._registry.register_command(name, run, description, terminal, complete)
 
-    def register_widget(self, name: str, create: Callable[[Any], Any], area: str = "sidebar") -> None:
-        """Add a terminal UI widget built by ``create(ctx)``; see :meth:`Registry.register_widget`."""
-        self._registry.register_widget(name, create, area)
+    def register_widget(
+        self, name: str, create: Callable[[Any], Any], area: str = "sidebar", *, order: int = 0
+    ) -> None:
+        """Add a terminal UI widget built by ``create(ctx)``; see :meth:`Registry.register_widget`.
 
-    def register_status(self, name: str, render: Callable[[Any], Any], side: str = "right") -> None:
-        """Add a status-line segment drawn by ``render(ctx)``; see :meth:`Registry.register_status`."""
-        self._registry.register_status(name, render, side)
+        ``area`` may also be ``"left"`` or ``"footer"``, and ``order`` stacks an area's widgets. API 2.3."""
+        self._registry.register_widget(name, create, area, order=order)
+
+    def register_status(
+        self, name: str, render: Callable[[Any], Any], side: str = "right", *, order: int = 0
+    ) -> None:
+        """Add a status-line segment drawn by ``render(ctx)``; see :meth:`Registry.register_status`.
+
+        ``order`` sorts the segments of a side (API 2.3)."""
+        self._registry.register_status(name, render, side, order=order)
 
     def register_panel(
         self,
@@ -346,9 +354,40 @@ class Extension:
         area: str = "sidebar",
         live: Callable[[Any, dict], Any] | None = None,
         interval: float = 0.0,
+        *,
+        order: int = 0,
     ) -> None:
-        """Add a panel of styled text lines the terminal UI can draw; see :meth:`Registry.register_panel`. API 1.3."""
-        self._registry.register_panel(name, render, area, live, interval)
+        """Add a panel of styled text lines the terminal UI can draw; see :meth:`Registry.register_panel`. API 1.3.
+
+        ``area`` may also be ``"left"`` or ``"footer"``, and ``order`` stacks an area's panels and widgets. API 2.3."""
+        self._registry.register_panel(name, render, area, live, interval, order=order)
+
+    def register_keybinding(
+        self,
+        key: str,
+        run: Callable[[Any], Any],
+        description: str = "",
+        *,
+        show: bool = False,
+        name: str = "",
+    ) -> None:
+        """Bind the global key ``key`` (``ctrl+o``, ``alt+x``, ``f5``) to ``run(ctx)``; see :meth:`Registry.register_keybinding`.
+
+        ``run`` runs on a worker thread like a slash command, so it may ask the user questions and use ``ctx``;
+        a key is ignored while a turn, a command or a dialog is running. Keys the UI needs
+        (:data:`~minimal.extensions.registry.RESERVED_KEYS`) are refused. The user can give the binding another
+        key with ``ui.keys``, under ``"<extension id>:<name or description>"``. If another extension already bound
+        the key, this one replaces it and the reload reports it. API 2.3.
+
+        Raises:
+            ValueError: if ``key`` is not a valid, unreserved key or ``run`` is not callable.
+        """
+        replaced = self._registry.register_keybinding(
+            key, run, description, show=show, name=name, ext=self._id
+        )
+        if replaced is not None:
+            who = f"{replaced.ext}'s " if replaced.ext and replaced.ext != self._id else "its own earlier "
+            self._errors.append(f"{self._id}: key {replaced.key} was bound by {who}binding {replaced.label!r}; replaced")
 
     def register_renderer(self, kind: str, render: Callable[[Any, dict], Any]) -> None:
         """Draw a transcript block kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``) with ``render(ctx, block)``; see :meth:`Registry.register_renderer`. API 1.3."""
@@ -492,6 +531,18 @@ class Extension:
 
         def decorate(fn: CommandRun) -> CommandRun:
             self.register_command(name or fn.__name__, fn, description or _first_line(fn.__doc__), terminal, complete)
+            return fn
+
+        return decorate
+
+    def keybinding(
+        self, key: str, *, description: str = "", show: bool = False, name: str = ""
+    ) -> Callable[[Callable[[Any], Any]], Callable[[Any], Any]]:
+        """Decorator binding the global key ``key`` to ``fn(ctx)``: the description defaults to the first line of its
+        docstring; see :meth:`register_keybinding`. API 2.3."""
+
+        def decorate(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+            self.register_keybinding(key, fn, description or _first_line(fn.__doc__), show=show, name=name)
             return fn
 
         return decorate

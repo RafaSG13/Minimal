@@ -20,6 +20,7 @@ from pathlib import Path
 from minimal import config
 from minimal.core.app import App, ExitRepl, _visible
 from minimal.core.context import Context
+from minimal.core.layout import Placed, resolve, resolve_keys
 from minimal.core.session import (
     TORN_NOTICE,
     list_sessions,
@@ -33,7 +34,8 @@ from minimal.core.session import (
 )
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import MODE_OFF, CommandComplete, Registry
+from minimal.extensions.metadata import read_metadata
+from minimal.extensions.registry import MODE_OFF, STATUS_SIDES, WIDGET_AREAS, CommandComplete, Registry
 from minimal.providers import login_provider
 from minimal.ui import setup
 from minimal.ui.export import assistant_texts, native_copy, session_markdown
@@ -299,6 +301,9 @@ _SCALARS = (
 )  # fmt: skip
 """Settings where the highest layer wins; the others are concatenated, merged or global-only lists."""
 
+_UI_SCALARS = ("ui.sidebar", "ui.sidebar_width", "ui.density", "ui.prompt_glyph", "ui.placeholder", "ui.css")
+"""The ``ui.*`` settings where the highest layer wins (the others are objects merged by name, shown per layer)."""
+
 
 def _settings(args: str, ctx: Context) -> None:
     """Show the settings files, the effective settings with the scope each comes from, and the reload's errors."""
@@ -310,7 +315,7 @@ def _settings(args: str, ctx: Context) -> None:
     for file_scope, path in config.settings_files(app.cwd).items():
         print(f"  {file_scope:<8} {path}{'' if path.exists() else ' (not found)'}")
     lines = []
-    for key in _SCALARS:
+    for key in (*_SCALARS, *_UI_SCALARS):
         value, scope = settings.scalar(key)
         if scope is not None:
             lines.append(f"{key}  {value if isinstance(value, str) else json.dumps(value)}  ({scope})")
@@ -319,6 +324,9 @@ def _settings(args: str, ctx: Context) -> None:
             for item in layer.data.get(key, []):
                 shown = f"{item['name']}={item['url']}" if isinstance(item, dict) else item
                 lines.append(f"{key}  {shown}  ({layer.scope}){_untrusted_mark(settings, layer, key)}")
+        for key in ("ui.widgets", "ui.status", "ui.keys"):
+            if key in layer.data:
+                lines.append(f"{key}  {json.dumps(layer.data[key], separators=(',', ':'))}  ({layer.scope})")
         for ext_id, values in layer.data.get("extensions.settings", {}).items():
             mark = _untrusted_mark(settings, layer, "extensions.settings")
             lines.append(f"extensions.settings  {ext_id} {json.dumps(values, separators=(',', ':'))}  ({layer.scope}){mark}")
@@ -333,11 +341,173 @@ def _untrusted_mark(settings: config.Settings, layer: config.Layer, key: str) ->
     return " (not trusted: /trust)" if key in config.RISKY and layer.scope != "global" and not settings.trusted else ""
 
 
+UI_USAGE = (
+    "/ui [sidebar right|left|hidden | density normal|compact | hide <name> | show <name> | "
+    "move <name> <area> [order] | reset [name]]"
+)
+UI_HELP = f"show the layout and keys, or change it: {UI_USAGE}"
+
+
+def _placed_origin(placed: Placed) -> str:
+    user = f", user: {' '.join(placed.overridden)}" if placed.overridden else ""
+    return f"[{placed.source}{user}]"
+
+
+def _ui_report(app: App) -> str:
+    """The effective layout and keys: where each widget, panel and status segment is, in order, and what is bound to which key."""
+    settings = app.settings
+    layout = resolve(app.registry, settings)
+    bound, problems = resolve_keys(app.registry, settings)
+    width = settings.ui_sidebar_width
+    lines = [
+        f"sidebar {settings.ui_sidebar} (width {width if width is not None else 'default'}), "
+        f"density {settings.ui_density}",
+        "",
+        "Areas (widgets and panels, in order):",
+    ]
+    for area in WIDGET_AREAS:
+        items = layout.in_area(area)
+        lines.append(f"  {area}" + ("" if items else ": (none)"))
+        lines += [f"    {p.order:>4}  {p.name}  {p.kind}  {_placed_origin(p)}" for p in items]
+    lines += ["", "Status line (segments, in order):"]
+    for side in STATUS_SIDES:
+        lines.append(f"  {side}")
+        lines += [f"    {p.order:>4}  {p.name}  {_placed_origin(p)}" for p in layout.segments(side)]
+    off = [p for p in layout.placements if not p.enabled]
+    if off:
+        lines += ["", "Hidden:"]
+        lines += [
+            f"  {p.name}  {p.kind} of {p.place}  {p.note or 'hidden by you'}  {_placed_origin(p)}" for p in off
+        ]
+    lines += ["", "Keys (rebind with ui.keys in the settings):"]
+    for b in bound:
+        origin = "built-in" if b.builtin else "extension"
+        lines.append(
+            f"  {b.key or '(unbound)':<14} {b.id}  {b.description}  [{origin}{', user: ui.keys' if b.overridden else ''}]"
+        )
+    if layout.problems or problems:
+        lines += ["", "Problems:", *[f"  {p}" for p in [*layout.problems, *problems]]]
+    lines += ["", f"Change it with {UI_USAGE}; a reload applies edits to the ui.* settings."]
+    return "\n".join(lines)
+
+
+def _ui_targets(app: App, name: str) -> tuple[bool, bool]:
+    """Whether ``name`` is a widget or panel, and whether it is a status segment. Raises if it is neither."""
+    layout = resolve(app.registry, app.settings)
+    widget = any(p.name == name for p in layout.placements if p.kind != "status")
+    status = any(p.name == name for p in layout.placements if p.kind == "status")
+    if not (widget or status):
+        widgets = sorted({p.name for p in layout.placements if p.kind != "status"})
+        segments = sorted({p.name for p in layout.placements if p.kind == "status"})
+        raise ValueError(
+            f"no widget, panel or status segment called {name!r}; widgets and panels: {', '.join(widgets) or 'none'}; "
+            f"status segments: {', '.join(segments)}"
+        )
+    return widget, status
+
+
+def _ui_entry(entries: dict, name: str, **fields: object) -> None:
+    """Set ``fields`` of ``entries[name]``; a ``None`` field is removed, and an entry left empty with it."""
+    entry = {**entries.get(name, {}), **fields}
+    entry = {key: value for key, value in entry.items() if value is not None}
+    if entry:
+        entries[name] = entry
+    else:
+        entries.pop(name, None)
+
+
+def _ui_change(app: App, words: list[str]) -> str:
+    """The ``/ui`` subcommand ``words`` as changes to the global ``ui.*`` settings; returns what to tell the user."""
+    verb, args = words[0], words[1:]
+    glob = config.load_global()
+    widgets, status = dict(glob.get("ui.widgets", {})), dict(glob.get("ui.status", {}))
+    changes: dict = {}
+    if verb in ("sidebar", "density") and len(args) == 1:
+        choices = config.UI_SIDEBARS if verb == "sidebar" else config.UI_DENSITIES
+        if args[0] not in choices:
+            raise ValueError(f"/ui {verb}: use one of {', '.join(choices)}")
+        changes[f"ui.{verb}"] = args[0]
+        done = f"{verb}: {args[0]}"
+    elif verb in ("hide", "show") and len(args) == 1:
+        is_widget, is_status = _ui_targets(app, args[0])
+        value = False if verb == "hide" else None
+        if is_widget:
+            _ui_entry(widgets, args[0], enabled=value)
+        if is_status:
+            _ui_entry(status, args[0], enabled=value)
+        done = f"{verb} {args[0]}"
+    elif verb == "move" and len(args) in (2, 3):
+        name, place = args[0], args[1]
+        order: int | None = None
+        if len(args) == 3:
+            try:
+                order = int(args[2])
+            except ValueError:
+                raise ValueError(f"/ui move: the order must be an integer, not {args[2]!r}") from None
+        is_widget, is_status = _ui_targets(app, name)
+        fits_widget, fits_status = is_widget and place in WIDGET_AREAS, is_status and place in STATUS_SIDES
+        if not (fits_widget or fits_status):
+            valid = WIDGET_AREAS if is_widget else STATUS_SIDES
+            raise ValueError(f"/ui move: {name} goes in one of {', '.join(valid)}, not {place!r}")
+        if fits_widget:
+            _ui_entry(widgets, name, area=place, order=order)
+        if fits_status:
+            _ui_entry(status, name, side=place, order=order)
+        done = f"move {name} to {place}" + (f", order {order}" if order is not None else "")
+    elif verb == "reset" and len(args) <= 1:
+        if args:
+            _ui_targets(app, args[0])
+            widgets.pop(args[0], None)
+            status.pop(args[0], None)
+            done = f"reset {args[0]}"
+        else:
+            widgets, status = {}, {}
+            changes.update({"ui.sidebar": None, "ui.density": None})
+            done = "reset the layout (sidebar, density, widgets and status segments)"
+    else:
+        raise ValueError(f"usage: {UI_USAGE}")
+    if verb in ("hide", "show", "move", "reset"):
+        changes["ui.widgets"], changes["ui.status"] = widgets or None, status or None
+    try:
+        config.update_global(changes)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"not saved: {e}") from None
+    return done
+
+
+def _ui(args: str, ctx: Context) -> None:
+    app = _app(ctx)
+    words = shlex.split(args)
+    if not words:
+        print(_ui_report(app))
+        return
+    done = _ui_change(app, words)
+    app.reload_extensions()
+    print(f"UI: {done} (saved in {config.SETTINGS_FILE})")
+    project = [
+        layer.scope for layer in app.settings.layers if layer.scope != "global" and any(k.startswith("ui.") for k in layer.data)
+    ]
+    if project:
+        print(f"A {' or '.join(project)} settings file also sets ui.*: it beats this change where it sets the same thing.")
+
+
 EXT_USAGE = "/ext [list|search <query> [category]|publish <path> [name]]"
 
 _ADD = "\x00add"
 _REMOVE = "\x00remove"
 """Marketplace-picker option values that cannot be URLs."""
+
+
+def _ext_relations(path: Path) -> str:
+    """``(needs a, b; conflicts with c)`` from the extension's ``__depends__`` and ``__conflicts__``; ``""`` if none or unreadable."""
+    try:
+        source = loader.read_extensions([path])[0]
+        meta = read_metadata(source.entry, str(source.entry_path))
+    except (OSError, ValueError):
+        return ""
+    parts = [f"needs {', '.join(meta.depends)}"] if meta.depends else []
+    parts += [f"conflicts with {', '.join(meta.conflicts)}"] if meta.conflicts else []
+    return f"({'; '.join(parts)})" if parts else ""
 
 
 def _ext(args: str, ctx: Context) -> None:
@@ -349,7 +519,7 @@ def _ext(args: str, ctx: Context) -> None:
         rows = marketplace.installed(app.cwd)
         for where, category, path in rows:
             disabled = "disabled" if loader.ext_id(path) in app.settings.disabled else ""
-            print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled}".rstrip())
+            print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled} {_ext_relations(path)}".rstrip())
         if not rows:
             print("(none)")
     elif words[0] == "search" and 2 <= len(words) <= 3:
@@ -632,6 +802,7 @@ def register_builtin_commands(registry: Registry) -> None:
         ("extensions", _ext, ext, False),
         ("copy", _copy, "copy the last assistant message, or the n-th from the end: /copy [n]", False),
         ("export", _export, "write the session as Markdown, default ./minimal-session-<id>.md: /export [path] [--force]", False),
+        ("ui", _ui, UI_HELP, False),
         ("quit", _exit, "quit", False),
         ("setup", _setup, "choose and save the default provider, its login or key, and the model", True),
         ("login", _login, "sign in to a provider that uses a login (a subscription, an account): /login [provider]", True),

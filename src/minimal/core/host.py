@@ -19,10 +19,12 @@ from typing import TYPE_CHECKING
 from minimal import config
 from minimal.core.agents import AgentInfo, UsageTotals
 from minimal.core.context import Context
+from minimal.core.layout import Bound, Layout, resolve, resolve_keys
 from minimal.extensions.registry import (
     Command,
     CommandComplete,
     CommandRun,
+    KeybindingSpec,
     LogoSpec,
     PanelSpec,
     RendererSpec,
@@ -183,6 +185,25 @@ class Host:
     def logo(self) -> LogoSpec | None:
         """The extension logo for the welcome header (``register_logo``), or ``None``."""
         return self._app.registry.logo
+
+    @property
+    def keybindings(self) -> Mapping[str, KeybindingSpec]:
+        """Global keys extensions bound (``register_keybinding``), by key. API 2.3.
+
+        Bind what :meth:`key_map` returns instead: it applies the user's ``ui.keys``. Run one as ``spec.run(ctx)`` on
+        a worker thread, as for a slash command.
+        """
+        return types.MappingProxyType(self._app.registry.keybindings)
+
+    def layout(self) -> Layout:
+        """Where every widget, panel and status segment goes: what extensions registered with the user's
+        ``ui.widgets``, ``ui.status`` and ``ui.sidebar`` applied, in stacking order (:func:`minimal.core.layout.resolve`). API 2.3."""
+        return resolve(self._app.registry, self._app.settings)
+
+    def key_map(self) -> tuple[list[Bound], list[str]]:
+        """``(bindings, problems)``: minimal's key actions and the extensions' keybindings on the keys they end up
+        on, with the user's ``ui.keys`` applied (:func:`minimal.core.layout.resolve_keys`). API 2.3."""
+        return resolve_keys(self._app.registry, self._app.settings)
 
     # --- acting on minimal ----------------------------------------------------
 

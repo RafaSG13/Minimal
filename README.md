@@ -163,6 +163,7 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 | `/theme [name]`              | Pick the colour theme; the choice is saved in `~/.minimal/settings.json`   |
 | `/copy [n]`                  | Copy the last assistant message (the `n`-th from the end) to the clipboard: OSC 52 through the terminal, and `pbcopy`, `wl-copy`, `xclip` or `xsel` when installed; it says which |
 | `/export [path] [--force]`   | Write the session as Markdown to `path` (default `./minimal-session-<id>.md`); an existing file is only overwritten with `--force`. Tool calls and results are summarised and cut, images are placeholders |
+| `/ui …`                      | Show the layout and keys, or change them: `sidebar left\|right\|hidden`, `density compact`, `hide`/`show`/`move <name> …`, `reset` |
 | `/reload`                    | Reload extensions and settings from disk                                   |
 | `/settings`                  | Show the settings files and each effective setting with where it comes from |
 | `/trust`                     | Scan this project's extensions and trust-gated settings, then choose whether to trust and apply them |
@@ -174,7 +175,7 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 
 `Esc` interrupts the turn in progress: a running `bash` command is killed. It takes effect at the next streamed chunk, tool call or model request. If the model had already replied, the turn stays in the history, closed with a `[turn interrupted: …]` note and an error result for each tool call that had not finished, so the model still knows what it did; otherwise the turn is dropped and the same prompt can be sent again. Interrupting during an automatic compaction (the `compact` extension) aborts it and keeps the answer. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
 
-Typing `/` and part of a command suggests the rest; `→` accepts it. Click a tool call to expand its output (up to 500 lines) and again to collapse it; edits show a diff with the file's line numbers, and `read`/`write` show syntax-highlighted code. `Ctrl+B` hides or shows the sidebar.
+Typing `/` and part of a command suggests the rest; `→` accepts it. Click a tool call to expand its output (up to 500 lines) and again to collapse it; edits show a diff with the file's line numbers, and `read`/`write` show syntax-highlighted code. `Ctrl+B` hides or shows the sidebars. The layout is yours to shape without code: `/ui` and the `ui.*` settings move, reorder and hide widgets and status segments, rebind keys (`ui.keys`), set the density and the prompt, and load your own Textual stylesheet (`ui.css`); extensions can bind keys too ([docs/settings.md](docs/settings.md#ui-settings)).
 
 ### The composer
 
@@ -210,7 +211,7 @@ With `ui.notify` set to `bell` or `osc9`, a turn that took longer than `ui.notif
 
 ## Settings
 
-Settings are layered JSON files: `~/.minimal/settings.json` (global) < `.minimal/settings.json` (project, shared with the repository) < `.minimal/settings.local.json` (local, personal), then the environment, then the command line. They hold the provider, model and theme, extra prompt text and prompt files, permission rules, disabled extensions and per-extension settings, and (global only) the marketplaces and base prompt. `/settings` shows where each value comes from.
+Settings are layered JSON files: `~/.minimal/settings.json` (global) < `.minimal/settings.json` (project, shared with the repository) < `.minimal/settings.local.json` (local, personal), then the environment, then the command line. They hold the provider, model and theme, extra prompt text and prompt files, permission rules, disabled extensions and per-extension settings, the interface layout (`ui.*`), and (global only) the marketplaces and base prompt. `/settings` shows where each value comes from.
 
 ```json
 {
@@ -349,6 +350,7 @@ src/minimal/         packages from the bottom up; each imports only from the one
     agent.py         agent loop (model → tools → model …)
     app.py           App: runtime state, settings, provider switching, system prompt, one user turn, extension reload, Frontend
     host.py          Host: what the terminal UI drives minimal with
+    layout.py        the UI layout and key map: what extensions registered plus the user's ui.* settings
     context.py       Context and UI: the ctx extensions receive
     permissions.py   permission rules: allow/deny matching for tool calls
     session.py       JSONL sessions (~/.minimal/sessions)
@@ -363,7 +365,7 @@ src/minimal/         packages from the bottom up; each imports only from the one
   cli.py             option parsing, entry point, `minimal ext check`
   api.py             the only module extensions import from: Extension, Context, event types, glyphs, …
 extensions/
-  example.py         example extension (tool, command, guardrail with a setting, prompt note, sidebar widget)
+  example.py         example extension (tool, command, guardrail with a setting, prompt note, sidebar panel, key)
 scripts/logo.py      standalone image -> header-logo extension converter (`uv run scripts/logo.py IMAGE`; not in the wheel)
 tests/               unittest suite (see Development)
 ```
@@ -408,6 +410,7 @@ CI runs one Ubuntu job on every pull request and on `main` (Python 3.12: `ruff`,
 | `test_security.py`    | Trust digests and the `/trust` scan, `project_trusted`                                           |
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
+| `test_customisation.py` | Keybindings, areas and ordering, `ui.*` settings and `/ui` through the pilot, `__depends__`/`__conflicts__` loading |
 | `test_tui.py`         | The Textual UI through Textual's pilot: streaming turns, dialogs, `/theme`, widgets and panels, the untrusted notice |
 | `test_bundled_extensions.py` | Marketplace items through `App`: web search, subagent, compaction (also in the middle of a turn), retries, scope fence. Loads them from `../minimal-marketplace` or `$MARKETPLACE_CHECKOUT`; skipped without a checkout |
 

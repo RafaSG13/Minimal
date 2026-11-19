@@ -348,7 +348,7 @@ class ProjectBadgeTest(BundledExtensionTest):
     def test_settings_problems_name_the_fix(self):
         check = self.module.check_settings
         self.assertEqual(check(self.settings), [])
-        self.assertIn("one of top, bottom, sidebar", check({**self.settings, "area": "left"})[0])
+        self.assertIn("one of top, bottom, sidebar, left, footer", check({**self.settings, "area": "nowhere"})[0])
         self.assertIn("at least 8", check({**self.settings, "width": 3})[0])
         both = {**self.settings, "show_project": False, "show_branch": False}
         self.assertIn("empty", check(both)[0])
