@@ -1,0 +1,18 @@
+docs/extensions.md
+  h_e81853c41416fb 3,578
+extensions/example.py
+  h_e81853c41416fb 14
+src/minimal/__init__.py
+  h_e81853c41416fb 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "cb6641dae74cbe53191a913e0ed4c89da0b523e9",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
