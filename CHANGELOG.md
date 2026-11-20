@@ -60,6 +60,9 @@
   `complete(args, ctx) -> list[str]`, offered in the composer's popup (`Tab` cycles); `Host.complete_args()` and
   `Command.complete` expose it. `/theme`, `/mode`, `/resume`, `/provider`, `/login`, `/logout` and `/ext` complete their
   arguments.
+- Typing `/` in the prompt lists the slash commands with their descriptions, narrowed as you type; `Up`/`Down` move,
+  `Enter` runs the highlighted one and `Tab` completes it into the prompt to add arguments. The marketplace's
+  `command_menu` item, which patched the old single-line prompt, is retired by this.
 - `register_keybinding(key, run, description="", *, show=False, name="")` and the `@minimal.keybinding(key, ...)`
   decorator bind a global key to `run(ctx)`, run on a worker thread like a slash command; errors are shown once. Keys the
   UI needs (`RESERVED_KEYS`) and bare letters are refused, and a duplicate key between extensions is reported on

@@ -19,7 +19,7 @@ Keys in the composer:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from textual import events
@@ -75,13 +75,16 @@ class CommandSuggester(Suggester):
 class Completion:
     """What the popup offers: ``items`` replace the text between ``start`` and ``end`` (document locations).
 
-    ``kind`` is ``"mention"`` (project files after ``@``) or ``"args"`` (a command's :attr:`Command.complete`).
+    ``kind`` is ``"command"`` (the slash commands starting what was typed, with their descriptions: ``Enter`` runs the
+    highlighted one, ``Tab`` completes it), ``"mention"`` (project files after ``@``) or ``"args"`` (a command's
+    :attr:`Command.complete`).
     """
 
     kind: str
     items: list[str]
     start: tuple[int, int]
     end: tuple[int, int]
+    notes: list[str] = field(default_factory=list)
 
 
 class CompletionPopup(Static):
@@ -95,26 +98,28 @@ class CompletionPopup(Static):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__("", markup=False, **kwargs)
         self.items: list[str] = []
+        self.notes: list[str] = []
         self.index = 0
 
-    def show(self, items: list[str], index: int = 0) -> None:
-        """Offer ``items`` with ``index`` highlighted; nothing to offer hides the popup."""
-        self.items, self.index = items, index
+    def show(self, items: list[str], index: int = 0, notes: list[str] | None = None) -> None:
+        """Offer ``items`` with ``index`` highlighted (``notes``: a description after each, dimmed); nothing to offer
+        hides the popup."""
+        self.items, self.index, self.notes = items, index, notes or []
         self.set_class(bool(items), "-open")
         if items:
             first = max(0, index - POPUP_ROWS + 1)
-            rows = [
-                Content.assemble(
-                    ("▸ " if i == index else "  ", "$accent"), (item, "$accent bold" if i == index else "$muted")
-                )
-                for i, item in enumerate(items[first : first + POPUP_ROWS], first)
-            ]
+            rows = []
+            for i, item in enumerate(items[first : first + POPUP_ROWS], first):
+                pieces = [("▸ " if i == index else "  ", "$accent"), (item, "$accent bold" if i == index else "$muted")]
+                if i < len(self.notes) and self.notes[i]:
+                    pieces.append((f"  {self.notes[i]}", "$dim"))
+                rows.append(Content.assemble(*pieces))
             self.update(Content("\n").join(rows))
 
     def move(self, step: int) -> None:
         """Highlight the next (``1``) or previous (``-1``) completion, wrapping around."""
         if self.items:
-            self.show(self.items, (self.index + step) % len(self.items))
+            self.show(self.items, (self.index + step) % len(self.items), self.notes)
 
 
 class QueuedView(Static):
@@ -303,6 +308,10 @@ class Composer(TextArea):
                 self._apply()
             self._close_popup()
             return
+        if self._completion is not None and self._completion.kind == "command" and self.popup.items:
+            item = self.popup.items[self.popup.index]
+            if item != self.text:
+                self.replace(item, self._completion.start, self._completion.end)
         self._close_popup()
         self.post_message(self.Submitted(self, self.text.strip()))
 
@@ -343,7 +352,7 @@ class Composer(TextArea):
         completion = self._find_completion()
         self._applied = False
         self._completion = completion
-        self.popup.show(completion.items if completion else [])
+        self.popup.show(completion.items if completion else [], 0, completion.notes if completion else None)
 
     def _find_completion(self) -> Completion | None:
         if not self.selection.is_empty:
@@ -356,8 +365,8 @@ class Composer(TextArea):
         if begin < col and line[begin] == "@":
             return self._mention(row, begin + 1, col, line)
         text = self.text
-        if text.startswith("/") and " " in text and "\n" not in text and self.cursor_at_end_of_text:
-            return self._args(text)
+        if text.startswith("/") and "\n" not in text and self.cursor_at_end_of_text:
+            return self._args(text) if " " in text else self._command(text)
         return None
 
     def _mention(self, row: int, start: int, col: int, line: str) -> Completion | None:
@@ -368,6 +377,15 @@ class Composer(TextArea):
         if not found or found == [line[start:end]]:
             return None
         return Completion("mention", found, (row, start), (row, end))
+
+    def _command(self, text: str) -> Completion | None:
+        """The slash commands that start ``text`` (all of them for ``/``), each with its description."""
+        names = self.host.complete(text)
+        if not names or names == [text]:
+            return None
+        commands = self.host.commands()
+        notes = [commands[name[1:]].description if name[1:] in commands else "" for name in names]
+        return Completion("command", names, (0, 0), self.document.end, notes)
 
     def _args(self, text: str) -> Completion | None:
         name, _, args = text[1:].partition(" ")

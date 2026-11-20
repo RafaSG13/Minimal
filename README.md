@@ -188,6 +188,7 @@ The prompt is a multi-line editor that grows with the text up to `ui.composer_ma
 | `Up` on the first line, `Down` on the last | Walk the project's prompt history (kept in `~/.minimal/data/projects/<key>/history.json`); what you had typed comes back after the newest entry |
 | `@` and some letters | Complete a project file (`.gitignore` is respected; letters may skip: `@rdm` finds `README.md`). `Up`/`Down` move, `Tab` puts one in the text (again for the next), `Enter` accepts it, `Esc` closes the list |
 | `/command ` and some letters | Complete the command's arguments when it offers completions: `/theme`, `/mode`, `/resume`, `/provider`, `/ext` and extension commands ([`complete`](docs/extensions.md#commands)); same keys |
+| `/` and some letters | List the slash commands that start with them, with their descriptions. `Up`/`Down` move, `Enter` runs the highlighted one, `Tab` puts it in the text to add arguments, `Esc` closes the list |
 | `→` or `Tab` after `/re` | Accept the ghost suggestion of a command name |
 | `Ctrl+P` | The command palette lists every slash command; choosing one runs it, or types `/name ` when it needs an argument |
 

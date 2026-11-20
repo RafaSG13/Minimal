@@ -464,6 +464,25 @@ class CommandCompleteTest(ComposerTestBase):
             await self.type(pilot, "/theme m")
             self.assertEqual(popup.items, ["minimal"])
 
+    async def test_typing_a_slash_lists_the_commands_with_descriptions_and_enter_runs_the_highlighted_one(self):
+        self.build()
+        self.core.registry.register_command("zeta", lambda a, c: print("zeta ran"), "the last one")
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            popup = app.query_one(CompletionPopup)
+            await self.type(pilot, "/")
+            self.assertIn("/zeta", popup.items)
+            self.assertEqual(popup.notes[popup.items.index("/zeta")], "the last one")
+            self.assertEqual(popup.items, sorted(popup.items))
+            await self.type(pilot, "ze")
+            self.assertEqual(popup.items, ["/zeta"])
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            self.assertEqual(self.composer(app).text, "")
+            self.assertIn("zeta ran", "\n".join(str(s.render()) for s in app.query(".output").results(Static)))
+            await self.type(pilot, "/zeta")
+            self.assertEqual(popup.items, [])  # an exact name needs no menu
+
     def test_host_completes_arguments_and_rejects_a_bad_return(self):
         self.build()
         host = Host(self.core)
