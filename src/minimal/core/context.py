@@ -17,9 +17,11 @@ from typing import TYPE_CHECKING, Any
 
 from minimal.core import agent
 from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun, UsageTotals
+from minimal.core.git import GitInfo
+from minimal.core.layout import resolve_keys
 from minimal.core.session import list_sessions, new_id, open_session
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import ModeSpec, Tool, TurnInterrupted
+from minimal.extensions.registry import KeyInfo, ModeSpec, ThemeInfo, Tool, TurnInterrupted
 from minimal.providers.base import Reply, result_text
 
 if TYPE_CHECKING:
@@ -121,6 +123,50 @@ class Context:
     def context_tokens(self) -> int | None:
         """Size of the context after the last reply that reported usage; ``None`` if none did."""
         return self._app.context_tokens
+
+    @property
+    def context_window(self) -> int | None:
+        """The current model's context size in tokens, or ``None`` if unknown. API 2.3.
+
+        The ``context_window`` setting (an integer) wins; else the provider's own table
+        (:attr:`~minimal.providers.base.ProviderSpec.context_windows`), else minimal's table of the built-in providers'
+        model families by name prefix. Divide :attr:`context_tokens` by it for a gauge."""
+        return self._app.context_window
+
+    @property
+    def theme(self) -> ThemeInfo:
+        """The current colour theme, every colour resolved to ``#rrggbb`` (:class:`~minimal.extensions.registry.ThemeInfo`). API 2.3.
+
+        The terminal UI's theme (the built-in ``minimal`` one when no UI shows themes); read it again after
+        ``theme_change``. Use it for colours a style string cannot name: ``ctx.theme.colors["accent"]``."""
+        return self._app.theme_info()
+
+    def invalidate(self) -> None:
+        """Ask the UI to redraw panels, status segments and widgets now. API 2.3.
+
+        For code that learns of a change off the UI thread (a poller, a subscription): call it from any thread instead
+        of polling with a panel ``interval``. It is cheap and coalesced: calls arriving while a redraw is already
+        pending share it. The terminal UI calls each panel's ``render``, each status segment and each widget's
+        ``refresh_state``; a frontend that shows none of those does nothing."""
+        self._app.invalidate()
+
+    def git(self) -> GitInfo | None:
+        """The state of the working directory's git repository (:class:`~minimal.core.git.GitInfo`: branch, ahead/behind,
+        counts of staged, unstaged and untracked files, up to 50 changed files). API 2.3.
+
+        One background poller shared by every caller refreshes it every ``git.refresh`` seconds (default 3) and calls
+        :meth:`invalidate` when it changes; the first call starts it. Cheap: it returns the cached result and never runs
+        git itself. ``None`` until the first poll ends and outside a git repository."""
+        return self._app.git_info()
+
+    def keybindings(self) -> list[KeyInfo]:
+        """Every bound key as a help screen lists it: minimal's own actions (as ``ui.keys`` remapped them) then the
+        extensions' keybindings (:class:`~minimal.extensions.registry.KeyInfo`). API 2.3. A binding the user unbound
+        is left out."""
+        bound, _ = resolve_keys(self._app.registry, self._app.settings)
+        return [
+            KeyInfo(b.key, b.id, b.description, "built-in" if b.spec is None else b.spec.ext) for b in bound if b.key
+        ]
 
     @property
     def tools(self) -> Mapping[str, Tool]:

@@ -283,6 +283,7 @@ The default marketplace is [`RafaSG13/minimal-marketplace`](https://github.com/R
 /ext list                         list installed items by scope and category
 /ext search <query> [category]    search every marketplace by name, description or tag
 /ext publish <path> [name]        push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
+/ext settings [<id> [<key> <value>]]  list the settings extensions declare, show one extension's, or change a value
 ```
 
 `/ext` lists the default marketplace, `$MINIMAL_MARKETPLACE` and the ones you added. "Add a marketplace…" takes a git URL or a local path, checks that it can be cloned and saves it under `marketplaces` in `~/.minimal/settings.json`; "Remove a saved marketplace…" forgets one. Picking a marketplace shows its categories with item and install counts; picking a category shows a checklist with installed items ticked. Tick to install (then choose the global or the project folder), untick to uninstall; items with a newer version on offer are offered for update. `Space` toggles, `Enter` applies, `Esc` cancels; extensions are reloaded afterwards. `/ext publish` files an extension under the category of the folder it comes from (`~/.minimal/extensions/themes/x.py` → `themes/`), else under `extensions/`.

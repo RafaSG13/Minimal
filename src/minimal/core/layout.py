@@ -55,10 +55,14 @@ class Placed:
         order: Its position among the others of its place, lower first.
         enabled: ``False`` if the user hid it (or ``ui.sidebar`` is ``hidden`` and it is in the sidebar).
         source: ``"extension"`` or ``"built-in"``.
-        overridden: Which of ``area``/``side``, ``order`` and ``enabled`` the user's settings changed.
+        overridden: Which of ``area``/``side``, ``order``, ``enabled``, ``title`` and ``collapsed`` the user's settings changed.
         spec: The extension's spec; ``None`` for a built-in segment.
         note: Why it is not shown, besides the user hiding it.
         seq: Registration sequence, breaking ties of ``order``.
+        title: The heading drawn above a widget or panel (the user's ``ui.widgets`` ``title`` over the extension's); ``None`` or
+            ``""`` for none. Always ``None`` for a status segment.
+        collapsible: Whether a click or Enter on the heading collapses it (the extension's ``collapsible``).
+        collapsed: Whether it starts collapsed to its heading (the user's ``collapsed``).
     """
 
     kind: str
@@ -71,6 +75,9 @@ class Placed:
     spec: Any = None
     note: str = ""
     seq: int = 0
+    title: str | None = None
+    collapsible: bool = False
+    collapsed: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,8 +126,9 @@ def resolve(registry: Registry, settings: config.Settings) -> Layout:
             placements.append(
                 Placed(
                     kind, name, area, over.get("order", spec.order), enabled, "extension",
-                    tuple(f for f in ("area", "order", "enabled") if f in over), spec, note,
+                    tuple(f for f in ("area", "order", "enabled", "title", "collapsed") if f in over), spec, note,
                     registry.placement_index(kind, name),
+                    over["title"] if "title" in over else spec.title, spec.collapsible, over.get("collapsed", False),
                 )
             )  # fmt: skip
     for name, (side, order, _) in BUILTIN_SEGMENTS.items():

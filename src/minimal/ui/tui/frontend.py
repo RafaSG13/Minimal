@@ -84,6 +84,12 @@ class TuiFrontend:
     def mode_changed(self) -> None:
         self._on_ui(self.tui._render_status)
 
+    def invalidate(self) -> None:
+        self.tui.invalidate()
+
+    def theme_name(self) -> str | None:
+        return self.tui.theme
+
     def progress(self, text: str | None) -> None:
         self._on_ui(self.tui.set_progress, text)
 

@@ -60,14 +60,19 @@ agent a tool starts with ``ctx.run_agent``) has an ``agent_id`` (``"main"`` for 
     ``mode_change``  ``{ctx, old, new}``
         Fired when the current mode changes (``ctx.set_mode``, ``/mode``, a reload that lost the mode).
         ``old`` and ``new`` are mode names or ``None`` (no mode). Results are ignored.
+    ``theme_change`` ``{ctx, name, dark}``
+        Fired after the terminal UI's colour theme changed (``/theme``, the ``Ctrl+P`` theme picker, or a reload that
+        switched it); ``name`` and ``dark`` are the new theme's (``ctx.theme`` has its colours). Not fired for the theme
+        the UI starts with. A frontend without themes never fires it. API 2.3. Results are ignored.
 """
 
 from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass
-from collections.abc import Callable, Iterable
+import types
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from minimal import config
@@ -109,6 +114,7 @@ EVENTS = (
     "agent_start",
     "agent_end",
     "mode_change",
+    "theme_change",
 )
 """Events an extension can subscribe to with ``on``."""
 
@@ -157,7 +163,68 @@ THEME_COLORS = (
 STYLE_COLORS = ("foreground", "accent", "secondary", "success", "warning", "error", "muted", "dim", "diff_added", "diff_removed")
 STYLE_MODIFIERS = ("bold", "italic", "underline", "reverse")
 STYLES = STYLE_COLORS + STYLE_MODIFIERS
-"""Names a style string may combine, space-separated: ``"bold muted"``. ``""`` is the default style."""
+"""Names a style string may combine, space-separated: ``"bold muted"``. ``""`` is the default style.
+
+API 2.3 widened it: a piece may also be ``$name`` (a theme colour such as ``$code``, ``$model``, ``$git_dirty`` or a CSS
+variable of the terminal UI such as ``$border-muted``, ``$accent``; see :data:`CSS_VARIABLES`) or ``#rrggbb``, combined
+with the modifiers: ``"bold $code"``, ``"#ff8800 underline"``."""
+
+CSS_VARIABLES = {
+    "surface": "surface",
+    "panel": "panel",
+    "secondary": "secondary",
+    "success": "success",
+    "warning": "warning",
+    "error": "error",
+    "muted": "muted",
+    "dim": "dim",
+    "border": "border-muted",
+    "focus": "border-blue",
+    "user_bg": "user-message-bg",
+    "pending_bg": "tool-pending-bg",
+    "success_bg": "tool-success-bg",
+    "error_bg": "tool-error-bg",
+    "code": "md-code",
+    "model": "status-model",
+    "path": "status-path",
+    "status_bg": "status-bg",
+    "git_clean": "status-git-clean",
+    "git_dirty": "status-git-dirty",
+    "selection": "input-selection-background",
+    "diff_added": "diff-added",
+    "diff_removed": "diff-removed",
+    "background": "background",
+    "foreground": "foreground",
+    "accent": "accent",
+}
+"""The CSS variable the terminal UI defines for each theme colour (:data:`THEME_COLORS`, ``background``,
+``foreground`` and ``accent``): ``code`` is ``$md-code``, ``border`` is ``$border-muted``. API 2.3."""
+
+EXTRA_VARIABLES = ("primary", "border-accent", "modal-overlay")
+"""CSS variables of the terminal UI that are no theme colour of their own but may be named in styled text. API 2.3."""
+
+
+def style_variable(name: str) -> str | None:
+    """The CSS variable ``$name`` stands for in styled text (``name`` without the ``$``), or ``None`` if it is none.
+
+    ``name`` is a theme colour (``code``, ``git_dirty``; ``-`` for ``_`` is fine) or a CSS variable the terminal UI
+    defines (``md-code``, ``border-muted``, ``user-message-bg``, ``primary``, …). API 2.3."""
+    key = name.replace("-", "_")
+    if key in CSS_VARIABLES:
+        return CSS_VARIABLES[key]
+    if name in CSS_VARIABLES.values() or name in EXTRA_VARIABLES:
+        return name
+    return None
+
+
+def valid_style_token(token: str) -> bool:
+    """Whether ``token`` is one piece of a style string: a name of :data:`STYLES`, ``$name`` or ``#rrggbb``."""
+    if token in STYLES:
+        return True
+    if token.startswith("$"):
+        return style_variable(token[1:]) is not None
+    return _HEX_COLOR.fullmatch(token) is not None
+
 
 StyledLine = list[tuple[str, str]]
 """One line of styled text: ``(text, style)`` pieces."""
@@ -168,8 +235,8 @@ def _piece(piece: Any) -> tuple[str, str]:
         return (piece, "")
     if isinstance(piece, tuple) and len(piece) == 2 and isinstance(piece[0], str) and isinstance(piece[1], str):
         for token in piece[1].split():
-            if token not in STYLES:
-                raise ValueError(f"unknown style {token!r}; use names from STYLES")
+            if not valid_style_token(token):
+                raise ValueError(f"unknown style {token!r}; use names from STYLES, $name or #rrggbb")
         return piece
     raise ValueError(f"expected text, (text, style) or a list of them; got {type(piece).__name__}")
 
@@ -270,12 +337,16 @@ class WidgetSpec:
             returns a ``textual.widget.Widget``.
         area: One of :data:`WIDGET_AREAS`.
         order: The widgets and panels of an area go by ``order``, lower first (API 2.3).
+        title: A heading line drawn above the widget (API 2.3); ``None`` for none. ``ui.widgets.<name>.title`` overrides it.
+        collapsible: A click or Enter on the heading collapses the widget to it (API 2.3); needs a title.
     """
 
     name: str
     create: Callable[[Any], Any]
     area: str = "sidebar"
     order: int = 0
+    title: str | None = None
+    collapsible: bool = False
 
 
 @dataclass
@@ -289,6 +360,9 @@ class PanelSpec:
         live: Called as ``live(ctx, event)`` on turn and tool events, or ``None``.
         interval: Seconds between redraws; ``0`` for none.
         order: The widgets and panels of an area go by ``order``, lower first (API 2.3).
+        title: A heading line drawn above the panel's lines (API 2.3); ``None`` for none. ``ui.widgets.<name>.title``
+            overrides it, ``""`` hides it.
+        collapsible: A click or Enter on the heading collapses the panel to it (API 2.3); needs a title.
     """
 
     name: str
@@ -297,6 +371,8 @@ class PanelSpec:
     live: Callable[[Any, dict], Any] | None = None
     interval: float = 0.0
     order: int = 0
+    title: str | None = None
+    collapsible: bool = False
 
 
 @dataclass
@@ -419,6 +495,126 @@ class KeybindingSpec:
         return f"{self.ext}:{self.label}" if self.ext else self.label
 
 
+@dataclass(frozen=True)
+class KeyInfo:
+    """One key of the terminal UI, as ``ctx.keybindings()`` lists it. API 2.3.
+
+    Attributes:
+        key: The key in Textual's spelling (``ctrl+o``), as the user's ``ui.keys`` left it.
+        action: What it runs: a built-in action (``interrupt``, ``toggle_sidebar``, ``cycle_mode``) or an extension's
+            ``<extension id>:<name>``, which is also what ``ui.keys`` calls it.
+        description: One line saying what it does.
+        source: ``"built-in"`` for minimal's own actions, else the id of the extension that bound it.
+    """
+
+    key: str
+    action: str
+    description: str
+    source: str
+
+
+@dataclass(frozen=True)
+class CssSpec:
+    """A Textual stylesheet an extension adds (see :meth:`Registry.register_css`). API 2.3.
+
+    Attributes:
+        name: What replaces it: registering the same ``name`` of the same extension again replaces it.
+        css: The stylesheet text.
+        ext: The id of the extension that registered it.
+    """
+
+    name: str
+    css: str
+    ext: str = ""
+
+    @property
+    def id(self) -> str:
+        """``<extension id>:<name>``: how errors name it."""
+        return f"{self.ext}:{self.name}" if self.ext else self.name
+
+
+SETTING_SCHEMA_KEYS = ("description", "enum", "min", "max")
+"""The keys of one entry of ``declare_settings``'s ``schema`` (API 2.3)."""
+
+
+def setting_matches(default: object, value: object) -> bool:
+    """Whether a user ``value`` has the type of ``default``: ``bool`` is strict, a ``float`` default takes an ``int``."""
+    if isinstance(default, bool) or isinstance(value, bool):
+        return isinstance(default, bool) and isinstance(value, bool)
+    if isinstance(default, float):
+        return isinstance(value, (int, float))
+    return isinstance(value, type(default))
+
+
+def check_setting(default: object, value: object, schema: Mapping[str, Any] | None = None) -> str | None:
+    """Why ``value`` is not a valid value of a setting whose default is ``default`` and whose schema entry is ``schema``;
+    ``None`` if it is valid. The reason is a phrase such as ``must be int`` or ``must be one of 'a', 'b'``. API 2.3."""
+    if not setting_matches(default, value):
+        return f"must be {type(default).__name__}"
+    schema = schema or {}
+    if "enum" in schema and value not in schema["enum"]:
+        return "must be one of " + ", ".join(repr(v) if isinstance(v, str) else str(v) for v in schema["enum"])
+    if "min" in schema and value < schema["min"]:  # type: ignore[operator]
+        return f"must be at least {schema['min']}"
+    if "max" in schema and value > schema["max"]:  # type: ignore[operator]
+        return f"must be at most {schema['max']}"
+    return None
+
+
+def check_schema(defaults: Mapping[str, Any], schema: Mapping[str, Any]) -> None:
+    """Raise ``ValueError`` if ``schema`` (``declare_settings``'s second argument) is malformed for ``defaults``: a key
+    that is not a default, an entry that is not an object of :data:`SETTING_SCHEMA_KEYS`, a ``description`` that is not a
+    string, an ``enum`` that is not a non-empty list of values of the default's type, ``min``/``max`` on a setting that
+    is not a number, or a default that its own schema rejects. API 2.3."""
+    for key, entry in schema.items():
+        what = f"schema['{key}']"
+        if key not in defaults:
+            raise ValueError(f"schema names '{key}', which is not a declared setting (declared: {', '.join(defaults)})")
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"{what} must be an object with {', '.join(SETTING_SCHEMA_KEYS)}")
+        unknown = sorted(set(entry) - set(SETTING_SCHEMA_KEYS))
+        if unknown:
+            raise ValueError(f"{what}: unknown key(s) {', '.join(unknown)}; use {', '.join(SETTING_SCHEMA_KEYS)}")
+        default = defaults[key]
+        if "description" in entry and not isinstance(entry["description"], str):
+            raise ValueError(f"{what}: description must be a string")
+        if "enum" in entry:
+            options = entry["enum"]
+            if not isinstance(options, (list, tuple)) or not options:
+                raise ValueError(f"{what}: enum must be a non-empty list")
+            if not all(setting_matches(default, option) for option in options):
+                raise ValueError(f"{what}: every enum value must be {type(default).__name__}, like the default")
+        numeric = isinstance(default, (int, float)) and not isinstance(default, bool)
+        for bound in ("min", "max"):
+            if bound in entry:
+                if not numeric:
+                    raise ValueError(f"{what}: {bound} needs a number setting; '{key}' is {type(default).__name__}")
+                if isinstance(entry[bound], bool) or not isinstance(entry[bound], (int, float)):
+                    raise ValueError(f"{what}: {bound} must be a number")
+        if "min" in entry and "max" in entry and entry["min"] > entry["max"]:
+            raise ValueError(f"{what}: min is greater than max")
+        problem = check_setting(default, default, entry)
+        if problem:
+            raise ValueError(f"{what}: the default {default!r} {problem}")
+
+
+@dataclass(frozen=True)
+class SettingsSpec:
+    """The settings an extension declared with ``declare_settings`` and what they are now (see ``/ext settings``). API 2.3.
+
+    Attributes:
+        ext: The extension's id.
+        defaults: Every setting and its default.
+        schema: Each documented setting's ``description``, ``enum``, ``min`` and ``max`` (only the keys it gave).
+        values: The effective values: the defaults with the user's valid values over them.
+    """
+
+    ext: str
+    defaults: Mapping[str, Any]
+    schema: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    values: Mapping[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class ThemeSpec:
     """A colour theme an extension adds to the terminal UI (see :meth:`Registry.register_theme`).
@@ -433,6 +629,25 @@ class ThemeSpec:
     name: str
     dark: bool
     colors: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ThemeInfo:
+    """The terminal UI's current colour theme, with every colour resolved (``ctx.theme``). API 2.3.
+
+    Attributes:
+        name: The theme's name.
+        dark: Whether it is a dark theme.
+        colors: ``#rrggbb`` by name (read-only): ``background``, ``foreground``, ``accent`` and every one of
+            :data:`THEME_COLORS`, those a theme leaves out derived.
+    """
+
+    name: str
+    dark: bool
+    colors: Mapping[str, str] = field(hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "colors", types.MappingProxyType(dict(self.colors)))
 
 
 @dataclass
@@ -567,6 +782,8 @@ class Registry:
         panels: Styled-text panels for the terminal UI, by name.
         renderers: Transcript block renderers, by kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``).
         keybindings: Global keys extensions bound, by key (API 2.3).
+        css: Stylesheets extensions added for the terminal UI, by ``<extension id>:<name>`` (API 2.3).
+        declared_settings: What each extension declared with ``declare_settings``, by extension id (API 2.3).
     """
 
     def __init__(self) -> None:
@@ -584,6 +801,8 @@ class Registry:
         self.renderers: dict[str, RendererSpec] = {}
         self._handlers: dict[str, list[EventHandler]] = {}
         self.keybindings: dict[str, KeybindingSpec] = {}
+        self.css: dict[str, CssSpec] = {}
+        self.declared_settings: dict[str, SettingsSpec] = {}
         self._placed: dict[tuple[str, str], int] = {}
         self._disposers: list[Callable[[], Any]] = []
 
@@ -607,6 +826,8 @@ class Registry:
         self.panels.clear()
         self.renderers.clear()
         self.keybindings.clear()
+        self.css.clear()
+        self.declared_settings.clear()
         self._placed.clear()
         self._handlers.clear()
         self._disposers.clear()
@@ -679,7 +900,14 @@ class Registry:
         self.builtin_commands[name] = Command(run, description, terminal, builtin=True, complete=complete)
 
     def register_widget(
-        self, name: str, create: Callable[[Any], Any], area: str = "sidebar", *, order: int = 0
+        self,
+        name: str,
+        create: Callable[[Any], Any],
+        area: str = "sidebar",
+        *,
+        order: int = 0,
+        title: str | None = None,
+        collapsible: bool = False,
     ) -> None:
         """Add a visual component to the terminal UI, replacing any widget with the same name.
 
@@ -700,17 +928,30 @@ class Registry:
 
         The widget is a Textual widget; a :meth:`register_panel` needs no Textual code.
 
+        ``title`` (API 2.3) draws a heading line above the widget (muted and bold; ``ui.widgets.<name>.title`` overrides
+        it, an empty one hides it); with ``collapsible`` a click or Enter on the heading collapses the widget to it
+        (``ui.widgets.<name>.collapsed`` does too, and ``/ui collapse|expand``). The widget is wrapped in a container
+        then, so ``ctx.widget(name)`` still returns the widget itself.
+
         Raises:
-            ValueError: if ``name`` is empty, ``create`` is not callable, ``area`` is unknown or ``order``
-                is not an integer.
+            ValueError: if ``name`` is empty, ``create`` is not callable, ``area`` is unknown, ``order``
+                is not an integer, ``title`` is neither a string nor ``None`` or ``collapsible`` is not a bool.
         """
         if not name or not callable(create):
             raise ValueError("register_widget: name and create are required")
         if area not in WIDGET_AREAS:
             raise ValueError(f"register_widget: area must be one of {', '.join(WIDGET_AREAS)}")
         self._check_order("register_widget", order)
-        self.widgets[name] = WidgetSpec(name, create, area, order)
+        self._check_heading("register_widget", title, collapsible)
+        self.widgets[name] = WidgetSpec(name, create, area, order, title, collapsible)
         self._placed.setdefault(("widget", name), len(self._placed))
+
+    @staticmethod
+    def _check_heading(what: str, title: Any, collapsible: Any) -> None:
+        if title is not None and not isinstance(title, str):
+            raise ValueError(f"{what}: title must be a string or None")
+        if not isinstance(collapsible, bool):
+            raise ValueError(f"{what}: collapsible must be a bool")
 
     @staticmethod
     def _check_order(what: str, order: Any) -> None:
@@ -756,6 +997,8 @@ class Registry:
         interval: float = 0.0,
         *,
         order: int = 0,
+        title: str | None = None,
+        collapsible: bool = False,
     ) -> None:
         """Add a panel of styled text lines that any frontend can draw, replacing any panel with the same name.
 
@@ -776,9 +1019,15 @@ class Registry:
         ``area`` is one of :data:`WIDGET_AREAS`; ``order`` stacks the panels and widgets of an area (see
         :meth:`register_widget`).
 
+        ``title`` (API 2.3) draws a heading line above the panel's lines, muted and bold, in every theme;
+        ``ui.widgets.<name>.title`` overrides it and an empty one hides it. With ``collapsible``, a click or Enter on the
+        heading collapses the panel to it, and ``ui.widgets.<name>.collapsed`` (``/ui collapse|expand``) does too.
+        A panel that renders nothing hides its heading as well.
+
         Raises:
             ValueError: if ``name`` is empty, ``render`` is not callable, ``area`` is unknown,
-                ``live`` is not callable, ``interval`` is not a number >= 0 or ``order`` is not an integer.
+                ``live`` is not callable, ``interval`` is not a number >= 0, ``order`` is not an integer, ``title`` is
+                neither a string nor ``None`` or ``collapsible`` is not a bool.
         """
         if not name or not callable(render):
             raise ValueError("register_panel: name and render are required")
@@ -789,8 +1038,26 @@ class Registry:
         if isinstance(interval, bool) or not isinstance(interval, (int, float)) or interval < 0:
             raise ValueError("register_panel: interval must be a number of seconds >= 0")
         self._check_order("register_panel", order)
-        self.panels[name] = PanelSpec(name, render, area, live, float(interval), order)
+        self._check_heading("register_panel", title, collapsible)
+        self.panels[name] = PanelSpec(name, render, area, live, float(interval), order, title, collapsible)
         self._placed.setdefault(("panel", name), len(self._placed))
+
+    def register_css(self, name: str, css: str, ext: str = "") -> None:
+        """Add a Textual stylesheet to the terminal UI, replacing the one of the same ``name`` (and ``ext``). API 2.3.
+
+        It is applied after the UI's own styles and before the user's ``ui.css``, on every load and reload, and is gone
+        once the extension is no longer loaded. A stylesheet that does not parse is reported once as a UI error and
+        ignored. The selectors the UI keeps stable are listed in ``docs/extensions.md`` (*Styling the terminal UI*).
+
+        Raises:
+            ValueError: if ``name`` is empty or ``css`` is not a string.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("register_css: name is required")
+        if not isinstance(css, str):
+            raise ValueError("register_css: css must be a string")
+        spec = CssSpec(name, css, ext)
+        self.css[spec.id] = spec
 
     def register_keybinding(
         self,

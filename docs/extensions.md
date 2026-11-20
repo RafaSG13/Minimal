@@ -139,6 +139,7 @@ minimal.on("turn_end", lambda event: None)
 | `agent_start`    | `ctx`, `agent_id`, `parent_id`, `name`, `prompt`  | ignored                                                                |
 | `agent_end`      | `ctx`, `agent_id`, `parent_id`, `name`, `status`, `text`, `usage`, `error` | ignored                                           |
 | `mode_change`    | `ctx`, `old`, `new`                              | ignored                                                                |
+| `theme_change`   | `ctx`, `name`, `dark`                            | ignored; the terminal UI's colour theme changed (`/theme`, `Ctrl+P`, reload): API 2.3 |
 
 - `tool_result` sees the tool's whole output: `bash` output is not clipped until after the handlers run (up to 1 MB captured), so a handler can compress it.
 - `turn_end` fires when a loop ends with a reply without tool calls. `nested` is `True` for a loop run inside a tool (`ctx.run_agent`, such as the subagent), whose `messages` are its own history, not `ctx.messages`. Skip nested loops for session-level work: `if event["nested"]: return`.
@@ -196,6 +197,8 @@ def register(minimal):
 - A value must have its default's type. `bool` is strict (`1` is not `true`); a `float` default accepts an `int`.
 - An unknown key or a value of the wrong type is ignored, keeping the default, and reported by `/reload` (and by `reload_extensions`), e.g. `lenses: unknown setting 'min' (declared: min_chars, head, tail)` or `lenses: setting 'head' must be int`.
 - Call it once; a second call raises `ValueError`.
+- `declare_settings(defaults, schema=None)` (API 2.3) also takes `schema`: for any key of `defaults`, `{"description": str, "enum": [...], "min": n, "max": n}` (every field optional; `min`/`max` for numbers, `enum` a non-empty list of values of the default's type). A value outside it is a load error naming `extensions.settings.<id>.<key>` and the default stays. A schema that names an unknown key, has an unknown field or is not satisfied by its own default raises `ValueError` (so `minimal ext check` reports it).
+- The user does not have to edit JSON: `/ext settings` lists every loaded extension's settings with their value, default and description, `/ext settings <id>` details one, `/ext settings <id> <key> <value>` validates and writes it to the global settings file and reloads, and `/ext settings <id> <key> reset` removes it. Put a `description` on every key, it is what the user reads there.
 
 ## `ctx`: the `Context`
 
@@ -230,6 +233,11 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `truncate(at_index)`             | API 2.3. Drops `messages[at_index:]` from the current session, in place, and rewrites the session file atomically; returns how many messages it dropped. Same `ValueError`s as `fork`; it does not fire `session_switch` (same session, so `fork` first to keep the dropped part). Together they make rewind and undo extensions |
 | `usage`                          | API 2.3. `UsageTotals` of everything this minimal process has spent: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` and `requests`, counting the user's turns, the agents they start and `complete`/`complete_text`. A snapshot. Per process: a new or resumed session does not reset it and `minimal -c` starts again from zero. `/usage` prints it |
 | `progress(text)`                 | API 2.3. A one-line progress note (first line, at most 120 characters) shown next to the working indicator while a tool or command runs; `None` (or blank text) clears it, and the terminal UI clears it when the turn or command ends. Call it as often as you like, from any thread. The plain terminal prints each change on stderr when it is a terminal |
+| `invalidate()`                   | API 2.3. Asks the UI to redraw panels, status segments and widgets (`render` and `refresh_state` run again). Cheap, coalesced and safe from any thread: call it from a poller or subscription when its data changed, instead of a panel `interval`. A frontend without panels does nothing |
+| `theme`                          | API 2.3. The terminal UI's current colour theme as a `ThemeInfo`: `name`, `dark` and `colors`, every colour of `THEME_COLORS` plus `background`, `foreground` and `accent` as `#rrggbb` (read-only). Read it again after `theme_change` |
+| `context_window`                 | API 2.3. The current model's context size in tokens, or `None` if unknown: the `context_window` setting, else the provider's own table, else minimal's table of the built-in providers' model families (longest name prefix). `context_tokens / context_window` is a gauge |
+| `git()`                          | API 2.3. The working directory's repository as a cached `GitInfo` (`branch`, `dirty`, `ahead`, `behind`, `staged`, `unstaged`, `untracked`, `files`: up to 50 `(status, path)` pairs), or `None` before the first poll ends and outside a repository. One background poller shared with the status line refreshes it every `git.refresh` seconds (default 3) and calls `invalidate()` when it changes; the call itself never runs git |
+| `keybindings()`                  | API 2.3. Every bound key as a `KeyInfo` (`key`, `action`, `description`, `source`: `"built-in"` or the extension id), minimal's own actions as `ui.keys` remapped them first: what a help screen lists |
 | `sessions(*, all_projects=False)` | Saved session ids, oldest first: those started in this `cwd`, or every project's with `all_projects=True` |
 | `read_session(session_id)`       | The messages of a saved session; `ValueError` if there is none                             |
 | `reload()`                       | Reloads every extension from disk; returns the summary                                     |
@@ -364,6 +372,8 @@ minimal.register_panel("session", render, area="sidebar")
 
 `register_panel(name, render, area="sidebar", live=None, interval=0, *, order=0)` adds styled text to the terminal UI without Textual code, in `area` (`WIDGET_AREAS`; see [Placement](#placement-and-the-users-layout) for the areas and `order`). `render(ctx)` returns `None` to hide the panel, a string (one line per `\n`) or a list of lines; a line is a string, a `(text, style)` tuple or a list of those pieces. A style is space-separated names from `STYLES`: colours `foreground`, `accent`, `secondary`, `success`, `warning`, `error`, `muted`, `dim`, `diff_added`, `diff_removed` and the modifiers `bold`, `italic`, `underline`, `reverse` (`"bold muted"`); `""` is the default; any other name is an error. `render` runs on the UI thread after mount, after every turn, command and reload, after each `live` event and every `interval` seconds (`> 0`), so keep it cheap and never block: start a thread for slow work and return what it last found. `live(ctx, event)` receives `{"kind": "start", "turn": bool}`, `{"kind": "tool_call", "call": dict}`, `{"kind": "tool_result", "call": dict, "result": dict}` and `{"kind": "end"}` (after every turn or command and after every mount). A panel that raises is hidden and reported once.
 
+API 2.3 adds to the style names: `$name` is a theme colour (`$code`, `$model`, `$git_dirty`, …) or a CSS variable of the UI (`$border-muted`, `$accent`; `CSS_VARIABLES`), and `#rrggbb` is a literal colour; both combine with the modifiers (`"bold $code"`, `"#ff8800 underline"`) and a `$name` follows `/theme`. And `register_panel(..., title="…", collapsible=True)` draws a heading line (muted, bold) above the lines; with `collapsible` a click on it, or Enter when it is focused, collapses the panel to the heading. The user can change the heading and the state with `ui.widgets.<name>.title` and `.collapsed` or `/ui title|collapse|expand <name>`.
+
 ## Widgets
 
 ```python
@@ -382,9 +392,34 @@ minimal.register_widget("session", lambda ctx: SessionPanel(), area="sidebar")
 
 To only show text, use a [panel](#panels): it needs no Textual code.
 
+`register_widget(..., title="…", collapsible=True)` (API 2.3) puts a heading line above the widget; with `collapsible`, a click on the heading (or Enter when it is focused) hides the widget and leaves the heading. The user's `ui.widgets.<name>.title` replaces the heading (`""` removes it) and `ui.widgets.<name>.collapsed` starts it collapsed; `/ui title <name> [text]`, `/ui collapse <name>` and `/ui expand <name>` set them.
+
 ## Status segments
 
 `register_status(name, render, side, *, order=0)` adds a segment to the status line, `side` being one of `STATUS_SIDES`: `left` after the git branch or `right` before the context size (`order` sorts the segments of a side: [Placement](#placement-and-the-users-layout)). `render(ctx)` returns `None` for no segment, a string, a `(text, style)` tuple or a list of strings and `(text, style)` pieces (style names: [Panels](#panels)); the terminal UI also accepts a `textual.content.Content`. It runs on every redraw, so keep it cheap. A segment that raises, or returns an unknown style, is skipped and reported once.
+
+## Styling the terminal UI
+
+```python
+minimal.register_css("tight", """
+#sidebar { padding: 0; }
+.tool { margin-top: 0; }
+""")
+```
+
+`register_css(name, css)` (API 2.3) adds a Textual stylesheet to the terminal UI; registering the same `name` again replaces it, and it is gone when the extension no longer loads (every reload rebuilds them). It comes after minimal's own styles and before the user's `ui.css`, so the user has the last word. A stylesheet that does not parse is reported once as a UI error (`ext:name: stylesheet was not applied: line N: …`) and ignored. Prefer it to injecting CSS through Textual's private API, and prefer it to a widget's `DEFAULT_CSS` for changing minimal's own parts.
+
+These selectors are stable; anything else (other ids, Textual's inner widgets) can change in any release:
+
+| Selector | What it is |
+| --- | --- |
+| `#transcript` | The scrolling conversation; `Header` (its `.logo` and `.wordmark` children) is its first child |
+| `#top`, `#bottom`, `#left`, `#sidebar`, `#footer` | The widget areas ([Placement](#placement-and-the-users-layout)) |
+| `#composer`, `#prompt`, `#prompt-glyph` | The prompt box, its text area and the glyph before it |
+| `#statusline`, `#working` | The status line and the working indicator |
+| `.user`, `Markdown.assistant`, `.tool` (`.-pending`, `.-success`, `.-error`), `.output`, `.error` | The transcript's blocks: your message, the model's reply, a tool call by state, command output, an error |
+
+The theme's colours are CSS variables (`$accent`, `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, …; `CSS_VARIABLES` lists them), so a stylesheet follows `/theme`. Use `ctx.theme` when Python needs a colour, and listen for `theme_change` to recompute it.
 
 ## Placement and the user's layout
 
@@ -535,6 +570,8 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `LogoSpec`, `logo_content`, `theme`, `glyphs`               | Logo description, `logo_content(spec)` (a `LogoSpec` as Textual content) and the UI glyphs |
 | `UsageTotals`                                               | What `ctx.usage` returns: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests` |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
+| `ThemeInfo`, `ThemeChangeEvent`, `CSS_VARIABLES`, `CssSpec`  | What `ctx.theme` returns (`name`, `dark`, `colors`: `#rrggbb` by name), the `theme_change` payload, the CSS variables `$name` may stand for in styled text, and a registered stylesheet (API 2.3) |
+| `GitInfo`, `KeyInfo`, `SettingsSpec`                        | What `ctx.git()`, `ctx.keybindings()` and a `declare_settings` call (`id`, `defaults`, `schema`, `values`) give (API 2.3) |
 
 ## API versions
 
@@ -557,6 +594,8 @@ API 2.3 added `ctx.fork(at_index=None)` and `ctx.truncate(at_index)` (with `/for
 API 2.3 added `complete` to `@minimal.command` and `register_command` (and the `complete` field of the `Command` the registry keeps): `complete(args, ctx) -> list[str]` returns the completions of the text typed after `/name ` ([Commands](#commands)). An extension using it declares `__api__ = "2.3"`.
 
 API 2.3 added, for customisable interfaces: `minimal.register_keybinding` and the `@minimal.keybinding` decorator (`KeybindingSpec`, `RESERVED_KEYS`, `KEY_ACTIONS` in `minimal.api`), the `order` keyword of `register_widget`, `register_panel` and `register_status`, the areas `left` and `footer` in `WIDGET_AREAS`, and the metadata `__depends__` and `__conflicts__`. An extension using any of them declares `__api__ = "2.3"`.
+
+API 2.3 added, for extensions that look and behave the way the user wants: `ctx.invalidate()` (redraw from any thread), `ctx.theme` (`ThemeInfo`) and the `theme_change` event (`ThemeChangeEvent`), `$name` and `#rrggbb` pieces in styled text, the `title` and `collapsible` keywords of `register_panel` and `register_widget`, `minimal.register_css` (`CssSpec`, `CSS_VARIABLES`) with the stable selectors of [Styling the terminal UI](#styling-the-terminal-ui), the `schema` argument of `declare_settings` (`SettingsSpec`) with `/ext settings`, `ctx.context_window`, `ctx.git()` (`GitInfo`) and `ctx.keybindings()` (`KeyInfo`). An extension using any of them declares `__api__ = "2.3"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

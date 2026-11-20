@@ -22,6 +22,7 @@ from minimal.core.context import Context
 from minimal.core.layout import Bound, Layout, resolve, resolve_keys
 from minimal.extensions.registry import (
     Command,
+    CssSpec,
     CommandComplete,
     CommandRun,
     KeybindingSpec,
@@ -195,6 +196,11 @@ class Host:
         """
         return types.MappingProxyType(self._app.registry.keybindings)
 
+    @property
+    def css(self) -> Mapping[str, CssSpec]:
+        """Stylesheets extensions added for the terminal UI (``register_css``), by ``<extension id>:<name>``. API 2.3."""
+        return types.MappingProxyType(self._app.registry.css)
+
     def layout(self) -> Layout:
         """Where every widget, panel and status segment goes: what extensions registered with the user's
         ``ui.widgets``, ``ui.status`` and ``ui.sidebar`` applied, in stacking order (:func:`minimal.core.layout.resolve`). API 2.3."""
@@ -204,6 +210,18 @@ class Host:
         """``(bindings, problems)``: minimal's key actions and the extensions' keybindings on the keys they end up
         on, with the user's ``ui.keys`` applied (:func:`minimal.core.layout.resolve_keys`). API 2.3."""
         return resolve_keys(self._app.registry, self._app.settings)
+
+    def theme_changed(self) -> None:
+        """The frontend's colour theme changed: fire ``theme_change`` (``ctx.theme`` has the new colours). API 2.3."""
+        self._app.theme_changed()
+
+    def refresh_git(self) -> None:
+        """Ask the shared git poller (``ctx.git()``) to look again now, if it runs: files may have changed. API 2.3."""
+        self._app.poke_git()
+
+    def stop_git(self) -> None:
+        """Stop the shared git poller (a frontend that is closing calls it); ``ctx.git()`` starts a new one. API 2.3."""
+        self._app.stop_git()
 
     # --- acting on minimal ----------------------------------------------------
 

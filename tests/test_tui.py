@@ -16,6 +16,7 @@ from minimal.core.host import Host
 from minimal.core.session import Session
 from minimal.extensions import loader
 from minimal.extensions.registry import LogoSpec, Registry
+from minimal.core.git import GitInfo
 from minimal.providers.base import Reply
 from minimal.ui.commands import register_builtin_commands
 from minimal.ui.tui.app import MinimalTui, _outside_event_loop
@@ -183,13 +184,13 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         release = threading.Event()
         self.addCleanup(release.set)
 
-        def slow_git_status(cwd):
+        def slow_read_git(cwd):
             release.wait(5)
-            return ("feature", True)
+            return GitInfo("feature", dirty=True, unstaged=1)
 
         app = MinimalTui(Host(self.core))
         status = lambda: str(app.query_one("#status-left", Static).render())  # noqa: E731
-        with mock.patch("minimal.ui.tui.app.git_status", slow_git_status):
+        with mock.patch("minimal.core.git.read_git", slow_read_git):
             async with app.run_test() as pilot:
                 await pilot.pause(0.1)
                 self.assertIn("fake", status())  # drawn while git is still running

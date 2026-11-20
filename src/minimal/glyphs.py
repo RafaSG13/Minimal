@@ -23,6 +23,8 @@ LOWER_HALF = "▄"
 FULL_BLOCK = "█"
 HEADER_NODE = "─●─"
 CURSOR = "▌"
+EXPANDED = "▾"
+COLLAPSED = "▸"
 
 
 def __getattr__(name: str) -> object:

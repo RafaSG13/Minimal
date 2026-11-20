@@ -260,7 +260,13 @@ SPEC = ProviderSpec(
 
 
 def openai_compatible(
-    name: str, base_url: str, default_model: str, *, key_env: str | None = None, description: str = ""
+    name: str,
+    base_url: str,
+    default_model: str,
+    *,
+    key_env: str | None = None,
+    description: str = "",
+    context_windows: Mapping[str, int] | None = None,
 ) -> ProviderSpec:
     """A :class:`ProviderSpec` for one more OpenAI-compatible server, next to ``openai`` and to each other.
 
@@ -273,6 +279,7 @@ def openai_compatible(
         default_model: Model used when none is given.
         key_env: Environment variable holding the key. ``None``: the server needs none (a local one).
         description: One line shown by ``/provider``.
+        context_windows: Context size in tokens by model-name prefix (API 2.3), for ``ctx.context_window``.
 
     Raises:
         ValueError: if ``name``, ``base_url`` or ``default_model`` is empty.
@@ -293,4 +300,5 @@ def openai_compatible(
         description=description or f"OpenAI-compatible server at {base_url}",
         sdk="openai",
         install="mnml-agent[openai]",
+        context_windows=dict(context_windows or {}),
     )

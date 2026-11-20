@@ -37,7 +37,7 @@ from minimal.extensions.loader import reload_summary
 from minimal.extensions.metadata import read_metadata
 from minimal.extensions.registry import MODE_OFF, STATUS_SIDES, WIDGET_AREAS, CommandComplete, Registry
 from minimal.providers import login_provider
-from minimal.ui import setup
+from minimal.ui import ext_settings, setup
 from minimal.ui.export import assistant_texts, native_copy, session_markdown
 
 
@@ -343,7 +343,7 @@ def _untrusted_mark(settings: config.Settings, layer: config.Layer, key: str) ->
 
 UI_USAGE = (
     "/ui [sidebar right|left|hidden | density normal|compact | hide <name> | show <name> | "
-    "move <name> <area> [order] | reset [name]]"
+    "move <name> <area> [order] | title <name> [text] | collapse <name> | expand <name> | reset [name]]"
 )
 UI_HELP = f"show the layout and keys, or change it: {UI_USAGE}"
 
@@ -351,6 +351,20 @@ UI_HELP = f"show the layout and keys, or change it: {UI_USAGE}"
 def _placed_origin(placed: Placed) -> str:
     user = f", user: {' '.join(placed.overridden)}" if placed.overridden else ""
     return f"[{placed.source}{user}]"
+
+
+def _placed_heading(placed: Placed) -> str:
+    """What ``/ui`` adds to a widget's or panel's line about its heading: ``title 'GIT'``, ``collapsible``, ``collapsed``."""
+    parts = []
+    if placed.title:
+        parts.append(f"title {placed.title!r}")
+    elif placed.title == "":
+        parts.append("title hidden")
+    if placed.collapsible:
+        parts.append("collapsible")
+    if placed.collapsed:
+        parts.append("collapsed")
+    return f"  ({', '.join(parts)})" if parts else ""
 
 
 def _ui_report(app: App) -> str:
@@ -368,7 +382,7 @@ def _ui_report(app: App) -> str:
     for area in WIDGET_AREAS:
         items = layout.in_area(area)
         lines.append(f"  {area}" + ("" if items else ": (none)"))
-        lines += [f"    {p.order:>4}  {p.name}  {p.kind}  {_placed_origin(p)}" for p in items]
+        lines += [f"    {p.order:>4}  {p.name}  {p.kind}{_placed_heading(p)}  {_placed_origin(p)}" for p in items]
     lines += ["", "Status line (segments, in order):"]
     for side in STATUS_SIDES:
         lines.append(f"  {side}")
@@ -454,6 +468,15 @@ def _ui_change(app: App, words: list[str]) -> str:
         if fits_status:
             _ui_entry(status, name, side=place, order=order)
         done = f"move {name} to {place}" + (f", order {order}" if order is not None else "")
+    elif verb == "title" and len(args) >= 1:
+        _ui_widget(app, verb, args[0])
+        text = " ".join(args[1:]) if len(args) > 1 else None
+        _ui_entry(widgets, args[0], title=text)
+        done = f"title of {args[0]}: " + ("the extension's" if text is None else repr(text) if text else "hidden")
+    elif verb in ("collapse", "expand") and len(args) == 1:
+        _ui_widget(app, verb, args[0])
+        _ui_entry(widgets, args[0], collapsed=verb == "collapse")
+        done = f"{verb} {args[0]}"
     elif verb == "reset" and len(args) <= 1:
         if args:
             _ui_targets(app, args[0])
@@ -466,7 +489,7 @@ def _ui_change(app: App, words: list[str]) -> str:
             done = "reset the layout (sidebar, density, widgets and status segments)"
     else:
         raise ValueError(f"usage: {UI_USAGE}")
-    if verb in ("hide", "show", "move", "reset"):
+    if verb in ("hide", "show", "move", "title", "collapse", "expand", "reset"):
         changes["ui.widgets"], changes["ui.status"] = widgets or None, status or None
     try:
         config.update_global(changes)
@@ -491,7 +514,13 @@ def _ui(args: str, ctx: Context) -> None:
         print(f"A {' or '.join(project)} settings file also sets ui.*: it beats this change where it sets the same thing.")
 
 
-EXT_USAGE = "/ext [list|search <query> [category]|publish <path> [name]]"
+def _ui_widget(app: App, verb: str, name: str) -> None:
+    """Raise ``ValueError`` unless ``name`` is a widget or panel (a status segment has no heading to title or collapse)."""
+    is_widget, _ = _ui_targets(app, name)
+    if not is_widget:
+        raise ValueError(f"/ui {verb}: {name} is a status segment; only widgets and panels have a heading")
+
+EXT_USAGE = f"/ext [list|search <query> [category]|publish <path> [name]|{ext_settings.USAGE.removeprefix('/ext ')}]"
 
 _ADD = "\x00add"
 _REMOVE = "\x00remove"
@@ -512,6 +541,9 @@ def _ext_relations(path: Path) -> str:
 
 def _ext(args: str, ctx: Context) -> None:
     app = _app(ctx)
+    if args.split(None, 1)[:1] == ["settings"]:  # its value is JSON or free text: not shlex-split
+        ext_settings.run(args.split(None, 1)[1] if " " in args.strip() else "", app)
+        return
     words = shlex.split(args)
     if not words:
         _ext_picker(app)
@@ -716,7 +748,31 @@ def _complete_resume(args: str, ctx: Context) -> list[str]:
 
 
 def _complete_ext(args: str, ctx: Context) -> list[str]:
-    return _complete_word(args, ("list", "search", "publish")) if " " not in args else []
+    if " " not in args:
+        return _complete_word(args, ("list", "search", "publish", "settings"))
+    command, _, rest = args.partition(" ")
+    if command != "settings":
+        return []
+    return [f"settings {found}" for found in ext_settings.complete(rest, _app(ctx))]
+
+
+def _complete_ui(args: str, ctx: Context) -> list[str]:
+    verbs = ("sidebar", "density", "hide", "show", "move", "title", "collapse", "expand", "reset")
+    words = args.split(" ")
+    if len(words) == 1:
+        return _complete_word(args, verbs)
+    verb, last = words[0], len(words) == 2
+    registry = _app(ctx).registry
+    if verb in ("sidebar", "density") and last:
+        return _complete_word(args, config.UI_SIDEBARS if verb == "sidebar" else config.UI_DENSITIES)
+    names = [*registry.widgets, *registry.panels]
+    if verb in ("title", "collapse", "expand") and last:
+        return _complete_word(args, names)
+    if verb in ("hide", "show", "reset") and last:
+        return _complete_word(args, [*names, *registry.status])
+    if verb == "move" and len(words) == 3:
+        return _complete_word(args, [*WIDGET_AREAS, *STATUS_SIDES])
+    return []
 
 
 def _copy(args: str, ctx: Context) -> None:
@@ -775,6 +831,7 @@ _COMPLETERS: dict[str, CommandComplete] = {
     "mode": _complete_mode,
     "ext": _complete_ext,
     "extensions": _complete_ext,
+    "ui": _complete_ui,
 }
 """The built-in commands whose arguments the composer completes, by name."""
 

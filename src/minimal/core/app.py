@@ -27,6 +27,7 @@ from minimal import config
 from minimal.core.agent import MaxTurnsExceeded, run_agent
 from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent, UsageMeter
 from minimal.core.context import Context
+from minimal.core.git import GitInfo, GitPoller
 from minimal.core.permissions import Permissions, suggest_rule
 from minimal.core.session import Session, check_cut, new_id, open_session
 from minimal.extensions.loader import (
@@ -36,17 +37,19 @@ from minimal.extensions.loader import (
     project_extensions_dir,
     read_project_snapshot,
 )
+from minimal.extensions import palette
 from minimal.extensions.registry import (
     PROMPT_SECTIONS,
     Command,
     CommandComplete,
     CommandRun,
     Registry,
+    ThemeInfo,
     Tool,
     TurnInterrupted,
     apply_prompt_edits,
 )
-from minimal.providers import register_builtin_providers
+from minimal.providers import register_builtin_providers, windows
 from minimal.providers.base import Provider, Usage, result_text
 from minimal.tools.builtin import register_builtin_tools
 
@@ -299,6 +302,13 @@ class Frontend(Protocol):
     def mode_changed(self) -> None:
         """The current mode changed, from any thread: redraw whatever shows it."""
 
+    def invalidate(self) -> None:
+        """Something an extension shows changed (``ctx.invalidate()``), from any thread: redraw its panels, status
+        segments and widgets soon. Cheap and coalesced; a frontend that draws nothing of the kind ignores it. API 2.3."""
+
+    def theme_name(self) -> str | None:
+        """The name of the colour theme the frontend shows (``ctx.theme``); ``None`` if it has none. API 2.3."""
+
     def progress(self, text: str | None) -> None:
         """Transient progress text of the tool or command running (:meth:`~minimal.core.context.Context.progress`):
         show it next to the working indicator; ``None`` clears it. May be called from any thread, often."""
@@ -421,6 +431,13 @@ class ConsoleFrontend:
     def mode_changed(self) -> None:
         """Nothing to redraw in a console."""
 
+    def invalidate(self) -> None:
+        """Nothing to redraw in a console (it draws no panels or status line)."""
+
+    def theme_name(self) -> str | None:
+        """A console has no theme of its own."""
+        return None
+
     def progress(self, text: str | None) -> None:
         """A dimmed line on stderr (only when it is a terminal) each time the text changes; ``None`` only forgets it."""
         if text is not None and text != self._progress and sys.stderr.isatty():
@@ -503,6 +520,9 @@ class App:
         self.usage = UsageMeter()
         self.truncations = 0
         self._register_commands = register_commands
+        self._git: GitPoller | None = None
+        self._git_last: GitInfo | None = None
+        self._git_lock = threading.Lock()
         self._frontend_commands: dict[str, tuple[CommandRun, str, bool, CommandComplete | None]] = {}
         self._register_builtins()  # usable before the first reload
 
@@ -566,6 +586,7 @@ class App:
         self.settings = config.Settings(tuple(layers), trusted, project_trusted)
         self.permissions = Permissions(self.settings, self.permissions.session)
         self.setting_errors = setting_errors
+        self.stop_git()
         self.registry.dispose()
         self.registry.reset()
         register_builtin_tools(self.registry)
@@ -652,6 +673,7 @@ class App:
         """Fire ``shutdown`` (minimal is exiting), run the extensions' ``on_dispose`` functions and release the session."""
         try:
             self.registry.emit("shutdown", {"ctx": self.context})
+            self.stop_git()
             self.registry.dispose()
         finally:
             self.session.unlock()
@@ -722,6 +744,62 @@ class App:
             if usage:
                 return usage["input_tokens"] + usage["output_tokens"]
         return None
+
+    @property
+    def context_window(self) -> int | None:
+        """The model's context size in tokens: the ``context_window`` setting, else what the provider's spec or minimal's
+        table says for the current model; ``None`` if unknown."""
+        configured = self.settings.context_window
+        if configured is not None:
+            return configured
+        spec = self.registry.providers.get(self.provider_name)
+        return windows.context_window(self.provider_name, self.model, spec.context_windows if spec else None)
+
+    def theme_info(self) -> ThemeInfo:
+        """The current colour theme with every colour resolved: the frontend's, else the ``theme`` setting, else the built-in one."""
+        name = self.frontend.theme_name() or self.settings.theme or palette.DEFAULT
+        spec = self.registry.themes.get(name) if name != palette.DEFAULT else None
+        return palette.theme_info(spec or palette.BUILTIN)
+
+    def theme_changed(self) -> None:
+        """Fire ``theme_change`` for the theme the frontend shows now."""
+        info = self.theme_info()
+        self.registry.emit("theme_change", {"ctx": self.context, "name": info.name, "dark": info.dark})
+
+    def invalidate(self) -> None:
+        """Ask the frontend to redraw what extensions show (``ctx.invalidate()``)."""
+        self.frontend.invalidate()
+
+    def git_info(self) -> GitInfo | None:
+        """The last git state the shared poller read (``ctx.git()``), starting the poller on the first call.
+
+
+        ``None`` until the first poll ends and outside a repository. The poller runs every ``git.refresh`` seconds,
+        asks the frontend to redraw (:meth:`invalidate`) when the state changes, and stops on :meth:`shutdown` and at
+        every reload (the next call starts it again, with the settings of that reload).
+        """
+        with self._git_lock:
+            if self._git is None:
+                self._git = GitPoller(self.cwd, self.settings.git_refresh, self._git_changed)
+                self._git.start()
+        return self._git_last
+
+    def _git_changed(self, info: GitInfo | None) -> None:
+        self._git_last = info
+        self.invalidate()
+
+    def poke_git(self) -> None:
+        """Poll git again now, if the poller runs (a turn or command probably changed files)."""
+        with self._git_lock:
+            if self._git is not None:
+                self._git.poke()
+
+    def stop_git(self) -> None:
+        """Stop the git poller; :meth:`git_info` starts a new one."""
+        with self._git_lock:
+            poller, self._git = self._git, None
+        if poller is not None:
+            poller.stop()
 
     def confirm(self, call: dict) -> bool:
         """Ask the user, through the frontend, whether a tool call may run.

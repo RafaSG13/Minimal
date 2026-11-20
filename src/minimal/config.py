@@ -74,6 +74,9 @@ DEFAULT_MAX_TURNS = 50
 DEFAULT_MAX_PARALLEL = 4
 """Read-only tool calls of one reply run at once when ``tools.max_parallel`` is unset."""
 
+DEFAULT_GIT_REFRESH = 3.0
+"""Seconds between the shared git status polls when ``git.refresh`` is unset."""
+
 
 def _is_settings_map(value: object) -> bool:
     return isinstance(value, dict) and all(isinstance(v, dict) for v in value.values())
@@ -130,8 +133,11 @@ def _is_prompt_glyph(value: object) -> bool:
     return isinstance(value, str) and low <= len(value) <= high and value.isprintable()
 
 
-def _is_ui_overrides(places: tuple[str, ...], place_field: str):
-    """A check for ``ui.widgets`` / ``ui.status``: names → ``{<place_field>?, order?, enabled?}``."""
+def _is_ui_overrides(places: tuple[str, ...], place_field: str, extra: dict[str, type] | None = None):
+    """A check for ``ui.widgets`` / ``ui.status``: names → ``{<place_field>?, order?, enabled?, <extra>?}``.
+
+    ``extra`` maps further allowed fields to their type (``ui.widgets`` also takes ``title`` and ``collapsed``)."""
+    extra = extra or {}
 
     def check(value: object) -> bool:
         if not isinstance(value, dict):
@@ -139,13 +145,15 @@ def _is_ui_overrides(places: tuple[str, ...], place_field: str):
         for name, entry in value.items():
             if not isinstance(name, str) or not name or not isinstance(entry, dict):
                 return False
-            if not set(entry) <= {place_field, "order", "enabled"}:
+            if not set(entry) <= {place_field, "order", "enabled", *extra}:
                 return False
             if place_field in entry and entry[place_field] not in places:
                 return False
             if "order" in entry and (isinstance(entry["order"], bool) or not isinstance(entry["order"], int)):
                 return False
             if "enabled" in entry and not isinstance(entry["enabled"], bool):
+                return False
+            if any(field in entry and not isinstance(entry[field], kind) for field, kind in extra.items()):
                 return False
         return True
 
@@ -160,8 +168,9 @@ _UI_TYPES = {
     "ui.sidebar": (_is_choice(*UI_SIDEBARS), "one of " + ", ".join(UI_SIDEBARS)),
     "ui.sidebar_width": (_is_sidebar_width, "an integer from {} to {}".format(*UI_SIDEBAR_WIDTHS)),
     "ui.widgets": (
-        _is_ui_overrides(UI_AREAS, "area"),
-        f'an object mapping names to {{"area": one of {", ".join(UI_AREAS)}, "order": integer, "enabled": boolean}}',
+        _is_ui_overrides(UI_AREAS, "area", {"title": str, "collapsed": bool}),
+        f'an object mapping names to {{"area": one of {", ".join(UI_AREAS)}, "order": integer, "enabled": boolean, '
+        '"title": string, "collapsed": boolean}',
     ),
     "ui.status": (
         _is_ui_overrides(UI_STATUS_SIDES, "side"),
@@ -182,6 +191,8 @@ _TYPES = {
     "reasoning_effort": (lambda v: v in REASONING_EFFORTS, "one of " + ", ".join(REASONING_EFFORTS)),
     "agent.max_turns": (_is_positive_int, "a positive integer"),
     "tools.max_parallel": (_is_positive_int, "a positive integer"),
+    "context_window": (_is_positive_int, "a positive integer"),
+    "git.refresh": (lambda v: _is_non_negative_number(v) and v > 0, "a positive number of seconds"),
     "max_tokens": (
         _is_max_tokens,
         'a positive integer or an object mapping "provider" or "provider/model" to positive integers',
@@ -203,7 +214,7 @@ _TYPES = {
 """Every setting as a dotted key: ``(type check, type name for errors)``."""
 _TYPES.update(_UI_TYPES)
 
-_GROUPS = ("prompt", "permissions", "extensions", "agent", "tools", "ui")
+_GROUPS = ("prompt", "permissions", "extensions", "agent", "tools", "ui", "git")
 """Top-level keys holding an object of settings."""
 
 
@@ -334,6 +345,16 @@ class Settings:
     def max_parallel(self) -> int:
         """The ``tools.max_parallel`` setting: most read-only tool calls run at once; :data:`DEFAULT_MAX_PARALLEL` if unset."""
         return self.scalar("tools.max_parallel")[0] or DEFAULT_MAX_PARALLEL
+
+    @property
+    def context_window(self) -> int | None:
+        """The ``context_window`` setting: the model's context size in tokens, overriding what minimal knows; ``None`` if unset."""
+        return self.scalar("context_window")[0]
+
+    @property
+    def git_refresh(self) -> float:
+        """The ``git.refresh`` setting: seconds between the shared git status polls (:meth:`Context.git`); :data:`DEFAULT_GIT_REFRESH` if unset."""
+        return float(self.scalar("git.refresh")[0] or DEFAULT_GIT_REFRESH)
 
     def max_tokens_for(self, provider: str, model: str) -> int | None:
         """The ``max_tokens`` setting for ``model`` of ``provider``: the integer, or the object's
@@ -470,10 +491,12 @@ def load_global() -> dict:
     return _validate(raw, "global")[0] if isinstance(raw, dict) else {}
 
 
-def update_global(changes: dict) -> None:
+def update_global(changes: dict[str | tuple[str, ...], Any]) -> None:
     """Set keys of :data:`SETTINGS_FILE` (``None`` deletes one), keeping everything else.
 
-    A dotted key (``ui.sidebar``) sets a key inside its group object; a group left empty is removed.
+    A dotted key (``ui.sidebar``, ``extensions.settings.lenses.head``) sets a key inside its group objects, which are
+    created as needed; a key may also be a tuple of names (for one that contains a dot). Group objects left empty are
+    removed.
 
     Raises:
         ValueError: if the file exists but is not a JSON object, or a group in it is not one: it is left untouched
@@ -488,20 +511,24 @@ def update_global(changes: dict) -> None:
         if not isinstance(data, dict):
             raise ValueError(f"{SETTINGS_FILE} is not a JSON object; fix it first")
     for key, value in changes.items():
-        group, dot, sub = key.partition(".")
+        path = list(key) if isinstance(key, tuple) else key.split(".")
         target = data
-        if dot:
-            target = data.get(group, {})
-            if not isinstance(target, dict):
-                raise ValueError(f"{SETTINGS_FILE}: {group} is not a JSON object; fix it first")
-            data[group] = target
-        name = sub if dot else key
+        parents: list[tuple[dict, str]] = []
+        for i, part in enumerate(path[:-1]):
+            child = target.get(part, {})
+            if not isinstance(child, dict):
+                raise ValueError(f"{SETTINGS_FILE}: {'.'.join(path[: i + 1])} is not a JSON object; fix it first")
+            target[part] = child
+            parents.append((target, part))
+            target = child
         if value is None:
-            target.pop(name, None)
+            target.pop(path[-1], None)
         else:
-            target[name] = value
-        if dot and not target:
-            del data[group]
+            target[path[-1]] = value
+        for container, part in reversed(parents):
+            if container[part]:
+                break
+            del container[part]
     write_private(SETTINGS_FILE, data)
 
 

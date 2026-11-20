@@ -47,7 +47,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol
 
 TextCallback = Callable[[str], Any]
@@ -184,6 +184,9 @@ class ProviderSpec:
             ``env_keys`` key leave it ``None``. With it, ``minimal --login [name]``, ``/login`` and setup offer to sign in.
         logout: Forgets the sign-in (``minimal --logout [name]``, ``/logout``).
         account: Who is signed in: an email or any short text, or ``None`` if nobody is. Setup shows it.
+        context_windows: Context size in tokens by model-name prefix (``{"my-model-": 32768}``; the longest matching prefix
+            wins), what ``ctx.context_window`` reports for this provider's models. Built-in providers' models are known
+            already (:mod:`minimal.providers.windows`); the ``context_window`` setting beats both. API 2.3.
     """
 
     name: str
@@ -196,6 +199,7 @@ class ProviderSpec:
     login: Callable[[], None] | None = None
     logout: Callable[[], None] | None = None
     account: Callable[[], str | None] | None = None
+    context_windows: Mapping[str, int] = field(default_factory=dict)
 
     def missing_sdk(self) -> str | None:
         """Return an error message if the optional SDK (:attr:`sdk`) is not installed, else ``None``."""

@@ -459,7 +459,7 @@ class CommandCompleteTest(ComposerTestBase):
             self.assertEqual(popup.items, ["plan"])
             self.composer(app).set_text("")
             await self.type(pilot, "/ext s")
-            self.assertEqual(popup.items, ["search"])
+            self.assertEqual(popup.items, ["search", "settings"])
             self.composer(app).set_text("")
             await self.type(pilot, "/theme m")
             self.assertEqual(popup.items, ["minimal"])

@@ -76,6 +76,23 @@
 - Extension metadata `__depends__` and `__conflicts__` (lists of extension ids): a dependency loads first and a
   missing or failed one skips the extension (`needs 'x': install it with /ext`); of two conflicting extensions the
   first loaded stays. `minimal ext check` validates them and `/ext list` shows them.
+- `ctx.invalidate()` redraws panels, status segments and widgets from any thread (cheap, coalesced), so a poller can
+  replace a panel `interval`. `ctx.theme` (`ThemeInfo`: name, `dark`, every colour as `#rrggbb`) and the `theme_change`
+  event give extensions the current theme, and styled text accepts `$name` (a theme colour such as `$code`, or a CSS
+  variable such as `$border-muted`) and `#rrggbb` next to the old style names, so a panel follows `/theme`.
+- `register_panel` and `register_widget` take `title=` and `collapsible=`: a heading line above the panel or widget, and
+  a click or Enter on it collapses it. `ui.widgets.<name>.title` and `.collapsed` and `/ui title|collapse|expand` let the
+  user change them.
+- `minimal.register_css(name, css)` adds a Textual stylesheet from an extension (replaced by name, dropped on reload, a
+  parse error reported and ignored). The selectors it may rely on are documented and pinned by a test.
+- `declare_settings(defaults, schema)` takes a `description`, `enum`, `min` and `max` per key: a value outside it is a load
+  error naming `extensions.settings.<id>.<key>` and the default stays. `/ext settings` lists every extension's settings
+  with value, default and description, and `/ext settings <id> <key> <value|reset>` edits the global settings file and
+  reloads.
+- `ctx.context_window` (the `context_window` setting, else a table of the built-in providers' models), `ctx.git()` (branch,
+  ahead/behind, staged/unstaged/untracked counts and changed files, from one shared poller every `git.refresh` seconds that
+  the status line uses too) and `ctx.keybindings()` (every bound key with its source and description) replace what UI
+  extensions computed themselves.
 
 ### Changed
 

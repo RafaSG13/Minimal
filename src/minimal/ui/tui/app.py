@@ -24,7 +24,6 @@ turn (a message is queued, a command refused), and it owns history, ``@file`` me
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import sys
 import threading
 import time
@@ -49,14 +48,14 @@ from minimal.core.app import ExitRepl
 from minimal.core.host import Host, HostStatus
 from minimal.core.layout import Layout, Placed
 from minimal.core.mentions import DEFAULT_MAX_CHARS, expand_mentions, split_attachments
-from minimal.extensions.registry import KEY_ACTIONS, KeybindingSpec, StyledLine, styled_line, styled_lines
+from minimal.extensions.registry import KEY_ACTIONS, KeybindingSpec, StyledLine, ThemeInfo, styled_line, styled_lines
 from minimal.ui.tui import theme
 from minimal.ui.tui.composer import Composer, ComposerPanel, QueuedView, ui_setting
 from minimal.ui.tui.frontend import TuiFrontend, theme_command
 from minimal.ui.tui.markdown import RenderedFence, TranscriptMarkdown
 from minimal.ui.tui.notify import DEFAULT_AFTER, sequence
 from minimal.ui.tui.palette import SlashCommands, needs_args
-from minimal.ui.tui.widgets import Header, PanelView, ToolBlock, to_content
+from minimal.ui.tui.widgets import Header, PanelView, Section, ToolBlock, to_content
 
 REPLAY_LIMIT = 200
 """Most messages of a resumed session drawn in the transcript."""
@@ -71,6 +70,9 @@ binding) unless it is priority; ``cycle_mode`` still lets the key move the focus
 
 EXT_KEY_ID = "ext-key:"
 """Prefix of the ids of the Textual bindings that run extension keybindings (:meth:`MinimalTui.apply_keys`)."""
+
+INVALIDATE_DELAY = 0.03
+"""Seconds a redraw asked for with ``ctx.invalidate()`` waits, so that a burst of calls from threads costs one redraw."""
 
 
 def _css_problem(error: Exception) -> str:
@@ -98,26 +100,6 @@ def _outside_event_loop() -> Iterator[None]:
         yield
     finally:
         asyncio.events._set_running_loop(loop)
-
-
-def git_status(cwd: str) -> tuple[str, bool] | None:
-    """``(branch, dirty)`` for the repository containing ``cwd``, or ``None`` outside one."""
-    try:
-        result = subprocess.run(
-            # core.fsmonitor=false: a repository's own config must not make git run a command
-            ["git", "-c", "core.fsmonitor=false", "--no-optional-locks", "status", "--porcelain=v1", "--branch"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=1,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    lines = result.stdout.splitlines()
-    if result.returncode != 0 or not lines or not lines[0].startswith("## "):
-        return None
-    head = lines[0][3:].removeprefix("No commits yet on ")
-    return head.split("...")[0], len(lines) > 1
 
 
 def _short_path(path: str) -> str:
@@ -213,7 +195,9 @@ class MinimalTui(TextualApp):
         self.busy_since = 0.0
         self.busy = False  # a turn or command is running: the prompt is locked
         self.in_turn = False  # a model turn, not a slash command, is running: esc interrupts it
-        self.git: tuple[str, bool] | None = None  # last git_status, refreshed off the UI thread
+        self.announced_theme: ThemeInfo | None = None  # the theme the last theme_change (or the mount) reported
+        self._invalidate_lock = threading.Lock()
+        self._invalidate_pending = False  # an invalidate() redraw is scheduled: later calls share it
         self.status_errors: set[str] = set()  # status segments whose error was already shown
         self.renderer_errors: set[str] = set()  # renderer kinds whose error was already shown
         self.completion_errors: set[str] = set()  # commands whose completion error was already shown
@@ -221,6 +205,7 @@ class MinimalTui(TextualApp):
         self.busy = False  # a turn or command is running: the prompt is locked
         self.ext_keys: list[KeybindingSpec] = []  # the extension keybindings apply_keys bound, by action index
         self.user_css: tuple[str, str] | None = None  # where the stylesheet of ui.css was added, if one was
+        self.ext_css: list[tuple[str, str]] = []  # where the extensions' stylesheets (register_css) were added
 
     @property
     def cwd(self) -> str:
@@ -248,6 +233,8 @@ class MinimalTui(TextualApp):
         self.begin_capture_print(self, stdout=True, stderr=True)
         frontend = TuiFrontend(self)
         self.host.attach(frontend)
+        self.announced_theme = self.host.ctx.theme
+        self.theme_changed_signal.subscribe(self, lambda _theme: self.announce_theme())
         self.host.register_command(
             "theme",
             theme_command(frontend),
@@ -272,6 +259,7 @@ class MinimalTui(TextualApp):
         self.host.begin()
 
     def on_unmount(self) -> None:
+        self.host.stop_git()
         if self.pending_modal is not None:  # release a worker waiting for an answer
             self.pending_modal.set()
 
@@ -407,6 +395,7 @@ class MinimalTui(TextualApp):
             await header.recompose()
         for problem in problems:
             self.show_error(f"[ui] {problem}")
+        self.announce_theme()
 
     def apply_ui(self) -> list[str]:
         """Apply the ``ui.*`` settings of the last reload except the widget layout (:meth:`remount_widgets`):
@@ -439,7 +428,7 @@ class MinimalTui(TextualApp):
         else:
             glyph.styles.clear_rule("width")
         self.query_one("#prompt").placeholder = settings.ui_placeholder or PLACEHOLDER  # type: ignore[attr-defined]
-        return [*self.host.layout().problems, *self.apply_keys(), *self.apply_css()]
+        return [*self.host.layout().problems, *self.apply_keys(), *self.apply_extension_css(), *self.apply_css()]
 
     def apply_keys(self) -> list[str]:
         """Bind the built-in actions and the extensions' keybindings to the keys :meth:`Host.key_map` gives them,
@@ -469,6 +458,33 @@ class MinimalTui(TextualApp):
         self.refresh_bindings()
         return problems
 
+    def _add_css(self, css: str, location: tuple[str, str]) -> str | None:
+        """Add ``css`` as a stylesheet source at ``location``, unless it does not parse: then the reason, one line."""
+        try:
+            probe = Stylesheet(variables=self.get_css_variables())
+            probe.add_source(css, read_from=location)
+            probe.parse()
+        except Exception as e:
+            return _css_problem(e)
+        self.stylesheet.add_source(css, read_from=location)
+        return None
+
+    def apply_extension_css(self) -> list[str]:
+        """Use the stylesheets extensions registered with ``register_css`` (and drop the ones used before). One that does
+        not parse is reported and ignored. They come before ``ui.css``, so the user's rules win ties. The caller
+        refreshes the CSS."""
+        for location in self.ext_css:
+            self.stylesheet.source.pop(location, None)
+        self.ext_css = []
+        problems = []
+        for spec in self.host.css.values():
+            location = (f"extension:{spec.id}", "")
+            if (problem := self._add_css(spec.css, location)) is None:
+                self.ext_css.append(location)
+            else:
+                problems.append(f"{spec.id}: stylesheet was not applied: {problem}")
+        return problems
+
     def apply_css(self) -> list[str]:
         """Use the stylesheet ``ui.css`` names (or stop using the one used before). A file that cannot be read or
         parsed is reported and ignored: the UI keeps its own styles. The caller refreshes the CSS."""
@@ -483,13 +499,8 @@ class MinimalTui(TextualApp):
         except (OSError, UnicodeDecodeError) as e:
             return [f"ui.css: cannot read {path}: {e}"]
         location = (str(path), "")
-        try:
-            probe = Stylesheet(variables=self.get_css_variables())
-            probe.add_source(css, read_from=location)
-            probe.parse()
-        except Exception as e:
-            return [f"ui.css: {path} was not applied: {_css_problem(e)}"]
-        self.stylesheet.add_source(css, read_from=location)
+        if (problem := self._add_css(css, location)) is not None:
+            return [f"ui.css: {path} was not applied: {problem}"]
         self.user_css = location
         return []
 
@@ -506,10 +517,14 @@ class MinimalTui(TextualApp):
             for placed in layout.in_area(area):
                 try:
                     if placed.kind == "widget":
-                        widget = placed.spec.create(self.host.ctx)
+                        widget = shown = placed.spec.create(self.host.ctx)
+                        if placed.title:
+                            shown = Section(widget, placed.title, placed.collapsible, placed.collapsed)
                     else:
-                        widget = PanelView(placed.spec, self.host.ctx, self.show_error)
-                    await container.mount(widget)
+                        widget = shown = PanelView(
+                            placed.spec, self.host.ctx, self.show_error, placed.title, placed.collapsed
+                        )
+                    await container.mount(shown)
                     self.ext_widgets.append((placed.name, widget))
                 except Exception as e:
                     self.show_error(f"[extension] {placed.kind} {placed.name}: {e}")
@@ -608,23 +623,57 @@ class MinimalTui(TextualApp):
     # --- status line and working indicator -----------------------------------
 
     def refresh_status(self) -> None:
-        """Redraw the status line now, then update its git part in the background."""
+        """Redraw the status line now, and ask the shared git poller to look again (what a turn did may have changed it)."""
         self._render_status()
-        self.refresh_git()
+        self.host.refresh_git()
 
-    @work(thread=True, exclusive=True, group="git", exit_on_error=False)
-    def refresh_git(self) -> None:
-        """Run ``git status`` in a worker thread (it can take up to a second) and show the result."""
-        git = git_status(self.cwd)
+    def invalidate(self) -> None:
+        """Redraw the extension panels, widgets and status line soon: what ``ctx.invalidate()`` asks for.
+
+
+        Safe from any thread and cheap: calls made while a redraw is already scheduled share it, and the redraw waits
+        :data:`INVALIDATE_DELAY` so a burst of calls costs one.
+        """
+        loop = self._loop
+        if loop is None:  # not running (yet, or any more)
+            return
+        with self._invalidate_lock:
+            if self._invalidate_pending:
+                return
+            self._invalidate_pending = True
         try:
-            self.call_from_thread(self._set_git, git)
-        except RuntimeError:  # the app closed meanwhile
-            pass
+            asyncio.run_coroutine_threadsafe(self._redraw_invalidated(), loop)
+        except RuntimeError:  # the loop closed meanwhile
+            with self._invalidate_lock:
+                self._invalidate_pending = False
 
-    def _set_git(self, git: tuple[str, bool] | None) -> None:
-        if git != self.git:
-            self.git = git
-            self._render_status()
+    async def _redraw_invalidated(self) -> None:
+        await asyncio.sleep(INVALIDATE_DELAY)
+        with self._invalidate_lock:
+            self._invalidate_pending = False
+        with self._context():
+            self.redraw_extensions()
+
+    def redraw_extensions(self) -> None:
+        """Redraw every extension panel, call ``refresh_state`` on the other widgets, and redraw the status line."""
+        for name, widget in self.ext_widgets:
+            try:
+                if isinstance(widget, PanelView):
+                    widget.redraw()
+                elif callable(refresh := getattr(widget, "refresh_state", None)):
+                    refresh(self.host.ctx)
+            except Exception as e:
+                self.show_error(f"[extension] widget {name}: {e}")
+        self._render_status()
+
+    def announce_theme(self) -> None:
+        """After the colour theme changed (or a reload changed the current theme's colours): fire ``theme_change`` and
+        redraw what extensions show, which may have read ``ctx.theme``."""
+        info = self.host.ctx.theme
+        if info != self.announced_theme:
+            self.announced_theme = info
+            self.host.theme_changed()
+            self.redraw_extensions()
 
     def _report_status_error(self, name: str, error: Exception) -> None:
         if name not in self.status_errors:
@@ -658,9 +707,10 @@ class MinimalTui(TextualApp):
         if name == "path":
             return Content.assemble((_short_path(status.cwd), "$status-path"))
         if name == "git":
-            if self.git is None:
+            git = self.host.ctx.git()
+            if git is None:
                 return None
-            branch, dirty = self.git
+            branch, dirty = git.branch or "detached", git.dirty
             color = "$status-git-dirty" if dirty else "$status-git-clean"
             return Content.assemble((f"{theme.BRANCH} {branch}{' *' if dirty else ''}", color))
         if name == "mode":
