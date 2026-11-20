@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 ### Added
 
@@ -100,7 +100,7 @@
 ### Changed
 
 - `HostStatus` has `usage` and `truncations`; the terminal UI redraws its transcript when the latter changes.
-- `WIDGET_AREAS` gained `left` and `footer`; the marketplace's `project_badge` offers them in its `area` setting.
+- `WIDGET_AREAS` gained `left` and `footer`; the marketplace's `git_panel` offers them in its `area` setting.
 - The status line's own segments (`model`, `path`, `git`, `mode`, `context`, `extensions`, `session`) are named
   segments that `ui.status` can hide, move or reorder; an extension segment with the same name replaces one.
 

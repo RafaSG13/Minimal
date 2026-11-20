@@ -121,10 +121,34 @@ class AgentMonitorTest(BundledExtensionTest):
         ]
         lines = self.module.panel_lines(agents, 200.0)
         header = "".join(p if isinstance(p, str) else p[0] for p in lines[0])
-        self.assertEqual(header, "agents · 2 running · 21 total")
+        self.assertEqual(header, "2 running · 21 total")
         self.assertEqual(lines[1], [("… 9 earlier", "muted")])
-        self.assertEqual(len(lines), 1 + 1 + self.module.MAX_PANEL_ROWS)
+        self.assertEqual(len(lines), 1 + 1 + self.module.DEFAULTS["max_rows"])
         self.assertEqual(lines[-1][3], ("a19", "bold"))
+
+    def test_settings_change_rows_glyphs_and_registration(self):
+        module = self.module
+        agents = [agent("main", status="running")] + [agent(f"a{i}", "main") for i in range(5)]
+        opts = module.options({**module.DEFAULTS, "max_rows": 2, "glyphs": {"done": "D"}})
+        lines = module.panel_lines(agents, 200.0, opts)
+        self.assertEqual(len(lines), 1 + 1 + 2)
+        self.assertEqual(lines[-1][1][0], "D")
+        with self.assertRaises(ValueError):
+            module.options({**module.DEFAULTS, "glyphs": {"bogus": "x"}})
+        registry = Registry()
+        settings = config.Settings(
+            layers=(config.Layer("global", Path("s.json"), {"extensions.settings": {"widgets/agent_monitor": {"title": "", "order": 3}}}),)
+        )
+        _, errors = loader.load_extensions(registry, str(self.tmp), settings, extra=[ITEM])
+        self.assertEqual(errors, [])
+        panel = registry.panels["agent_monitor"]
+        self.assertEqual((panel.title, panel.order, panel.area), (None, 3, "sidebar"))
+        registry = Registry()
+        settings = config.Settings(
+            layers=(config.Layer("global", Path("s.json"), {"extensions.settings": {"widgets/agent_monitor": {"panel": False}}}),)
+        )
+        _, errors = loader.load_extensions(registry, str(self.tmp), settings, extra=[ITEM])
+        self.assertEqual((errors, "agent_monitor" in registry.panels), ([], False))
 
     def test_panel_line_pieces_use_only_known_styles(self):
         lines = self.module.panel_lines([agent("main", status="running"), agent("a", "main", status="error")], 120.0)
@@ -188,7 +212,7 @@ class AgentMonitorTest(BundledExtensionTest):
         )
         monitor.agent_end({"agent_id": "a", "text": "final words"})
         calls, reply = monitor.trace("a")
-        self.assertEqual(len(calls), self.module.TRACE_LINES)
+        self.assertEqual(len(calls), self.module.DEFAULTS["trace_lines"])
         self.assertTrue(calls[-1].endswith("read f9.py"))
         self.assertEqual(reply, "final words")
         self.assertEqual(monitor.trace("b")[0], [f"{self.module.theme.ERROR} bash false - exit 1 more"])
@@ -199,10 +223,11 @@ class AgentMonitorTest(BundledExtensionTest):
 
     def test_monitor_forgets_the_oldest_agents_beyond_the_cap(self):
         monitor = self.module.Monitor()
-        for i in range(self.module.MAX_TRACKED + 5):
+        cap = self.module.DEFAULTS["max_tracked"]
+        for i in range(cap + 5):
             monitor.tool_result({"name": "read", "input": {}, "output": "", "is_error": False, "agent_id": f"a{i}"})
         self.assertEqual(monitor.trace("a0"), ([], ""))
-        self.assertEqual(len(monitor.trace(f"a{self.module.MAX_TRACKED + 4}")[0]), 1)
+        self.assertEqual(len(monitor.trace(f"a{cap + 4}")[0]), 1)
 
     # --- a real app ----------------------------------------------------------
 
