@@ -142,6 +142,55 @@ def add_usage(total: Usage, usage: Usage | None) -> None:
             setattr(total, f.name, getattr(total, f.name) + getattr(usage, f.name))
 
 
+@dataclass(frozen=True)
+class UsageTotals:
+    """Tokens and requests a minimal process has spent so far (:attr:`~minimal.core.context.Context.usage`).
+
+    API 2.3. Counts every model request the process made: the user's turns, the agents they start, and
+    ``ctx.complete``. A provider that reports no usage adds to ``requests`` only.
+
+    Attributes:
+        input_tokens: Prompt tokens, cached ones included (as :class:`~minimal.providers.base.Usage`).
+        output_tokens: Tokens the model wrote.
+        cache_read_tokens: Prompt tokens read from the provider's cache.
+        cache_write_tokens: Prompt tokens written to the provider's cache.
+        requests: How many model requests were made.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    requests: int = 0
+
+
+class UsageMeter:
+    """The running :class:`UsageTotals` of a process; guarded by a lock because agents reply from worker threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._totals = UsageTotals()
+
+    def add(self, usage: Usage | None) -> None:
+        """Count one request, and its ``usage`` if the provider reported it."""
+        with self._lock:
+            t = self._totals
+            u = usage or Usage()
+            self._totals = UsageTotals(
+                t.input_tokens + u.input_tokens,
+                t.output_tokens + u.output_tokens,
+                t.cache_read_tokens + u.cache_read_tokens,
+                t.cache_write_tokens + u.cache_write_tokens,
+                t.requests + 1,
+            )
+
+    @property
+    def totals(self) -> UsageTotals:
+        """The totals now."""
+        with self._lock:
+            return self._totals
+
+
 class Agents:
     """The agents of one session: ids, parents, status, counters and cancel flags.
 

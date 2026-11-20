@@ -4,7 +4,7 @@ Each session is a JSONL file in ``~/.minimal/sessions/<id>.jsonl``. Its first
 line is a header, ``{"type": "session", "cwd": "<project directory>"}``, which
 tells which project the conversation belongs to (plus ``title`` and ``parent``
 when set); then comes one message per line. Files are only ever appended to
-(only setting a title rewrites the header), so saving after each turn is cheap
+(only setting a title or cutting the history rewrites the file, atomically), so saving after each turn is cheap
 and a crash loses at most the turn in progress, and at most leaves a cut-off
 last line, which opening ignores and the next save removes.
 
@@ -17,11 +17,13 @@ them by name also sorts them by creation time.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import itertools
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +57,56 @@ def project_dir(cwd: str) -> str:
 
 def _is_header(record: object) -> bool:
     return isinstance(record, dict) and record.get("type") == "session" and "role" not in record
+
+
+def _has_tool_use(message: dict) -> bool:
+    content = message.get("content")
+    return (
+        message.get("role") == "assistant"
+        and isinstance(content, list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+    )
+
+
+def _only_tool_results(message: dict) -> bool:
+    content = message.get("content")
+    return (
+        isinstance(content, list)
+        and bool(content)
+        and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+    )
+
+
+def user_prompts(messages: list[dict]) -> list[int]:
+    """Indexes of the messages the user wrote (not the ``tool_result`` messages that carry tool output), oldest first."""
+    return [i for i, m in enumerate(messages) if m.get("role") == "user" and not _only_tool_results(m)]
+
+
+def prompt_text(message: dict) -> str:
+    """The text of a user message, for showing it back to the user: ``""`` if it has none."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def check_cut(messages: list[dict], at_index: int) -> None:
+    """Check that ``messages[:at_index]`` is a history the model accepts: ``at_index`` is in range and the cut
+    does not leave an assistant message's ``tool_use`` without the ``tool_result`` that follows it.
+
+    Raises:
+        ValueError: with a message for the user if not.
+    """
+    total = len(messages)
+    if isinstance(at_index, bool) or not isinstance(at_index, int) or not 0 <= at_index <= total:
+        raise ValueError(f"index {at_index!r} is out of range: this session has {total} messages (0 to {total})")
+    if 0 < at_index < total and _has_tool_use(messages[at_index - 1]):
+        raise ValueError(
+            f"cannot cut at {at_index}: message {at_index - 1} calls tools and their results are the next message; "
+            f"cut at {at_index - 1} (before the call) or at {at_index + 1} (after the results)"
+        )
 
 
 @dataclass
@@ -110,6 +162,42 @@ class Session:
                 for message in pending:
                     f.write(json.dumps(message, ensure_ascii=False) + "\n")
         self.persisted = len(self.messages)
+
+    def _rewrite(self) -> None:
+        """Replace the file (atomically) with the header and every message."""
+        fd, temp = tempfile.mkstemp(dir=self.file.parent, prefix=f".{self.id}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(self._header())
+                for message in self.messages:
+                    f.write(json.dumps(message, ensure_ascii=False) + "\n")
+            os.replace(temp, self.file)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temp)
+            raise
+        self.torn_at = None
+        self.persisted = len(self.messages)
+
+    def truncate(self, at_index: int) -> int:
+        """Drop the messages from ``at_index`` on and rewrite the file (atomically) without them; return how many.
+
+        Messages not saved yet are saved with the rewrite. Nothing changes if ``at_index`` is the length.
+
+        Raises:
+            ValueError: if ``at_index`` is out of range or the cut would leave a ``tool_use`` without its
+                ``tool_result`` (see :func:`check_cut`).
+        """
+        check_cut(self.messages, at_index)
+        dropped = len(self.messages) - at_index
+        if not dropped:
+            return 0
+        del self.messages[at_index:]
+        if self.file.exists() and self.file.stat().st_size:
+            self._rewrite()
+        else:
+            self.persisted = min(self.persisted, len(self.messages))
+        return dropped
 
     def set_title(self, title: str) -> None:
         """Name the session; a saved file gets its header rewritten (atomically) with the title.

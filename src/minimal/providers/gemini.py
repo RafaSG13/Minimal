@@ -10,7 +10,12 @@ user text                       ``user_input`` with a text content block
 assistant ``text`` blocks       ``model_output`` with text content blocks
 assistant ``tool_use``          ``function_call`` (``id``, ``name``, ``arguments``)
 user ``tool_result``            ``function_result`` (``call_id``, ``result``, ``is_error``)
+user or tool ``image`` block    ``image`` content (``data``, ``mime_type``)
 ==============================  =============================================
+
+``reasoning_effort`` (a request option) is sent as ``thinking_level`` with ``thinking_summaries`` on, and each
+``thought`` step that has a summary becomes a ``thinking`` block of the reply (without a signature: the step itself,
+signature included, is replayed from ``provider_data``). Thinking blocks are left out of every request.
 
 Gemini requires its own reply steps (including ``thought`` steps carrying
 signatures) to be sent back exactly as received, so they are kept in the
@@ -27,7 +32,7 @@ import json
 from collections.abc import Mapping
 from typing import Any, Iterable
 
-from minimal.providers.base import ProviderSpec, Reply, TextCallback, Usage, result_text
+from minimal.providers.base import ProviderSpec, Reply, TextCallback, Usage, image_source, image_summary
 
 MAX_OUTPUT_TOKENS = 8192
 
@@ -66,6 +71,9 @@ class GeminiProvider:
         generation_config: dict[str, Any] = {"max_output_tokens": options.get("max_tokens", MAX_OUTPUT_TOKENS)}
         if options.get("temperature") is not None:
             generation_config["temperature"] = options["temperature"]
+        if options.get("reasoning_effort") is not None:
+            generation_config["thinking_level"] = options["reasoning_effort"]
+            generation_config["thinking_summaries"] = "auto"
         stream = self.client.interactions.create(
             model=model,
             input=to_interaction_input(messages),
@@ -124,15 +132,36 @@ def _assistant_steps(blocks: list[dict]) -> list[dict]:
     return steps
 
 
+def _image_content(block: dict) -> dict | None:
+    """An Interactions ``image`` content for a canonical ``image`` block; ``None`` if it has no base64 data."""
+    source = image_source(block)
+    if source.get("type") != "base64" or not isinstance(source.get("data"), str):
+        return None
+    return {"type": "image", "data": source["data"], "mime_type": source.get("media_type")}
+
+
+def _result_content(content: Any) -> list[dict]:
+    """The ``result`` of a ``function_result`` step: text and image contents for a ``tool_result``'s content."""
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        part = _image_content(block) if block.get("type") == "image" else {"type": "text", "text": block.get("text", "")}
+        parts.append(part or {"type": "text", "text": image_summary(block)})
+    return parts or [{"type": "text", "text": ""}]
+
+
 def _user_block_steps(blocks: list[dict], tool_names: dict[str, str]) -> list[dict]:
-    """Convert a user message made of blocks (tool results and/or text)."""
+    """Convert a user message made of blocks (tool results, text and images)."""
     steps: list[dict] = []
     for block in blocks:
         if block["type"] == "tool_result":
             step = {
                 "type": "function_result",
                 "call_id": block["tool_use_id"],
-                "result": [{"type": "text", "text": result_text(block.get("content", ""))}],
+                "result": _result_content(block.get("content", "")),
                 "is_error": bool(block.get("is_error")),
             }
             if block["tool_use_id"] in tool_names:
@@ -140,6 +169,9 @@ def _user_block_steps(blocks: list[dict], tool_names: dict[str, str]) -> list[di
             steps.append(step)
         elif block["type"] == "text":
             steps.append({"type": "user_input", "content": [{"type": "text", "text": block["text"]}]})
+        elif block["type"] == "image":
+            part = _image_content(block) or {"type": "text", "text": image_summary(block)}
+            steps.append({"type": "user_input", "content": [part]})
     return steps
 
 
@@ -235,7 +267,13 @@ def to_reply(status: str | None, steps: list[dict], usage: Any = None) -> Reply:
 
     content: list[dict] = []
     for step in steps:
-        if step.get("type") == "model_output":
+        if step.get("type") == "thought":
+            summary = "\n".join(
+                b["text"] for b in step.get("summary") or [] if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+            )
+            if summary:
+                content.append({"type": "thinking", "thinking": summary, "signature": None})
+        elif step.get("type") == "model_output":
             for block in step.get("content") or []:
                 if block.get("type") == "text" and block.get("text"):
                     content.append({"type": "text", "text": block["text"]})

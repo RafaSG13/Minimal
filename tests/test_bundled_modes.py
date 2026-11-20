@@ -273,10 +273,10 @@ class DefaultModeTest(ModesTest):
         return app
 
     def test_default_plan_or_build_sets_the_mode_at_session_start(self):
-        for wanted in ("plan", "build", " Plan "):
+        for wanted in ("plan", "build"):
             with self.subTest(wanted):
                 app = self.begin({"default": wanted})
-                self.assertEqual(app.mode, wanted.strip().lower())
+                self.assertEqual(app.mode, wanted)
 
     def test_no_default_or_off_leaves_no_mode(self):
         for settings in (None, {"default": ""}, {"default": "off"}, {"default": "none"}):
@@ -290,14 +290,22 @@ class DefaultModeTest(ModesTest):
         self.assertEqual(app.mode, "build")
         self.assertEqual(self.changes, [])
 
-    def test_a_bad_default_says_what_to_use_and_starts_with_no_mode(self):
-        app = self.begin({"default": "review"})
+    def test_a_bad_default_is_a_reload_error_naming_the_choices_and_starts_with_no_mode(self):
+        (self.tmp / "settings.json").write_text(json.dumps({"extensions": {"settings": {"modes": {"default": "review"}}}}))
+        app = App(
+            registry=Registry(),
+            session=Session("t", self.tmp / "t.jsonl"),
+            cwd=str(self.tmp),
+            auto_approve=True,
+            frontend=self.frontend,
+            trust_project=True,
+            extra_extensions=[str(MARKETPLACE / "extensions" / "modes.py")],
+        )
+        _, errors = app.reload_extensions()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("extensions.settings.modes.default", errors[0])
+        app.begin()
         self.assertIsNone(app.mode)
-        message, kind = self.frontend.notify.call_args.args
-        self.assertIn("setting 'default' is 'review'", message)
-        self.assertIn("'plan', 'build' or ''", message)
-        self.assertIn("extensions.settings.modes", message)
-        self.assertEqual(kind, "warning")
 
     def test_a_default_of_the_wrong_type_is_a_reload_error_and_keeps_no_mode(self):
         (self.tmp / "settings.json").write_text(json.dumps({"extensions": {"settings": {"modes": {"default": 3}}}}))
@@ -312,9 +320,89 @@ class DefaultModeTest(ModesTest):
         )
         _, errors = app.reload_extensions()
         self.assertEqual(len(errors), 1)
-        self.assertIn("setting 'default' must be str", errors[0])
+        self.assertIn("modes.default must be str", errors[0])
         app.begin()
         self.assertIsNone(app.mode)
+
+
+class ModeSettingsTest(ModesTest):
+    def test_notes_are_settings(self):
+        app = self.make(settings={"plan_note": "PLAN!", "build_note": ""})
+        self.assertEqual(app.context.mode_info("plan").system_note, "PLAN!")
+        self.assertEqual(app.context.mode_info("build").system_note, "")
+
+    def test_approve_gate_off_switches_without_asking(self):
+        app = self.make(settings={"approve_gate": False})
+        app.context.set_mode("plan")
+        self.propose_plan(app)
+        app.context.set_mode("build")
+        self.wait_for_gate()
+        self.frontend.ask.assert_not_called()
+        self.assertEqual(list(app.queued), [])
+        self.assertEqual(app.mode, "build")
+
+    def test_approve_message_is_sent_on_yes_and_empty_sends_nothing(self):
+        app = self.make(settings={"approve_message": "Go ahead."})
+        app.context.set_mode("plan")
+        self.propose_plan(app)
+        app.context.set_mode("build")
+        self.wait_for_gate()
+        self.assertEqual(list(app.queued), ["Go ahead."])
+        quiet = self.make(settings={"approve_message": ""})
+        quiet.context.set_mode("plan")
+        self.propose_plan(quiet)
+        quiet.context.set_mode("build")
+        self.wait_for_gate()
+        self.assertEqual(list(quiet.queued), [])
+
+    def test_min_steps_decides_what_counts_as_a_plan(self):
+        one_step = "Do it:\n\n1. Edit foo.py.\n"
+        app = self.make()
+        app.context.set_mode("plan")
+        self.propose_plan(app, one_step)
+        app.context.set_mode("build")
+        self.wait_for_gate()
+        self.frontend.ask.assert_not_called()
+        loose = self.make(settings={"min_steps": 1})
+        loose.context.set_mode("plan")
+        self.propose_plan(loose, one_step)
+        loose.context.set_mode("build")
+        self.wait_for_gate()
+        self.frontend.ask.assert_called_once()
+        strict = self.make(settings={"min_steps": 3})
+        self.frontend.ask.reset_mock()
+        strict.context.set_mode("plan")
+        self.propose_plan(strict)
+        strict.context.set_mode("build")
+        self.wait_for_gate()
+        self.frontend.ask.assert_not_called()
+
+    def test_preview_chars_cuts_the_plan_in_the_question(self):
+        app = self.make(settings={"preview_chars": 100})
+        app.context.set_mode("plan")
+        self.propose_plan(app, PLAN + "3. " + "x" * 500)
+        app.context.set_mode("build")
+        self.wait_for_gate()
+        question = self.frontend.ask.call_args.args[0]
+        self.assertLess(len(question), 200)
+        self.assertNotIn("x" * 60, question)
+
+    def test_bad_values_are_load_errors(self):
+        for settings, needle in (({"min_steps": 0}, "min_steps"), ({"preview_chars": 5}, "preview_chars"), ({"approve_gate": 1}, "approve_gate")):
+            with self.subTest(settings):
+                (self.tmp / "settings.json").write_text(json.dumps({"extensions": {"settings": {"modes": settings}}}))
+                app = App(
+                    registry=Registry(),
+                    session=Session("t", self.tmp / "t.jsonl"),
+                    cwd=str(self.tmp),
+                    auto_approve=True,
+                    frontend=self.frontend,
+                    trust_project=True,
+                    extra_extensions=[str(MARKETPLACE / "extensions" / "modes.py")],
+                )
+                _, errors = app.reload_extensions()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(needle, errors[0])
 
 
 if __name__ == "__main__":

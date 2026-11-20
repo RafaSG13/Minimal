@@ -14,11 +14,13 @@ import json
 import os
 import shlex
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from minimal import config
-from minimal.core.app import App, ExitRepl
+from minimal.core.app import App, ExitRepl, _visible
 from minimal.core.context import Context
+from minimal.core.layout import Placed, resolve, resolve_keys
 from minimal.core.session import (
     TORN_NOTICE,
     list_sessions,
@@ -26,13 +28,17 @@ from minimal.core.session import (
     open_session,
     preview,
     project_dir,
+    prompt_text,
     session_header,
+    user_prompts,
 )
 from minimal.extensions import audit, loader, marketplace
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import MODE_OFF, Registry
+from minimal.extensions.metadata import read_metadata
+from minimal.extensions.registry import MODE_OFF, STATUS_SIDES, WIDGET_AREAS, CommandComplete, Registry
 from minimal.providers import login_provider
-from minimal.ui import setup
+from minimal.ui import ext_settings, setup
+from minimal.ui.export import assistant_texts, native_copy, session_markdown
 
 
 def _app(ctx: Context) -> App:
@@ -113,6 +119,56 @@ def _title(args: str, ctx: Context) -> None:
     if args.strip():
         session.set_title(args)
     print(f"Title: {session.title}" if session.title else "No title. Name this session with /title <text>.")
+
+
+def _before_prompt(args: str, ctx: Context, usage: str) -> tuple[int | None, int]:
+    """``(cut index, n)`` for ``/fork [n]`` and ``/rewind [n]``: the index of the ``n``-th last message the user
+    wrote (``None`` when ``args`` is empty: no cut), checked against the session's messages."""
+    word = args.strip()
+    if not word:
+        return None, 0
+    if not word.isdigit() or int(word) < 1:
+        raise ValueError(f"usage: {usage}")
+    n = int(word)
+    prompts = user_prompts(ctx.messages)
+    if n > len(prompts):
+        noun = "message" if len(prompts) == 1 else "messages"
+        raise ValueError(f"this session has only {len(prompts)} of your {noun}")
+    return prompts[-n], n
+
+
+def _fork(args: str, ctx: Context) -> None:
+    at, n = _before_prompt(args, ctx, "/fork [n]")
+    old = ctx.session_id
+    kept = len(ctx.messages) if at is None else at
+    last = None if at is None else _preview(ctx.messages[at])
+    ctx.fork(at)
+    print(f"Forked {old} into {ctx.session_id} with its first {kept} messages; {old} stays saved (/resume {old}).")
+    if last is not None:
+        print(f"The fork ends before your message {n} from the end: {last}")
+
+
+def _rewind(args: str, ctx: Context) -> None:
+    at, n = _before_prompt(args or "1", ctx, "/rewind [n]")
+    assert at is not None  # args is never empty here
+    last = _preview(ctx.messages[at])
+    dropped = ctx.truncate(at)
+    print(f"Rewound: dropped {dropped} messages, from your message {n} from the end: {last}")
+
+
+def _preview(message: dict) -> str:
+    """The start of a user message on one line (60 characters at most), safe to print."""
+    return _visible(" ".join(prompt_text(message).split())[:60]) or "(no text)"
+
+
+def _usage(args: str, ctx: Context) -> None:
+    if args:
+        raise ValueError("usage: /usage")
+    u = ctx.usage
+    print(f"Since this minimal started ({u.requests} model requests, every agent included):")
+    cache = f"{u.cache_read_tokens:,} read from the cache, {u.cache_write_tokens:,} written to it"
+    print(f"  input  {u.input_tokens:>10,} tokens ({cache})")
+    print(f"  output {u.output_tokens:>10,} tokens")
 
 
 def _model(args: str, ctx: Context) -> None:
@@ -239,8 +295,14 @@ def _trust(args: str, ctx: Context) -> None:
     print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
-_SCALARS = ("provider", "model", "theme", "max_tokens", "prompt.base", "prompt.files")
+_SCALARS = (
+    "provider", "model", "theme", "max_tokens", "reasoning_effort", "agent.max_turns", "tools.max_parallel",
+    "prompt.base", "prompt.files",
+)  # fmt: skip
 """Settings where the highest layer wins; the others are concatenated, merged or global-only lists."""
+
+_UI_SCALARS = ("ui.sidebar", "ui.sidebar_width", "ui.density", "ui.prompt_glyph", "ui.placeholder", "ui.css")
+"""The ``ui.*`` settings where the highest layer wins (the others are objects merged by name, shown per layer)."""
 
 
 def _settings(args: str, ctx: Context) -> None:
@@ -253,7 +315,7 @@ def _settings(args: str, ctx: Context) -> None:
     for file_scope, path in config.settings_files(app.cwd).items():
         print(f"  {file_scope:<8} {path}{'' if path.exists() else ' (not found)'}")
     lines = []
-    for key in _SCALARS:
+    for key in (*_SCALARS, *_UI_SCALARS):
         value, scope = settings.scalar(key)
         if scope is not None:
             lines.append(f"{key}  {value if isinstance(value, str) else json.dumps(value)}  ({scope})")
@@ -262,6 +324,9 @@ def _settings(args: str, ctx: Context) -> None:
             for item in layer.data.get(key, []):
                 shown = f"{item['name']}={item['url']}" if isinstance(item, dict) else item
                 lines.append(f"{key}  {shown}  ({layer.scope}){_untrusted_mark(settings, layer, key)}")
+        for key in ("ui.widgets", "ui.status", "ui.keys"):
+            if key in layer.data:
+                lines.append(f"{key}  {json.dumps(layer.data[key], separators=(',', ':'))}  ({layer.scope})")
         for ext_id, values in layer.data.get("extensions.settings", {}).items():
             mark = _untrusted_mark(settings, layer, "extensions.settings")
             lines.append(f"extensions.settings  {ext_id} {json.dumps(values, separators=(',', ':'))}  ({layer.scope}){mark}")
@@ -276,15 +341,209 @@ def _untrusted_mark(settings: config.Settings, layer: config.Layer, key: str) ->
     return " (not trusted: /trust)" if key in config.RISKY and layer.scope != "global" and not settings.trusted else ""
 
 
-EXT_USAGE = "/ext [list|search <query> [category]|publish <path> [name]]"
+UI_USAGE = (
+    "/ui [sidebar right|left|hidden | density normal|compact | hide <name> | show <name> | "
+    "move <name> <area> [order] | title <name> [text] | collapse <name> | expand <name> | reset [name]]"
+)
+UI_HELP = f"show the layout and keys, or change it: {UI_USAGE}"
+
+
+def _placed_origin(placed: Placed) -> str:
+    user = f", user: {' '.join(placed.overridden)}" if placed.overridden else ""
+    return f"[{placed.source}{user}]"
+
+
+def _placed_heading(placed: Placed) -> str:
+    """What ``/ui`` adds to a widget's or panel's line about its heading: ``title 'GIT'``, ``collapsible``, ``collapsed``."""
+    parts = []
+    if placed.title:
+        parts.append(f"title {placed.title!r}")
+    elif placed.title == "":
+        parts.append("title hidden")
+    if placed.collapsible:
+        parts.append("collapsible")
+    if placed.collapsed:
+        parts.append("collapsed")
+    return f"  ({', '.join(parts)})" if parts else ""
+
+
+def _ui_report(app: App) -> str:
+    """The effective layout and keys: where each widget, panel and status segment is, in order, and what is bound to which key."""
+    settings = app.settings
+    layout = resolve(app.registry, settings)
+    bound, problems = resolve_keys(app.registry, settings)
+    width = settings.ui_sidebar_width
+    lines = [
+        f"sidebar {settings.ui_sidebar} (width {width if width is not None else 'default'}), "
+        f"density {settings.ui_density}",
+        "",
+        "Areas (widgets and panels, in order):",
+    ]
+    for area in WIDGET_AREAS:
+        items = layout.in_area(area)
+        lines.append(f"  {area}" + ("" if items else ": (none)"))
+        lines += [f"    {p.order:>4}  {p.name}  {p.kind}{_placed_heading(p)}  {_placed_origin(p)}" for p in items]
+    lines += ["", "Status line (segments, in order):"]
+    for side in STATUS_SIDES:
+        lines.append(f"  {side}")
+        lines += [f"    {p.order:>4}  {p.name}  {_placed_origin(p)}" for p in layout.segments(side)]
+    off = [p for p in layout.placements if not p.enabled]
+    if off:
+        lines += ["", "Hidden:"]
+        lines += [
+            f"  {p.name}  {p.kind} of {p.place}  {p.note or 'hidden by you'}  {_placed_origin(p)}" for p in off
+        ]
+    lines += ["", "Keys (rebind with ui.keys in the settings):"]
+    for b in bound:
+        origin = "built-in" if b.builtin else "extension"
+        lines.append(
+            f"  {b.key or '(unbound)':<14} {b.id}  {b.description}  [{origin}{', user: ui.keys' if b.overridden else ''}]"
+        )
+    if layout.problems or problems:
+        lines += ["", "Problems:", *[f"  {p}" for p in [*layout.problems, *problems]]]
+    lines += ["", f"Change it with {UI_USAGE}; a reload applies edits to the ui.* settings."]
+    return "\n".join(lines)
+
+
+def _ui_targets(app: App, name: str) -> tuple[bool, bool]:
+    """Whether ``name`` is a widget or panel, and whether it is a status segment. Raises if it is neither."""
+    layout = resolve(app.registry, app.settings)
+    widget = any(p.name == name for p in layout.placements if p.kind != "status")
+    status = any(p.name == name for p in layout.placements if p.kind == "status")
+    if not (widget or status):
+        widgets = sorted({p.name for p in layout.placements if p.kind != "status"})
+        segments = sorted({p.name for p in layout.placements if p.kind == "status"})
+        raise ValueError(
+            f"no widget, panel or status segment called {name!r}; widgets and panels: {', '.join(widgets) or 'none'}; "
+            f"status segments: {', '.join(segments)}"
+        )
+    return widget, status
+
+
+def _ui_entry(entries: dict, name: str, **fields: object) -> None:
+    """Set ``fields`` of ``entries[name]``; a ``None`` field is removed, and an entry left empty with it."""
+    entry = {**entries.get(name, {}), **fields}
+    entry = {key: value for key, value in entry.items() if value is not None}
+    if entry:
+        entries[name] = entry
+    else:
+        entries.pop(name, None)
+
+
+def _ui_change(app: App, words: list[str]) -> str:
+    """The ``/ui`` subcommand ``words`` as changes to the global ``ui.*`` settings; returns what to tell the user."""
+    verb, args = words[0], words[1:]
+    glob = config.load_global()
+    widgets, status = dict(glob.get("ui.widgets", {})), dict(glob.get("ui.status", {}))
+    changes: dict = {}
+    if verb in ("sidebar", "density") and len(args) == 1:
+        choices = config.UI_SIDEBARS if verb == "sidebar" else config.UI_DENSITIES
+        if args[0] not in choices:
+            raise ValueError(f"/ui {verb}: use one of {', '.join(choices)}")
+        changes[f"ui.{verb}"] = args[0]
+        done = f"{verb}: {args[0]}"
+    elif verb in ("hide", "show") and len(args) == 1:
+        is_widget, is_status = _ui_targets(app, args[0])
+        value = False if verb == "hide" else None
+        if is_widget:
+            _ui_entry(widgets, args[0], enabled=value)
+        if is_status:
+            _ui_entry(status, args[0], enabled=value)
+        done = f"{verb} {args[0]}"
+    elif verb == "move" and len(args) in (2, 3):
+        name, place = args[0], args[1]
+        order: int | None = None
+        if len(args) == 3:
+            try:
+                order = int(args[2])
+            except ValueError:
+                raise ValueError(f"/ui move: the order must be an integer, not {args[2]!r}") from None
+        is_widget, is_status = _ui_targets(app, name)
+        fits_widget, fits_status = is_widget and place in WIDGET_AREAS, is_status and place in STATUS_SIDES
+        if not (fits_widget or fits_status):
+            valid = WIDGET_AREAS if is_widget else STATUS_SIDES
+            raise ValueError(f"/ui move: {name} goes in one of {', '.join(valid)}, not {place!r}")
+        if fits_widget:
+            _ui_entry(widgets, name, area=place, order=order)
+        if fits_status:
+            _ui_entry(status, name, side=place, order=order)
+        done = f"move {name} to {place}" + (f", order {order}" if order is not None else "")
+    elif verb == "title" and len(args) >= 1:
+        _ui_widget(app, verb, args[0])
+        text = " ".join(args[1:]) if len(args) > 1 else None
+        _ui_entry(widgets, args[0], title=text)
+        done = f"title of {args[0]}: " + ("the extension's" if text is None else repr(text) if text else "hidden")
+    elif verb in ("collapse", "expand") and len(args) == 1:
+        _ui_widget(app, verb, args[0])
+        _ui_entry(widgets, args[0], collapsed=verb == "collapse")
+        done = f"{verb} {args[0]}"
+    elif verb == "reset" and len(args) <= 1:
+        if args:
+            _ui_targets(app, args[0])
+            widgets.pop(args[0], None)
+            status.pop(args[0], None)
+            done = f"reset {args[0]}"
+        else:
+            widgets, status = {}, {}
+            changes.update({"ui.sidebar": None, "ui.density": None})
+            done = "reset the layout (sidebar, density, widgets and status segments)"
+    else:
+        raise ValueError(f"usage: {UI_USAGE}")
+    if verb in ("hide", "show", "move", "title", "collapse", "expand", "reset"):
+        changes["ui.widgets"], changes["ui.status"] = widgets or None, status or None
+    try:
+        config.update_global(changes)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"not saved: {e}") from None
+    return done
+
+
+def _ui(args: str, ctx: Context) -> None:
+    app = _app(ctx)
+    words = shlex.split(args)
+    if not words:
+        print(_ui_report(app))
+        return
+    done = _ui_change(app, words)
+    app.reload_extensions()
+    print(f"UI: {done} (saved in {config.SETTINGS_FILE})")
+    project = [
+        layer.scope for layer in app.settings.layers if layer.scope != "global" and any(k.startswith("ui.") for k in layer.data)
+    ]
+    if project:
+        print(f"A {' or '.join(project)} settings file also sets ui.*: it beats this change where it sets the same thing.")
+
+
+def _ui_widget(app: App, verb: str, name: str) -> None:
+    """Raise ``ValueError`` unless ``name`` is a widget or panel (a status segment has no heading to title or collapse)."""
+    is_widget, _ = _ui_targets(app, name)
+    if not is_widget:
+        raise ValueError(f"/ui {verb}: {name} is a status segment; only widgets and panels have a heading")
+
+EXT_USAGE = f"/ext [list|search <query> [category]|publish <path> [name]|{ext_settings.USAGE.removeprefix('/ext ')}]"
 
 _ADD = "\x00add"
 _REMOVE = "\x00remove"
 """Marketplace-picker option values that cannot be URLs."""
 
 
+def _ext_relations(path: Path) -> str:
+    """``(needs a, b; conflicts with c)`` from the extension's ``__depends__`` and ``__conflicts__``; ``""`` if none or unreadable."""
+    try:
+        source = loader.read_extensions([path])[0]
+        meta = read_metadata(source.entry, str(source.entry_path))
+    except (OSError, ValueError):
+        return ""
+    parts = [f"needs {', '.join(meta.depends)}"] if meta.depends else []
+    parts += [f"conflicts with {', '.join(meta.conflicts)}"] if meta.conflicts else []
+    return f"({'; '.join(parts)})" if parts else ""
+
+
 def _ext(args: str, ctx: Context) -> None:
     app = _app(ctx)
+    if args.split(None, 1)[:1] == ["settings"]:  # its value is JSON or free text: not shlex-split
+        ext_settings.run(args.split(None, 1)[1] if " " in args.strip() else "", app)
+        return
     words = shlex.split(args)
     if not words:
         _ext_picker(app)
@@ -292,7 +551,7 @@ def _ext(args: str, ctx: Context) -> None:
         rows = marketplace.installed(app.cwd)
         for where, category, path in rows:
             disabled = "disabled" if loader.ext_id(path) in app.settings.disabled else ""
-            print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled}".rstrip())
+            print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled} {_ext_relations(path)}".rstrip())
         if not rows:
             print("(none)")
     elif words[0] == "search" and 2 <= len(words) <= 3:
@@ -466,6 +725,117 @@ def _ext_picker(app: App) -> None:
     print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
 
 
+def _complete_word(args: str, options: Iterable[str]) -> list[str]:
+    """``args`` with its last word replaced by each of ``options`` that starts with it: the completions of a command
+    whose arguments are words from a list."""
+    head, sep, last = args.rpartition(" ")
+    return [f"{head}{sep}{o}" for o in options if o.startswith(last)]
+
+
+def _complete_mode(args: str, ctx: Context) -> list[str]:
+    return _complete_word(args, [*ctx.modes(), MODE_OFF]) if " " not in args else []
+
+
+def _complete_provider(args: str, ctx: Context) -> list[str]:
+    return _complete_word(args, _app(ctx).registry.providers) if " " not in args else []
+
+
+def _complete_resume(args: str, ctx: Context) -> list[str]:
+    app = _app(ctx)
+    all_projects = "--all" in args.split()
+    ids = [i for i in reversed(list_sessions(None if all_projects else app.cwd)) if i != app.session.id]
+    return _complete_word(args, ["--all", *ids[:RESUME_CHOICES]])
+
+
+def _complete_ext(args: str, ctx: Context) -> list[str]:
+    if " " not in args:
+        return _complete_word(args, ("list", "search", "publish", "settings"))
+    command, _, rest = args.partition(" ")
+    if command != "settings":
+        return []
+    return [f"settings {found}" for found in ext_settings.complete(rest, _app(ctx))]
+
+
+def _complete_ui(args: str, ctx: Context) -> list[str]:
+    verbs = ("sidebar", "density", "hide", "show", "move", "title", "collapse", "expand", "reset")
+    words = args.split(" ")
+    if len(words) == 1:
+        return _complete_word(args, verbs)
+    verb, last = words[0], len(words) == 2
+    registry = _app(ctx).registry
+    if verb in ("sidebar", "density") and last:
+        return _complete_word(args, config.UI_SIDEBARS if verb == "sidebar" else config.UI_DENSITIES)
+    names = [*registry.widgets, *registry.panels]
+    if verb in ("title", "collapse", "expand") and last:
+        return _complete_word(args, names)
+    if verb in ("hide", "show", "reset") and last:
+        return _complete_word(args, [*names, *registry.status])
+    if verb == "move" and len(words) == 3:
+        return _complete_word(args, [*WIDGET_AREAS, *STATUS_SIDES])
+    return []
+
+
+def _copy(args: str, ctx: Context) -> None:
+    """Copy the last assistant message (or the n-th from the end) to the clipboard."""
+    app = _app(ctx)
+    word = args.strip()
+    if word and not (word.isdigit() and int(word) >= 1):
+        raise ValueError("usage: /copy [n]")
+    n = int(word) if word else 1
+    texts = assistant_texts(app.messages)
+    if not texts:
+        raise ValueError("no assistant message to copy yet")
+    if n > len(texts):
+        raise ValueError(f"no assistant message number {n} from the end; there are {len(texts)}")
+    text = texts[-n]
+    used = []
+    copy_text = getattr(app.frontend, "copy_text", None)  # the terminal UI's: OSC 52 through the terminal
+    if copy_text is not None and copy_text(text):
+        used.append("OSC 52")
+    if tool := native_copy(text):
+        used.append(tool)
+    if not used:
+        raise ValueError("no clipboard available: install pbcopy, wl-copy, xclip or xsel, or use a terminal with OSC 52")
+    which = "the last reply" if n == 1 else f"reply {n} from the end"
+    print(f"Copied {len(text)} characters of {which} ({' + '.join(used)}).")
+
+
+def _export(args: str, ctx: Context) -> None:
+    """Write the session as Markdown to a file."""
+    app = _app(ctx)
+    words = shlex.split(args)
+    force = "--force" in words
+    rest = [w for w in words if w != "--force"]
+    if len(rest) > 1:
+        raise ValueError("usage: /export [path] [--force]")
+    if not app.messages:
+        raise ValueError("nothing to export yet")
+    name = rest[0] if rest else f"minimal-session-{app.session.id}.md"
+    path = Path(app.cwd, Path(name).expanduser())
+    text = session_markdown(app.messages, app.session.id, app.session.title, app.cwd)
+    try:
+        with open(path, "w" if force else "x", encoding="utf-8") as f:
+            f.write(text)
+    except FileExistsError:
+        raise ValueError(f"{path} already exists; /export {name} --force overwrites it") from None
+    except OSError as e:
+        raise ValueError(f"cannot write {path}: {e.strerror or e}") from None
+    print(f"Exported {len(app.messages)} messages to {path}")
+
+
+_COMPLETERS: dict[str, CommandComplete] = {
+    "resume": _complete_resume,
+    "provider": _complete_provider,
+    "login": _complete_provider,
+    "logout": _complete_provider,
+    "mode": _complete_mode,
+    "ext": _complete_ext,
+    "extensions": _complete_ext,
+    "ui": _complete_ui,
+}
+"""The built-in commands whose arguments the composer completes, by name."""
+
+
 def register_builtin_commands(registry: Registry) -> None:
     """Register the built-in slash commands into ``registry`` (:attr:`~minimal.extensions.registry.Registry.builtin_commands`)."""
     ext = f"pick extensions to install, update or remove; {EXT_USAGE}"
@@ -475,6 +845,9 @@ def register_builtin_commands(registry: Registry) -> None:
         ("sessions", _sessions, "list this project's saved sessions: /sessions [--all]", False),
         ("resume", _resume, "resume a saved session of this project: /resume [--all] [id]", False),
         ("title", _title, "show or set this session's title (shown by /sessions and /resume): /title [text]", False),
+        ("fork", _fork, "continue in a new session copied from this one, up to your n-th last message: /fork [n]", False),
+        ("rewind", _rewind, "drop your n-th last message (default 1) and all after it: /rewind [n]", False),
+        ("usage", _usage, "show the tokens and model requests spent since minimal started", False),
         ("model", _model, "list models, or change: /model [number|name]", False),
         ("provider", _provider, "list providers, or switch: /provider <name> [model]", False),
         ("tools", _tools, "list the tools", False),
@@ -484,10 +857,13 @@ def register_builtin_commands(registry: Registry) -> None:
         ("trust", _trust, "review this project's extensions and choose whether to trust and load them", False),
         ("ext", _ext, ext, False),
         ("extensions", _ext, ext, False),
+        ("copy", _copy, "copy the last assistant message, or the n-th from the end: /copy [n]", False),
+        ("export", _export, "write the session as Markdown, default ./minimal-session-<id>.md: /export [path] [--force]", False),
+        ("ui", _ui, UI_HELP, False),
         ("quit", _exit, "quit", False),
         ("setup", _setup, "choose and save the default provider, its login or key, and the model", True),
         ("login", _login, "sign in to a provider that uses a login (a subscription, an account): /login [provider]", True),
         ("logout", _logout, "forget a provider's login: /logout [provider]", False),
         ("exit", _exit, "quit", False),
     ):
-        registry.register_builtin_command(name, run, description, terminal)
+        registry.register_builtin_command(name, run, description, terminal, _COMPLETERS.get(name))

@@ -1,24 +1,28 @@
 import asyncio
+import json
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from textual.widgets import Input, Label, Markdown, SelectionList, Static
+from textual.widgets import Label, Markdown, SelectionList, Static
 from textual.widgets._markdown import MarkdownParagraph
 
 from minimal import config
+from minimal.core import session as session_mod
 from minimal.core.app import App
 from minimal.core.host import Host
 from minimal.core.session import Session
 from minimal.extensions import loader
 from minimal.extensions.registry import LogoSpec, Registry
+from minimal.core.git import GitInfo
 from minimal.providers.base import Reply
 from minimal.ui.commands import register_builtin_commands
-from minimal.ui.tui.app import CommandSuggester, MinimalTui, _outside_event_loop
+from minimal.ui.tui.app import MinimalTui, _outside_event_loop
+from minimal.ui.tui.composer import Composer, CommandSuggester
 from minimal.ui.tui.markdown import RenderedFence, RenderedQuote
-from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, TextScreen
+from minimal.ui.tui.screens import ChecklistScreen, ChoiceScreen, ConfirmScreen, PermissionScreen, TextScreen
 from minimal.ui.tui.widgets import PanelView, ToolBlock, _edit_diff, logo_content
 
 
@@ -77,6 +81,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         for patcher in (
             mock.patch.object(loader, "GLOBAL_EXTENSIONS_DIR", self.tmp / "global"),
             mock.patch.object(config, "SETTINGS_FILE", self.tmp / "settings.json"),
+            mock.patch.object(session_mod, "SESSIONS_DIR", self.tmp / "sessions"),
+            mock.patch.object(config, "HOME_DIR", self.tmp / "home"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -96,7 +102,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.core.provider = StreamingFakeProvider(replies)
 
     async def submit(self, pilot, text):
-        pilot.app.query_one("#prompt", Input).value = text
+        pilot.app.query_one("#prompt", Composer).set_text(text)
         await pilot.press("enter")
 
     async def wait_until(self, pilot, condition):
@@ -107,7 +113,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.fail("timed out")
 
     def idle(self, app):
-        return lambda: not app.query_one("#prompt", Input).disabled
+        return lambda: not app.busy
 
     async def test_turn_streams_and_widget_refreshes(self):
         self.use_replies(Reply(content=[{"type": "text", "text": "Hello **there**"}], stop_reason="end_turn"))
@@ -178,13 +184,13 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         release = threading.Event()
         self.addCleanup(release.set)
 
-        def slow_git_status(cwd):
+        def slow_read_git(cwd):
             release.wait(5)
-            return ("feature", True)
+            return GitInfo("feature", dirty=True, unstaged=1)
 
         app = MinimalTui(Host(self.core))
         status = lambda: str(app.query_one("#status-left", Static).render())  # noqa: E731
-        with mock.patch("minimal.ui.tui.app.git_status", slow_git_status):
+        with mock.patch("minimal.core.git.read_git", slow_read_git):
             async with app.run_test() as pilot:
                 await pilot.pause(0.1)
                 self.assertIn("fake", status())  # drawn while git is still running
@@ -400,9 +406,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "write it")
-            await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+            await self.wait_until(pilot, lambda: isinstance(app.screen, PermissionScreen))
             self.assertTrue(app.query_one(ToolBlock).has_class("-pending"))
-            await pilot.press("enter")  # Allow is preselected
+            await pilot.press("enter")  # Allow once is preselected
             await self.wait_until(pilot, self.idle(app))
             self.assertTrue(app.query_one(ToolBlock).has_class("-success"))
         self.assertEqual((self.tmp / "out.txt").read_text(), "x")
@@ -436,13 +442,104 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = MinimalTui(Host(self.core))
         async with app.run_test() as pilot:
             await self.submit(pilot, "write it")
-            await self.wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
-            await pilot.press("right", "enter")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, PermissionScreen))
+            await pilot.press("escape")
             await self.wait_until(pilot, self.idle(app))
             block = app.query_one(ToolBlock)
             self.assertTrue(block.has_class("-error"))
             self.assertIn("denied", str(block.render()))
         self.assertFalse((self.tmp / "out.txt").exists())
+
+    async def test_permission_dialog_offers_session_and_always_with_the_rule(self):
+        self.use_write_replies()
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "write it")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, PermissionScreen))
+            self.assertEqual([v for v, _ in app.screen.choices], ["once", "session", "always", "deny"])
+            shown = [str(label.render()) for label in app.screen.query(Label)]
+            self.assertTrue(any("write(out.txt)" in s and ".minimal" in s for s in shown), shown)
+            await pilot.press("escape")
+            await self.wait_until(pilot, self.idle(app))
+
+    async def test_permission_dialog_this_session_allows_the_rule_without_writing_it(self):
+        self.use_write_replies()
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "write it")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, PermissionScreen))
+            await pilot.press("right", "enter")
+            await self.wait_until(pilot, self.idle(app))
+            await pilot.pause(0.1)
+            self.assertTrue(any("for this session" in o for o in self.outputs(app)), self.outputs(app))
+        self.assertEqual(self.core.permissions.session, ["write(out.txt)"])
+        self.assertFalse((self.tmp / ".minimal" / "settings.local.json").exists())
+        self.assertEqual((self.tmp / "out.txt").read_text(), "x")
+
+    async def test_permission_dialog_always_writes_the_rule_and_says_where(self):
+        patcher = mock.patch.object(config, "TRUST_FILE", self.tmp / "trusted.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.use_write_replies()
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "write it")
+            await self.wait_until(pilot, lambda: isinstance(app.screen, PermissionScreen))
+            await pilot.press("right", "right", "enter")
+            await self.wait_until(pilot, self.idle(app))
+            await pilot.pause(0.1)
+            written = [o for o in self.outputs(app) if "Saved the rule write(out.txt)" in o]
+            self.assertTrue(written and "settings.local.json" in written[0], self.outputs(app))
+        saved = json.loads((self.tmp / ".minimal" / "settings.local.json").read_text())
+        self.assertEqual(saved, {"permissions": {"allow": ["write(out.txt)"]}})
+        # The rule survives a restart: what the project asks to be trusted for is still what the user trusted.
+        layers = config.read_layers(str(self.tmp))[0]
+        snapshot = loader.read_project_snapshot(str(self.tmp), config.risky_subset(layers))
+        self.assertIsNotNone(snapshot)
+        self.assertTrue(self.core.is_trusted(snapshot))
+        self.assertEqual([r for r, _ in config.Settings(tuple(layers), True).allow], ["write(out.txt)"])
+
+    async def test_progress_shows_next_to_the_working_indicator_until_the_command_ends(self):
+        started, release = threading.Event(), threading.Event()
+
+        def work(args, ctx):
+            ctx.progress("step 2 of 3")
+            started.set()
+            release.wait(5)
+
+        self.core.registry.register_command("work", work)
+        app = MinimalTui(Host(self.core))
+        async with app.run_test() as pilot:
+            await self.submit(pilot, "/work")
+            await self.wait_until(pilot, started.is_set)
+            await pilot.pause(0.2)
+            self.assertIn("step 2 of 3", str(app.query_one("#working", Static).render()))
+            release.set()
+            await self.wait_until(pilot, self.idle(app))
+            self.assertIsNone(app.progress_text)
+
+    async def test_rewind_redraws_the_transcript_and_fork_switches_to_a_copy(self):
+        self.use_replies(
+            Reply(content=[{"type": "text", "text": "first answer"}], stop_reason="end_turn"),
+            Reply(content=[{"type": "text", "text": "second answer"}], stop_reason="end_turn"),
+        )
+        app = MinimalTui(Host(self.core))
+        users = lambda: [str(s.render()) for s in app.query(".user").results(Static)]  # noqa: E731
+        async with app.run_test() as pilot:
+            for line in ("one", "two"):
+                await self.submit(pilot, line)
+                await self.wait_until(pilot, self.idle(app))
+            self.assertEqual(users(), ["one", "two"])
+            first = self.core.session.id
+            await self.submit(pilot, "/fork")
+            await self.wait_until(pilot, self.idle(app))
+            self.assertNotEqual(self.core.session.id, first)
+            await self.submit(pilot, "/rewind")
+            await self.wait_until(pilot, self.idle(app))
+            await pilot.pause(0.1)
+            self.assertEqual(users(), ["one"])
+            self.assertEqual([m["role"] for m in self.core.messages], ["user", "assistant"])
+            self.assertEqual(len((self.tmp / "t.jsonl").read_text().splitlines()), 5)  # the old session kept all 4 messages
 
     async def test_command_output_captured(self):
         app = MinimalTui(Host(self.core))
@@ -496,7 +593,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("mode ", status())
                 else:
                     self.assertIn(f"mode {expected}", status())
-            self.assertIs(app.focused, app.query_one("#prompt", Input))  # the focus stayed in the composer
+            self.assertIs(app.focused, app.query_one("#prompt", Composer))  # the focus stayed in the composer
 
     async def test_mode_change_handler_can_ask_and_the_status_follows_a_later_change(self):
         answers = []
@@ -520,7 +617,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.1)
             await pilot.press("shift+tab")
             self.assertIsNone(self.core.mode)
-            self.assertIsNot(app.focused, app.query_one("#prompt", Input))
+            self.assertIsNot(app.focused, app.query_one("#prompt", Composer))
 
     async def test_shift_tab_does_not_cycle_modes_in_a_dialog_or_while_a_turn_runs(self):
         self.core.registry.register_mode("plan", description="read only")

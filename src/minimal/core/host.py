@@ -17,11 +17,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from minimal import config
-from minimal.core.agents import AgentInfo
+from minimal.core.agents import AgentInfo, UsageTotals
 from minimal.core.context import Context
+from minimal.core.layout import Bound, Layout, resolve, resolve_keys
 from minimal.extensions.registry import (
     Command,
+    CssSpec,
+    CommandComplete,
     CommandRun,
+    KeybindingSpec,
     LogoSpec,
     PanelSpec,
     RendererSpec,
@@ -47,6 +51,11 @@ class HostStatus:
         extensions: How many extensions the last reload loaded.
         untrusted: How many project extensions and settings were not applied for lack of ``/trust``; ``0`` if none.
         mode: The current mode's name; ``None`` for no mode.
+        reasoning_effort: ``"low"``, ``"medium"`` or ``"high"`` when the model is asked to think that much; ``None`` for
+            the provider's default.
+        usage: Tokens and requests this process has spent (``ctx.usage``).
+        truncations: How many times the session's history was cut (``ctx.truncate``): redraw the transcript when it
+            or ``session_id`` changes.
     """
 
     model: str
@@ -57,6 +66,9 @@ class HostStatus:
     extensions: int
     untrusted: int
     mode: str | None = None
+    reasoning_effort: str | None = None
+    usage: UsageTotals = UsageTotals()
+    truncations: int = 0
 
 
 class Host:
@@ -102,6 +114,9 @@ class Host:
             extensions=len(app.extensions),
             untrusted=app.untrusted.count if app.untrusted is not None else 0,
             mode=app.mode,
+            reasoning_effort=app.reasoning_effort,
+            usage=app.usage.totals,
+            truncations=app.truncations,
         )
 
     @property
@@ -172,6 +187,42 @@ class Host:
         """The extension logo for the welcome header (``register_logo``), or ``None``."""
         return self._app.registry.logo
 
+    @property
+    def keybindings(self) -> Mapping[str, KeybindingSpec]:
+        """Global keys extensions bound (``register_keybinding``), by key. API 2.3.
+
+        Bind what :meth:`key_map` returns instead: it applies the user's ``ui.keys``. Run one as ``spec.run(ctx)`` on
+        a worker thread, as for a slash command.
+        """
+        return types.MappingProxyType(self._app.registry.keybindings)
+
+    @property
+    def css(self) -> Mapping[str, CssSpec]:
+        """Stylesheets extensions added for the terminal UI (``register_css``), by ``<extension id>:<name>``. API 2.3."""
+        return types.MappingProxyType(self._app.registry.css)
+
+    def layout(self) -> Layout:
+        """Where every widget, panel and status segment goes: what extensions registered with the user's
+        ``ui.widgets``, ``ui.status`` and ``ui.sidebar`` applied, in stacking order (:func:`minimal.core.layout.resolve`). API 2.3."""
+        return resolve(self._app.registry, self._app.settings)
+
+    def key_map(self) -> tuple[list[Bound], list[str]]:
+        """``(bindings, problems)``: minimal's key actions and the extensions' keybindings on the keys they end up
+        on, with the user's ``ui.keys`` applied (:func:`minimal.core.layout.resolve_keys`). API 2.3."""
+        return resolve_keys(self._app.registry, self._app.settings)
+
+    def theme_changed(self) -> None:
+        """The frontend's colour theme changed: fire ``theme_change`` (``ctx.theme`` has the new colours). API 2.3."""
+        self._app.theme_changed()
+
+    def refresh_git(self) -> None:
+        """Ask the shared git poller (``ctx.git()``) to look again now, if it runs: files may have changed. API 2.3."""
+        self._app.poke_git()
+
+    def stop_git(self) -> None:
+        """Stop the shared git poller (a frontend that is closing calls it); ``ctx.git()`` starts a new one. API 2.3."""
+        self._app.stop_git()
+
     # --- acting on minimal ----------------------------------------------------
 
     def submit(self, text: str) -> None:
@@ -210,9 +261,36 @@ class Host:
         typed = prefix[1:]
         return [f"/{name}" for name in sorted(self._app.commands()) if name.startswith(typed)]
 
-    def register_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
+    def complete_args(self, line: str) -> list[str]:
+        """The completions of the arguments typed in ``line`` (``"/theme da"`` → ``["dark", "dracula"]``), as the
+        command's ``complete`` function returns them (API 2.3); each replaces the whole argument text.
+
+        Empty for text that is not ``/name `` followed by arguments, and for a command without ``complete``.
+
+        Raises:
+            Exception: whatever ``complete`` raises, or ``ValueError`` if it does not return a list of strings: report it.
+        """
+        if not line.startswith("/") or " " not in line:
+            return []
+        name, _, args = line[1:].partition(" ")
+        cmd = self._app.find_command(name)
+        if cmd is None or cmd.complete is None:
+            return []
+        found = cmd.complete(args, self._app.context)
+        if not isinstance(found, list) or not all(isinstance(c, str) for c in found):
+            raise ValueError(f"/{name} completion must return a list of strings")
+        return found
+
+    def register_command(
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
+    ) -> None:
         """Add a built-in command that only this frontend has, called as ``run(args, ctx)``; it survives reloads."""
-        self._app.add_frontend_command(name, run, description, terminal)
+        self._app.add_frontend_command(name, run, description, terminal, complete)
 
     def interrupt(self) -> None:
         """Ask the turn in progress to stop at its next streamed chunk, tool call or model request."""
@@ -229,3 +307,12 @@ class Host:
         Send it with :meth:`submit` (or :meth:`run_command`) as soon as no turn or command is running.
         """
         return self._app.take_queued()
+
+    def queue_message(self, text: str) -> None:
+        """Queue ``text`` behind the messages already queued, to be sent with :meth:`next_queued` once the turn
+        or command in progress ends. Unlike ``ctx.queue_user_message`` it does not ask the frontend to send it."""
+        self._app.queued.append(text)
+
+    def queued_messages(self) -> list[str]:
+        """The messages waiting to be sent, oldest first (a copy)."""
+        return list(self._app.queued)

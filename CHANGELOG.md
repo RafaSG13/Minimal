@@ -1,5 +1,109 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- Tools marked `read_only` run concurrently: when one model reply calls several of them in a row, their calls overlap
+  (up to `tools.max_parallel`, default 4), while confirmations, `tool_call`/`tool_result` handlers and the UI still
+  see the calls in order and the results go back in order; any other call runs alone as a barrier. `read`, `grep` and
+  `glob` are `read_only`. Extensions get `read_only=` on `Tool`, `Extension.register_tool` and `@minimal.tool`.
+- `agent.max_turns` setting (default 50): the most model requests one turn may make; `ctx.max_turns` reads it and
+  `ctx.run_agent` uses it as the default of `max_turns`.
+- `image` and `thinking` blocks in the history. `read` returns a PNG, JPEG, GIF or WebP file (up to 3.75 MB) as a
+  picture the model sees, and tools may return lists of `text`/`image` blocks (`minimal.api.image_block`); Anthropic,
+  OpenAI-compatible servers (`image_url` data URLs) and Gemini take pictures in messages and tool results. The model's
+  reasoning is kept as `thinking` blocks where a provider shows it (Anthropic with its signatures, which are sent back
+  with the request; Gemini thought summaries; `reasoning_content` of OpenAI-compatible servers) and is dropped from
+  requests to providers that cannot use it. Pictures show as `[image: media_type, N bytes]` in the UI, logs and
+  `result_text`, never as base64.
+- `reasoning_effort` setting (`low`, `medium` or `high`) and `ctx.reasoning_effort` / `ctx.set_reasoning_effort()`:
+  Anthropic extended-thinking budget, OpenAI `reasoning_effort` for reasoning models, Gemini `thinking_level`;
+  ignored by anything that cannot use it. `HostStatus.reasoning_effort` carries it to a status line.
+- `ctx.fork(at_index=None)` continues in a new session copied from the first `at_index` messages of the current one (the
+  old one stays saved and is named as `parent`), and `ctx.truncate(at_index)` drops the messages from `at_index` on and
+  rewrites the session file atomically. Both refuse to split a `tool_use` from its `tool_result`, refuse while a turn
+  runs, and make the terminal UI redraw the transcript. The built-in `/fork [n]` and `/rewind [n]` use them (`n`: back
+  to before your n-th last message; `/rewind` defaults to 1).
+- `ctx.complete_text(prompt, *, system=None, model=None, max_tokens=1024)` asks the model one question outside the
+  conversation and returns the text, and `ctx.complete` takes `model=` and now goes through the `provider_error`
+  handlers like a turn's request does.
+- `ctx.usage` (`UsageTotals`: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests`)
+  counts every model request of the process, agents and `ctx.complete` included; it is also in `HostStatus.usage` and
+  printed by the new `/usage`. It is per process: `minimal -c` starts counting again.
+- `ctx.progress(text)` shows a one-line progress note next to the working indicator while a tool or command runs
+  (`Frontend.progress` for other frontends; the plain terminal prints each change on stderr).
+- The permission dialog of the terminal UI offers Allow once, Allow this session, Always allow and Deny, and shows the
+  narrowest rule the two wider answers add (`bash(git status*)`, `write(src/app.py)`; a `bash` command that chains,
+  pipes or redirects gets none). "Always" appends it to `permissions.allow` in the project's
+  `.minimal/settings.local.json`, keeps the project trusted and tells the transcript where it went; `deny` rules still
+  win. `Frontend` gained `permission(question, rule, saved_in)` and `progress(text)`, and `config.add_allow_rule`
+  edits the file.
+- Multi-line prompt: the composer grows with the text up to `ui.composer_max_lines` rows (default 8). `Enter` sends;
+  `Shift+Enter`, `Ctrl+J` or `Alt+Enter` insert a newline; pasted text keeps its lines. The prompt is now a
+  `TextArea`, so a marketplace item that patches the old `Input` (`widgets/command_menu`) needs updating.
+- Prompt history: `Up` on the first line and `Down` on the last walk the messages and commands sent in this project,
+  keeping the draft. It is saved in `~/.minimal/data/projects/<key>/history.json` (mode 0600), capped by
+  `ui.history_size` (default 500), consecutive duplicates collapsed.
+- The prompt stays usable while a turn runs: a message sent meanwhile shows as `queued: …` above it and goes out when
+  the turn ends (`Host.queue_message()`, `Host.queued_messages()`); a `/command` typed meanwhile is refused with a notice.
+- `@file` mentions: `@` and a few letters complete a project file (`.gitignore` respected), and on sending each
+  `@path` naming a text file inside the working directory is attached to the message as a `<file path="…">` block
+  (cut at `ui.mention_max_chars`, default 20000). Binary files and paths outside the directory are never read.
+- `ui.notify` (`off`, `bell`, `osc9`) and `ui.notify_after` (seconds, default 10): ring the bell or send an OSC 9
+  desktop notification when a long turn ends while the terminal is in the background.
+- `/copy [n]` copies the last (or n-th from the end) assistant message to the clipboard (OSC 52, and `pbcopy`,
+  `wl-copy`, `xclip` or `xsel` when installed), and `/export [path] [--force]` writes the session as Markdown.
+- Every slash command, built-in and extension, is in the `Ctrl+P` command palette; one that needs an argument is typed
+  into the prompt instead of run.
+- Command argument completion: `register_command(..., complete=fn)` and `@minimal.command(complete=fn)` take
+  `complete(args, ctx) -> list[str]`, offered in the composer's popup (`Tab` cycles); `Host.complete_args()` and
+  `Command.complete` expose it. `/theme`, `/mode`, `/resume`, `/provider`, `/login`, `/logout` and `/ext` complete their
+  arguments.
+- Typing `/` in the prompt lists the slash commands with their descriptions, narrowed as you type; `Up`/`Down` move,
+  `Enter` runs the highlighted one and `Tab` completes it into the prompt to add arguments. The marketplace's
+  `command_menu` item, which patched the old single-line prompt, is retired by this.
+- `register_keybinding(key, run, description="", *, show=False, name="")` and the `@minimal.keybinding(key, ...)`
+  decorator bind a global key to `run(ctx)`, run on a worker thread like a slash command; errors are shown once. Keys the
+  UI needs (`RESERVED_KEYS`) and bare letters are refused, and a duplicate key between extensions is reported on
+  reload. `Host.keybindings` lists them. `extensions/example.py` shows a key and an ordered panel.
+- `order` keyword for `register_widget`, `register_panel` and `register_status`, and the new widget areas `left`
+  (a second sidebar) and `footer` (under the status line) in `WIDGET_AREAS`; `Registry.placement_index` breaks ties.
+- `ui.*` settings, applied on `/reload`: `ui.sidebar` (`right`, `left`, `hidden`), `ui.sidebar_width`, `ui.widgets` and
+  `ui.status` (move, reorder or hide any widget, panel or status segment, minimal's own included, by name), `ui.keys`
+  (rebind `interrupt`, `toggle_sidebar`, `cycle_mode` and extension keybindings), `ui.prompt_glyph`, `ui.placeholder`,
+  `ui.density` (`compact` removes the blank lines between transcript blocks) and `ui.css` (a Textual stylesheet from
+  `~/.minimal`, global only; one that fails to parse is reported and ignored).
+- `/ui` shows the effective layout (areas, status segments, keys, problems) and `/ui sidebar|density|hide|show|move|reset`
+  save changes to the global settings and reload. `config.update_global` accepts dotted keys such as `ui.sidebar`.
+- Extension metadata `__depends__` and `__conflicts__` (lists of extension ids): a dependency loads first and a
+  missing or failed one skips the extension (`needs 'x': install it with /ext`); of two conflicting extensions the
+  first loaded stays. `minimal ext check` validates them and `/ext list` shows them.
+- `ctx.invalidate()` redraws panels, status segments and widgets from any thread (cheap, coalesced), so a poller can
+  replace a panel `interval`. `ctx.theme` (`ThemeInfo`: name, `dark`, every colour as `#rrggbb`) and the `theme_change`
+  event give extensions the current theme, and styled text accepts `$name` (a theme colour such as `$code`, or a CSS
+  variable such as `$border-muted`) and `#rrggbb` next to the old style names, so a panel follows `/theme`.
+- `register_panel` and `register_widget` take `title=` and `collapsible=`: a heading line above the panel or widget, and
+  a click or Enter on it collapses it. `ui.widgets.<name>.title` and `.collapsed` and `/ui title|collapse|expand` let the
+  user change them.
+- `minimal.register_css(name, css)` adds a Textual stylesheet from an extension (replaced by name, dropped on reload, a
+  parse error reported and ignored). The selectors it may rely on are documented and pinned by a test.
+- `declare_settings(defaults, schema)` takes a `description`, `enum`, `min` and `max` per key: a value outside it is a load
+  error naming `extensions.settings.<id>.<key>` and the default stays. `/ext settings` lists every extension's settings
+  with value, default and description, and `/ext settings <id> <key> <value|reset>` edits the global settings file and
+  reloads.
+- `ctx.context_window` (the `context_window` setting, else a table of the built-in providers' models), `ctx.git()` (branch,
+  ahead/behind, staged/unstaged/untracked counts and changed files, from one shared poller every `git.refresh` seconds that
+  the status line uses too) and `ctx.keybindings()` (every bound key with its source and description) replace what UI
+  extensions computed themselves.
+
+### Changed
+
+- `HostStatus` has `usage` and `truncations`; the terminal UI redraws its transcript when the latter changes.
+- `WIDGET_AREAS` gained `left` and `footer`; the marketplace's `git_panel` offers them in its `area` setting.
+- The status line's own segments (`model`, `path`, `git`, `mode`, `context`, `extensions`, `session`) are named
+  segments that `ui.status` can hide, move or reorder; an extension segment with the same name replaces one.
+
 ## 0.8.0
 
 ### Added

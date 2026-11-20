@@ -17,9 +17,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from minimal import API_VERSION, __version__
+from minimal.config import REASONING_EFFORTS
 from minimal.core.agent import USER_DENIED
-from minimal.core.agents import AGENT_STATUSES, MAIN_AGENT, AgentInfo, AgentResult
+from minimal.core.agents import AGENT_STATUSES, MAIN_AGENT, AgentInfo, AgentResult, UsageTotals
 from minimal.core.context import UI, Context
+from minimal.core.git import GitInfo
 from minimal.extensions.facade import (
     AfterResponseEvent,
     AgentEndEvent,
@@ -31,30 +33,40 @@ from minimal.extensions.facade import (
     SessionStartEvent,
     SessionSwitchEvent,
     ShutdownEvent,
+    ThemeChangeEvent,
     ToolCallEvent,
     ToolResultEvent,
     TurnEndEvent,
     TurnStartEvent,
 )
 from minimal.extensions.registry import (
+    CSS_VARIABLES,
     EVENTS,
+    KEY_ACTIONS,
     PROMPT_SECTIONS,
+    RESERVED_KEYS,
+    SETTING_SCHEMA_KEYS,
     STATUS_SIDES,
     STYLES,
     THEME_COLORS,
     WIDGET_AREAS,
+    CssSpec,
+    KeyInfo,
+    KeybindingSpec,
     LogoSpec,
     ModeSpec,
     PanelSpec,
     PromptText,
     RendererSpec,
+    SettingsSpec,
+    ThemeInfo,
     Tool,
     TurnInterrupted,
     styled_line,
     styled_lines,
 )
 from minimal.providers.anthropic import AnthropicProvider
-from minimal.providers.base import Provider, ProviderSpec, Reply, Usage, result_text
+from minimal.providers.base import IMAGE_TYPES, Provider, ProviderSpec, Reply, Usage, image_block, result_text
 from minimal.providers.openai import openai_compatible
 from minimal.tools.search import glob_regex
 
@@ -65,15 +77,17 @@ if TYPE_CHECKING:
     from textual.content import Content
 
 __all__ = [
-    "AGENT_STATUSES", "API_VERSION", "EVENTS", "MAIN_AGENT", "PROMPT_SECTIONS", "STATUS_SIDES", "STYLES",
+    "AGENT_STATUSES", "API_VERSION", "CSS_VARIABLES", "EVENTS", "IMAGE_TYPES", "KEY_ACTIONS", "MAIN_AGENT",
+    "PROMPT_SECTIONS", "REASONING_EFFORTS", "RESERVED_KEYS", "SETTING_SCHEMA_KEYS", "STATUS_SIDES", "STYLES",
     "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
     "AfterResponseEvent", "AgentEndEvent", "AgentInfo", "AgentResult", "AgentStartEvent", "AnthropicProvider",
-    "BeforeRequestEvent", "Context", "Extension", "LogoSpec", "ModeChangeEvent", "ModeSpec", "PanelSpec",
-    "PromptText", "Provider",
+    "BeforeRequestEvent", "Context", "CssSpec", "Extension", "GitInfo", "KeyInfo", "KeybindingSpec", "LogoSpec",
+    "ModeChangeEvent", "ModeSpec", "PanelSpec", "PromptText", "Provider",
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
-    "ShutdownEvent", "Tool",
-    "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "__version__",
-    "glob_regex", "glyphs", "logo_content", "openai_compatible", "result_text", "styled_line", "styled_lines", "theme",
+    "SettingsSpec", "ShutdownEvent", "ThemeChangeEvent", "ThemeInfo", "Tool",
+    "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "UsageTotals",
+    "__version__",
+    "glob_regex", "glyphs", "image_block", "logo_content", "openai_compatible", "result_text", "styled_line", "styled_lines", "theme",
 ]  # fmt: skip
 
 _SESSIONS = "ctx.sessions(), ctx.read_session() and ctx.new_session()"

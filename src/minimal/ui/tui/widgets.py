@@ -11,9 +11,11 @@ from typing import Any
 
 from textual import events
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.content import Content
 from textual.highlight import highlight
+from textual.widget import Widget
 from textual.widgets import Static
 
 import minimal
@@ -24,8 +26,10 @@ from minimal.extensions.registry import (
     LogoSpec,
     PanelSpec,
     StyledLine,
+    style_variable,
     styled_lines,
 )
+from minimal.providers.base import result_text
 from minimal.ui.tui import theme
 
 PREVIEW_LINES = 8
@@ -52,10 +56,16 @@ def _version() -> str:
 
 
 def tui_style(style: str) -> str:
-    """A :data:`~minimal.extensions.registry.STYLES` string as Textual markup style: ``"bold muted"`` → ``"bold $muted"``."""
-    return " ".join(
-        token if token in STYLE_MODIFIERS else "$" + token.replace("_", "-") for token in style.split()
-    )
+    """A :data:`~minimal.extensions.registry.STYLES` string as Textual markup style: ``"bold muted"`` → ``"bold $muted"``;
+    ``$name`` becomes the CSS variable it stands for (``$code`` → ``$md-code``) and ``#rrggbb`` stays as it is."""
+    return " ".join(_tui_token(token) for token in style.split())
+
+
+def _tui_token(token: str) -> str:
+    if token in STYLE_MODIFIERS or token.startswith("#"):
+        return token
+    variable = style_variable(token[1:]) if token.startswith("$") else None
+    return "$" + (variable or token.removeprefix("$").replace("_", "-"))
 
 
 def to_content(line: StyledLine) -> Content:
@@ -266,11 +276,7 @@ class ToolBlock(Static):
 
     def finish(self, result: dict) -> None:
         """Show ``result`` (a ``tool_result`` block) and switch to the success or error state."""
-        output = (
-            result["content"]
-            if isinstance(result["content"], str)
-            else json.dumps(result["content"])
-        )
+        output = result_text(result["content"])  # pictures show as [image: type, N bytes], never as their data
         output = output.strip("\n")
         name = self.call["name"]
         custom = self.renderer(result) if self.renderer else None
@@ -334,23 +340,44 @@ class ToolBlock(Static):
 # --- extension panels ----------------------------------------------------------
 
 
+def heading_content(title: str, collapsible: bool, collapsed: bool) -> Content:
+    """The heading line of a titled panel or widget: ``title`` muted and bold, after a ▾/▸ when it can collapse."""
+    mark = [(f"{theme.COLLAPSED if collapsed else theme.EXPANDED} ", "$muted")] if collapsible else []
+    return Content.assemble(*mark, (title, "bold $muted"))
+
+
 class PanelView(Static):
     """An extension panel (:meth:`~minimal.extensions.registry.Registry.register_panel`): styled lines, hidden while it returns none.
 
-    A panel whose ``render`` or ``live`` raises is hidden for the rest of the mount and reported once.
+    With a heading (``title``) the first line is the title; a ``collapsible`` panel collapses to it on a click on it or
+    Enter (when focused), and ``collapsed`` starts it collapsed. A panel whose ``render`` or ``live`` raises is hidden
+    for the rest of the mount and reported once.
     """
 
     DEFAULT_CSS = """
     PanelView { height: auto; padding: 0 1; }
     #sidebar PanelView { margin-bottom: 1; }
+    PanelView:focus { background: $surface; }
     """
 
-    def __init__(self, spec: PanelSpec, ctx: Any, report: Callable[[str], Any]) -> None:
+    BINDINGS = [Binding("enter", "toggle_collapse", "Collapse or expand", show=False)]
+
+    def __init__(
+        self,
+        spec: PanelSpec,
+        ctx: Any,
+        report: Callable[[str], Any],
+        title: str | None = None,
+        collapsed: bool = False,
+    ) -> None:
         super().__init__()
         self.spec = spec
         self.ctx = ctx
         self.report = report
         self.failed = False
+        self.heading = title or ""
+        self.collapsed = collapsed and bool(self.heading)
+        self.can_focus = spec.collapsible and bool(self.heading)
 
     def on_mount(self) -> None:
         self.display = False
@@ -384,13 +411,88 @@ class PanelView(Static):
         if not lines:
             self.display = False
             return
-        self.update(lines_content(lines))
+        parts: list[Content] = []
+        if self.heading:
+            parts.append(heading_content(self.heading, self.can_focus, self.collapsed))
+        if not self.collapsed:
+            parts.append(lines_content(lines))
+        self.update(Content("\n").join(parts))
         self.display = True
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "toggle_collapse":
+            return self.can_focus
+        return True
+
+    def action_toggle_collapse(self) -> None:
+        """Collapse the panel to its heading, or expand it again."""
+        if self.can_focus:
+            self.collapsed = not self.collapsed
+            self.redraw()
+
+    def on_click(self, event: events.Click) -> None:
+        if self.can_focus and event.y == 0:
+            self.action_toggle_collapse()
 
     def _fail(self, error: Exception) -> None:
         self.failed = True
         self.display = False
         self.report(f"[extension] panel {self.spec.name}: {error}")
+
+
+class SectionHeading(Static):
+    """The heading of a :class:`Section`: a click or Enter (when focused) collapses or expands it."""
+
+    DEFAULT_CSS = """
+    SectionHeading { height: 1; padding: 0 1; }
+    SectionHeading:focus { background: $surface; }
+    """
+
+    BINDINGS = [Binding("enter", "toggle_section", "Collapse or expand", show=False)]
+
+    def __init__(self, section: Section) -> None:
+        super().__init__(classes="heading")
+        self.section = section
+        self.can_focus = section.collapsible
+
+    def on_click(self) -> None:
+        self.action_toggle_section()
+
+    def action_toggle_section(self) -> None:
+        self.section.toggle()
+
+
+class Section(Vertical):
+    """An extension widget under a heading (``register_widget(..., title=...)``): the widget, which a ``collapsible``
+    section hides when collapsed, leaving the heading."""
+
+    DEFAULT_CSS = """
+    Section { height: auto; }
+    #sidebar Section { margin-bottom: 1; }
+    """
+
+    def __init__(self, inner: Widget, heading: str, collapsible: bool, collapsed: bool) -> None:
+        super().__init__()
+        self.inner = inner
+        self.heading = heading
+        self.collapsible = collapsible
+        self.collapsed = collapsed and bool(heading)
+
+    def compose(self) -> ComposeResult:
+        yield SectionHeading(self)
+        yield self.inner
+
+    def on_mount(self) -> None:
+        self.draw()
+
+    def draw(self) -> None:
+        self.query_one(SectionHeading).update(heading_content(self.heading, self.collapsible, self.collapsed))
+        self.inner.display = not self.collapsed
+
+    def toggle(self) -> None:
+        if self.collapsible:
+            self.collapsed = not self.collapsed
+            self.draw()
 
 
 # --- chrome --------------------------------------------------------------------

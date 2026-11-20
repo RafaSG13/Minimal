@@ -295,7 +295,8 @@ def describe(path: Path, name: str | None = None) -> Listing:
     Raises:
         ValueError: on a syntax error, an invalid name, a missing ``register``
             function, module docstring, ``__version__`` or ``__api__``, an invalid ``__api__`` or
-            ``__dependencies__`` or ``__tags__``, a package named like a category folder, or a package symlink to a
+            ``__dependencies__``, ``__tags__``, ``__depends__`` or ``__conflicts__`` (one that lists itself, or the same
+            id in both), a package named like a category folder, or a package symlink to a
             folder or outside it.
     """
     entry = _entry_file(path)
@@ -325,6 +326,11 @@ def describe(path: Path, name: str | None = None) -> Listing:
         raise ValueError(f"{path}: {problem}")
     category = _category_of(path)
     _check_package_name(path, name, category)
+    ext = name if category == "extensions" else f"{category}/{name}"
+    if ext in meta.depends or ext in meta.conflicts:
+        raise ValueError(f"{path}: __depends__ and __conflicts__ must not list the extension itself ({ext})")
+    if both := sorted(set(meta.depends) & set(meta.conflicts)):
+        raise ValueError(f"{path}: {', '.join(both)} is in both __depends__ and __conflicts__")
     if path.is_dir():
         _copied_files(path)  # validates its symlinks
     return Listing(

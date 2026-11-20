@@ -2,10 +2,11 @@
 
 Settings are JSON files read as layers, lowest first (see :func:`read_layers`):
 
-- ``~/.minimal/settings.json`` (``global``): written by setup, ``/theme`` and
+- ``~/.minimal/settings.json`` (``global``): written by setup, ``/theme``, ``/ui`` and
   the ``/ext`` picker too (:func:`update_global`).
 - ``<project>/.minimal/settings.json`` (``project``): shared with the project.
-- ``<project>/.minimal/settings.local.json`` (``local``): personal, not committed.
+- ``<project>/.minimal/settings.local.json`` (``local``): personal, not committed; the permission dialog's
+  "Always allow" adds its rule here (:func:`add_allow_rule`).
 
 ``$MINIMAL_PROVIDER``/``$MINIMAL_MODEL`` and the command line beat every layer.
 What each key means and how layers merge is :class:`Settings`. A project's
@@ -25,6 +26,7 @@ Secrets and state live in their own files:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -44,8 +46,8 @@ SCOPES = ("global", "project", "local")
 RULE_RE = re.compile(r"^([A-Za-z0-9_\-]+)(?:\((.*)\))?$", re.DOTALL)
 """A permission rule: ``name`` or ``name(pattern)`` (see :mod:`minimal.core.permissions`)."""
 
-GLOBAL_ONLY = ("marketplaces", "prompt.base")
-"""Keys read only from :data:`SETTINGS_FILE`: a project must not choose where code or the base prompt comes from."""
+GLOBAL_ONLY = ("marketplaces", "prompt.base", "ui.css")
+"""Keys read only from :data:`SETTINGS_FILE`: a project must not choose where code, the base prompt or a stylesheet comes from."""
 
 RISKY = ("permissions.allow", "extensions.disabled", "extensions.settings")
 """Project keys that apply only once the project is trusted."""
@@ -63,6 +65,19 @@ def _is_marketplace_list(value: object) -> bool:
     )
 
 
+REASONING_EFFORTS = ("low", "medium", "high")
+"""Values of the ``reasoning_effort`` setting and of ``ctx.set_reasoning_effort`` (API 2.3)."""
+
+DEFAULT_MAX_TURNS = 50
+"""Model requests one turn may make when ``agent.max_turns`` is unset."""
+
+DEFAULT_MAX_PARALLEL = 4
+"""Read-only tool calls of one reply run at once when ``tools.max_parallel`` is unset."""
+
+DEFAULT_GIT_REFRESH = 3.0
+"""Seconds between the shared git status polls when ``git.refresh`` is unset."""
+
+
 def _is_settings_map(value: object) -> bool:
     return isinstance(value, dict) and all(isinstance(v, dict) for v in value.values())
 
@@ -71,16 +86,113 @@ def _is_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _is_non_negative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_non_negative_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
 def _is_max_tokens(value: object) -> bool:
     return _is_positive_int(value) or (
         isinstance(value, dict) and all(isinstance(k, str) and _is_positive_int(v) for k, v in value.items())
     )
 
 
+UI_AREAS = ("top", "bottom", "sidebar", "left", "footer")
+"""Where a widget or panel can be placed in the terminal UI (``ui.widgets``; :data:`~minimal.extensions.registry.WIDGET_AREAS`)."""
+
+UI_STATUS_SIDES = ("left", "right")
+"""Where a status-line segment can be placed (``ui.status``; :data:`~minimal.extensions.registry.STATUS_SIDES`)."""
+
+UI_SIDEBARS = ("right", "left", "hidden")
+"""Values of ``ui.sidebar``: which side the ``sidebar`` area is on, or ``hidden``."""
+
+UI_DENSITIES = ("normal", "compact")
+"""Values of ``ui.density``."""
+
+UI_SIDEBAR_WIDTHS = (20, 80)
+"""Smallest and largest ``ui.sidebar_width``."""
+
+UI_GLYPH_LENGTHS = (1, 3)
+"""Fewest and most characters of ``ui.prompt_glyph``."""
+
+
+def _is_choice(*choices: str):
+    return lambda value: isinstance(value, str) and value in choices
+
+
+def _is_sidebar_width(value: object) -> bool:
+    low, high = UI_SIDEBAR_WIDTHS
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def _is_prompt_glyph(value: object) -> bool:
+    low, high = UI_GLYPH_LENGTHS
+    return isinstance(value, str) and low <= len(value) <= high and value.isprintable()
+
+
+def _is_ui_overrides(places: tuple[str, ...], place_field: str, extra: dict[str, type] | None = None):
+    """A check for ``ui.widgets`` / ``ui.status``: names → ``{<place_field>?, order?, enabled?, <extra>?}``.
+
+    ``extra`` maps further allowed fields to their type (``ui.widgets`` also takes ``title`` and ``collapsed``)."""
+    extra = extra or {}
+
+    def check(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        for name, entry in value.items():
+            if not isinstance(name, str) or not name or not isinstance(entry, dict):
+                return False
+            if not set(entry) <= {place_field, "order", "enabled", *extra}:
+                return False
+            if place_field in entry and entry[place_field] not in places:
+                return False
+            if "order" in entry and (isinstance(entry["order"], bool) or not isinstance(entry["order"], int)):
+                return False
+            if "enabled" in entry and not isinstance(entry["enabled"], bool):
+                return False
+            if any(field in entry and not isinstance(entry[field], kind) for field, kind in extra.items()):
+                return False
+        return True
+
+    return check
+
+
+def _is_ui_keys(value: object) -> bool:
+    return isinstance(value, dict) and all(isinstance(k, str) and k and isinstance(v, str) for k, v in value.items())
+
+
+_UI_TYPES = {
+    "ui.sidebar": (_is_choice(*UI_SIDEBARS), "one of " + ", ".join(UI_SIDEBARS)),
+    "ui.sidebar_width": (_is_sidebar_width, "an integer from {} to {}".format(*UI_SIDEBAR_WIDTHS)),
+    "ui.widgets": (
+        _is_ui_overrides(UI_AREAS, "area", {"title": str, "collapsed": bool}),
+        f'an object mapping names to {{"area": one of {", ".join(UI_AREAS)}, "order": integer, "enabled": boolean, '
+        '"title": string, "collapsed": boolean}',
+    ),
+    "ui.status": (
+        _is_ui_overrides(UI_STATUS_SIDES, "side"),
+        'an object mapping names to {"side": left or right, "order": integer, "enabled": boolean}',
+    ),
+    "ui.keys": (_is_ui_keys, 'an object mapping action names to key names ("" unbinds)'),
+    "ui.prompt_glyph": (_is_prompt_glyph, "1 to 3 printable characters"),
+    "ui.placeholder": (lambda v: isinstance(v, str), "a string"),
+    "ui.css": (lambda v: isinstance(v, str) and bool(v), "a path (relative to ~/.minimal) of a Textual CSS file"),
+    "ui.density": (_is_choice(*UI_DENSITIES), "one of " + ", ".join(UI_DENSITIES)),
+}
+
+
 _TYPES = {
     "provider": (lambda v: isinstance(v, str), "a string"),
     "model": (lambda v: isinstance(v, str), "a string"),
     "theme": (lambda v: isinstance(v, str), "a string"),
+    "reasoning_effort": (lambda v: v in REASONING_EFFORTS, "one of " + ", ".join(REASONING_EFFORTS)),
+    "agent.max_turns": (_is_positive_int, "a positive integer"),
+    "tools.max_parallel": (_is_positive_int, "a positive integer"),
+    "context_window": (_is_positive_int, "a positive integer"),
+    "git.refresh": (lambda v: _is_non_negative_number(v) and v > 0, "a positive number of seconds"),
     "max_tokens": (
         _is_max_tokens,
         'a positive integer or an object mapping "provider" or "provider/model" to positive integers',
@@ -93,10 +205,16 @@ _TYPES = {
     "permissions.deny": (_is_str_list, "a list of strings"),
     "extensions.disabled": (_is_str_list, "a list of strings"),
     "extensions.settings": (_is_settings_map, "an object mapping extension ids to objects"),
+    "ui.composer_max_lines": (_is_positive_int, "a positive integer"),
+    "ui.history_size": (_is_non_negative_int, "a non-negative integer"),
+    "ui.mention_max_chars": (_is_positive_int, "a positive integer"),
+    "ui.notify": (lambda v: v in ("off", "bell", "osc9"), 'one of "off", "bell", "osc9"'),
+    "ui.notify_after": (_is_non_negative_number, "a non-negative number of seconds"),
 }
 """Every setting as a dotted key: ``(type check, type name for errors)``."""
+_TYPES.update(_UI_TYPES)
 
-_GROUPS = ("prompt", "permissions", "extensions")
+_GROUPS = ("prompt", "permissions", "extensions", "agent", "tools", "ui", "git")
 """Top-level keys holding an object of settings."""
 
 
@@ -213,6 +331,31 @@ class Settings:
     def theme(self) -> str | None:
         return self.scalar("theme")[0]
 
+    @property
+    def reasoning_effort(self) -> str | None:
+        """The ``reasoning_effort`` setting (one of :data:`REASONING_EFFORTS`); ``None`` if unset."""
+        return self.scalar("reasoning_effort")[0]
+
+    @property
+    def max_turns(self) -> int:
+        """The ``agent.max_turns`` setting: most model requests of one turn; :data:`DEFAULT_MAX_TURNS` if unset."""
+        return self.scalar("agent.max_turns")[0] or DEFAULT_MAX_TURNS
+
+    @property
+    def max_parallel(self) -> int:
+        """The ``tools.max_parallel`` setting: most read-only tool calls run at once; :data:`DEFAULT_MAX_PARALLEL` if unset."""
+        return self.scalar("tools.max_parallel")[0] or DEFAULT_MAX_PARALLEL
+
+    @property
+    def context_window(self) -> int | None:
+        """The ``context_window`` setting: the model's context size in tokens, overriding what minimal knows; ``None`` if unset."""
+        return self.scalar("context_window")[0]
+
+    @property
+    def git_refresh(self) -> float:
+        """The ``git.refresh`` setting: seconds between the shared git status polls (:meth:`Context.git`); :data:`DEFAULT_GIT_REFRESH` if unset."""
+        return float(self.scalar("git.refresh")[0] or DEFAULT_GIT_REFRESH)
+
     def max_tokens_for(self, provider: str, model: str) -> int | None:
         """The ``max_tokens`` setting for ``model`` of ``provider``: the integer, or the object's
         ``"provider/model"`` entry, else its ``"provider"`` entry; ``None`` if unset (the provider's default)."""
@@ -276,6 +419,49 @@ class Settings:
         return merged
 
     @property
+    def ui_sidebar(self) -> str:
+        """Which side the ``sidebar`` area is on (``ui.sidebar``): ``right`` (default), ``left`` or ``hidden``."""
+        return self.scalar("ui.sidebar")[0] or "right"
+
+    @property
+    def ui_sidebar_width(self) -> int | None:
+        """``ui.sidebar_width``; ``None`` if unset (the UI's own width, 36)."""
+        return self.scalar("ui.sidebar_width")[0]
+
+    @property
+    def ui_density(self) -> str:
+        """``ui.density``: ``normal`` (default) or ``compact``."""
+        return self.scalar("ui.density")[0] or "normal"
+
+    @property
+    def ui_prompt_glyph(self) -> str | None:
+        """``ui.prompt_glyph``; ``None`` if unset (the theme's)."""
+        return self.scalar("ui.prompt_glyph")[0]
+
+    @property
+    def ui_placeholder(self) -> str | None:
+        """``ui.placeholder``; ``None`` if unset (the built-in hint)."""
+        return self.scalar("ui.placeholder")[0]
+
+    @property
+    def ui_css(self) -> Path | None:
+        """The user stylesheet (``ui.css``, global only): relative to :data:`HOME_DIR`, ``~`` allowed; ``None`` if unset."""
+        value = self._global().get("ui.css")
+        return None if value is None else HOME_DIR / Path(value).expanduser()
+
+    def ui_map(self, key: str) -> dict[str, Any]:
+        """``ui.widgets``, ``ui.status`` or ``ui.keys``: each layer's entries update the lower ones, entry by entry.
+
+        ``ui.keys`` entries are strings; the others objects, merged field by field: a higher layer's
+        ``{"order": 3}`` keeps the lower layer's ``area``.
+        """
+        merged: dict[str, Any] = {}
+        for layer in self.layers:
+            for name, entry in layer.data.get(key, {}).items():
+                merged[name] = {**merged.get(name, {}), **entry} if isinstance(entry, dict) else entry
+        return merged
+
+    @property
     def untrusted_risky(self) -> bool:
         """Whether project or local files set trust-gated keys that do not apply because the project is not trusted."""
         return not self.trusted and bool(risky_subset(self.layers))
@@ -305,11 +491,16 @@ def load_global() -> dict:
     return _validate(raw, "global")[0] if isinstance(raw, dict) else {}
 
 
-def update_global(changes: dict) -> None:
-    """Set top-level keys of :data:`SETTINGS_FILE` (``None`` deletes one), keeping everything else.
+def update_global(changes: dict[str | tuple[str, ...], Any]) -> None:
+    """Set keys of :data:`SETTINGS_FILE` (``None`` deletes one), keeping everything else.
+
+    A dotted key (``ui.sidebar``, ``extensions.settings.lenses.head``) sets a key inside its group objects, which are
+    created as needed; a key may also be a tuple of names (for one that contains a dot). Group objects left empty are
+    removed.
 
     Raises:
-        ValueError: if the file exists but is not a JSON object: it is left untouched for the user to fix.
+        ValueError: if the file exists but is not a JSON object, or a group in it is not one: it is left untouched
+            for the user to fix.
     """
     data = {}
     if SETTINGS_FILE.exists():
@@ -320,11 +511,62 @@ def update_global(changes: dict) -> None:
         if not isinstance(data, dict):
             raise ValueError(f"{SETTINGS_FILE} is not a JSON object; fix it first")
     for key, value in changes.items():
+        path = list(key) if isinstance(key, tuple) else key.split(".")
+        target = data
+        parents: list[tuple[dict, str]] = []
+        for i, part in enumerate(path[:-1]):
+            child = target.get(part, {})
+            if not isinstance(child, dict):
+                raise ValueError(f"{SETTINGS_FILE}: {'.'.join(path[: i + 1])} is not a JSON object; fix it first")
+            target[part] = child
+            parents.append((target, part))
+            target = child
         if value is None:
-            data.pop(key, None)
+            target.pop(path[-1], None)
         else:
-            data[key] = value
+            target[path[-1]] = value
+        for container, part in reversed(parents):
+            if container[part]:
+                break
+            del container[part]
     write_private(SETTINGS_FILE, data)
+
+
+def add_allow_rule(cwd: str, rule: str) -> Path:
+    """Add ``rule`` to ``permissions.allow`` in the project's ``settings.local.json`` (not committed); return that file.
+
+    The file is read, validated with the same checks as when settings are loaded, and written back atomically with
+    mode 0600 as :func:`write_private` does; the project's ``.minimal`` folder is created if missing but its mode is
+    left alone (it is the project's, not minimal's private state).
+    Everything else in the file is kept, and nothing is written if ``rule`` is already there.
+
+    Raises:
+        ValueError: if ``rule`` is not ``name`` or ``name(pattern)``, or the file exists but is not a JSON object,
+            has a ``permissions`` that is not an object or a ``permissions.allow`` that is not a list of strings:
+            it is left untouched for the user to fix.
+    """
+    if RULE_RE.fullmatch(rule) is None:
+        raise ValueError(f"invalid permission rule {rule!r}: use name or name(pattern)")
+    path = project_settings_files(cwd)["local"]
+    data: Any = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, ValueError) as e:
+            raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
+        if not isinstance(data, dict):
+            raise ValueError(f"{path} is not a JSON object; fix it first")
+    permissions = data.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        raise ValueError(f"{path}: permissions must be an object; fix it first")
+    allow = permissions.setdefault("allow", [])
+    if not _TYPES["permissions.allow"][0](allow):
+        raise ValueError(f"{path}: permissions.allow must be {_TYPES['permissions.allow'][1]}; fix it first")
+    if rule not in allow:
+        allow.append(rule)
+        path.parent.mkdir(exist_ok=True)
+        _write_atomic(path, data)
+    return path
 
 
 def load_keys() -> dict[str, str]:
@@ -406,6 +648,15 @@ def private_dir(path: Path) -> None:
         os.chmod(path, 0o700)
 
 
+def project_data_dir(cwd: str) -> Path:
+    """``~/.minimal/data/projects/<key>``: where the project in ``cwd`` keeps its saved state outside the repository.
+
+    ``<key>`` is a hash of the real path of ``cwd``. The folder is not created; see :func:`private_dir`.
+    """
+    key = hashlib.sha256(os.path.realpath(cwd).encode()).hexdigest()[:16]
+    return HOME_DIR / "data" / "projects" / key
+
+
 def write_private(path: Path, data: dict) -> None:
     """Write ``data`` as JSON atomically with mode 0600, in a folder with mode 0700.
 
@@ -413,6 +664,11 @@ def write_private(path: Path, data: dict) -> None:
     file or symlink planted next to ``path`` is never written through.
     """
     private_dir(path.parent)
+    _write_atomic(path, data)
+
+
+def _write_atomic(path: Path, data: dict) -> None:
+    """:func:`write_private` without touching the folder: the file is mode 0600 and replaced atomically."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

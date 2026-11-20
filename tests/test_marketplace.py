@@ -248,7 +248,7 @@ class MarketplaceTest(unittest.TestCase):
             _, out = self.run_ext({}, "/ext search safety themes")
             self.assertEqual(out.strip(), "No extensions found.")
             _, out = self.run_ext({}, "/ext search")
-            self.assertIn("usage: /ext [list|search <query> [category]|publish <path> [name]]", out)
+            self.assertIn("usage: /ext [list|search <query> [category]|publish <path> [name]|settings", out)
 
     def test_search_and_install(self):
         listings = marketplace.search("hello")

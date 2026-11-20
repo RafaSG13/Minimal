@@ -11,6 +11,7 @@ What the user sees goes through a :class:`Frontend`: the terminal UI's, or
 from __future__ import annotations
 
 import collections
+import copy
 import json
 import re
 import sys
@@ -24,10 +25,11 @@ import minimal.extensions.facade
 import minimal.extensions.loader
 from minimal import config
 from minimal.core.agent import MaxTurnsExceeded, run_agent
-from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent
+from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent, UsageMeter
 from minimal.core.context import Context
-from minimal.core.permissions import Permissions
-from minimal.core.session import Session
+from minimal.core.git import GitInfo, GitPoller
+from minimal.core.permissions import Permissions, suggest_rule
+from minimal.core.session import Session, check_cut, new_id, open_session
 from minimal.extensions.loader import (
     ProjectSnapshot,
     global_extensions_dir,
@@ -35,16 +37,19 @@ from minimal.extensions.loader import (
     project_extensions_dir,
     read_project_snapshot,
 )
+from minimal.extensions import palette
 from minimal.extensions.registry import (
     PROMPT_SECTIONS,
     Command,
+    CommandComplete,
     CommandRun,
     Registry,
+    ThemeInfo,
     Tool,
     TurnInterrupted,
     apply_prompt_edits,
 )
-from minimal.providers import register_builtin_providers
+from minimal.providers import register_builtin_providers, windows
 from minimal.providers.base import Provider, Usage, result_text
 from minimal.tools.builtin import register_builtin_tools
 
@@ -258,6 +263,9 @@ class Frontend(Protocol):
         ``agent_id`` and ``parent_id`` say which agent calls it (``"main"`` and ``None`` for the user's turn, else
         a ``ctx.run_agent`` agent and the one that started it): extra keys of the same call, so a frontend that
         ignores them keeps working. :meth:`text` is the user's turn's only: nested agents do not stream text.
+
+        When one reply calls several ``read_only`` tools in a row, each call is announced here, in order, before the
+        calls run together; :meth:`tool_result` then follows in the same order as each result is ready.
         """
 
     def tool_result(self, call: dict, result: dict) -> None:
@@ -294,6 +302,25 @@ class Frontend(Protocol):
     def mode_changed(self) -> None:
         """The current mode changed, from any thread: redraw whatever shows it."""
 
+    def invalidate(self) -> None:
+        """Something an extension shows changed (``ctx.invalidate()``), from any thread: redraw its panels, status
+        segments and widgets soon. Cheap and coalesced; a frontend that draws nothing of the kind ignores it. API 2.3."""
+
+    def theme_name(self) -> str | None:
+        """The name of the colour theme the frontend shows (``ctx.theme``); ``None`` if it has none. API 2.3."""
+
+    def progress(self, text: str | None) -> None:
+        """Transient progress text of the tool or command running (:meth:`~minimal.core.context.Context.progress`):
+        show it next to the working indicator; ``None`` clears it. May be called from any thread, often."""
+
+    def permission(self, question: str, rule: str | None, saved_in: str | None) -> str:
+        """Ask whether a tool call may run; return ``"once"``, ``"session"``, ``"always"`` or ``"deny"``.
+
+        ``rule`` is the allow rule ``"session"`` and ``"always"`` would add (``None``: none can safely be offered, so
+        answer only ``"once"`` or ``"deny"``); ``saved_in`` is the file ``"always"`` would write it to (``None``:
+        ``"always"`` is not offered).
+        """
+
 
 class ExitRepl(Exception):
     """Raised by a command (``/exit``) to quit the interactive UI."""
@@ -305,6 +332,8 @@ class ConsoleFrontend:
     Model and tool text is shown with control characters escaped (:func:`_visible`),
     except the answer itself when stdout is not a terminal, so piped output stays exact.
     """
+
+    _progress: str | None = None
 
     def text(self, chunk: str) -> None:
         print(_visible(chunk) if sys.stdout.isatty() else chunk, end="", flush=True)
@@ -402,6 +431,23 @@ class ConsoleFrontend:
     def mode_changed(self) -> None:
         """Nothing to redraw in a console."""
 
+    def invalidate(self) -> None:
+        """Nothing to redraw in a console (it draws no panels or status line)."""
+
+    def theme_name(self) -> str | None:
+        """A console has no theme of its own."""
+        return None
+
+    def progress(self, text: str | None) -> None:
+        """A dimmed line on stderr (only when it is a terminal) each time the text changes; ``None`` only forgets it."""
+        if text is not None and text != self._progress and sys.stderr.isatty():
+            print(f"\x1b[2m… {_visible(text)}\x1b[0m", file=sys.stderr, flush=True)
+        self._progress = text
+
+    def permission(self, question: str, rule: str | None, saved_in: str | None) -> str:
+        """Same as :meth:`ask`: ``"once"`` for yes, ``"deny"`` otherwise; a console offers no wider answer."""
+        return "once" if self.ask(question) else "deny"
+
 
 class App:
     """Everything a running ``minimal`` process needs.
@@ -430,6 +476,9 @@ class App:
             trusted the project (``/trust``); ``None`` if nothing.
         cancelled: Set to interrupt the turn in progress, and with it every agent running under it.
         agents: The session's agent records (``ctx.agents()``, per-agent cancel flags).
+        usage: The tokens and requests this process has spent (``ctx.usage``).
+        truncations: How many times a session's history was cut (:meth:`truncate_session`); a frontend that
+            shows the history redraws it when this or the session's id changes.
         mode: The current mode's name, or ``None`` for no mode (:meth:`set_mode`).
     """
 
@@ -463,25 +512,38 @@ class App:
         self.mode: str | None = None
         self._mode_lock = threading.Lock()
         self.settings = config.Settings()
+        self._effort_override: tuple[str | None] | None = None
         self.setting_errors: list[str] = []
         self.queued: collections.deque[str] = collections.deque()
         self.context = Context(self)
         self.permissions = Permissions(self.settings)
+        self.usage = UsageMeter()
+        self.truncations = 0
         self._register_commands = register_commands
-        self._frontend_commands: dict[str, tuple[CommandRun, str, bool]] = {}
+        self._git: GitPoller | None = None
+        self._git_last: GitInfo | None = None
+        self._git_lock = threading.Lock()
+        self._frontend_commands: dict[str, tuple[CommandRun, str, bool, CommandComplete | None]] = {}
         self._register_builtins()  # usable before the first reload
 
     def _register_builtins(self) -> None:
         """Register the built-in commands and the terminal UI's commands."""
         if self._register_commands is not None:
             self._register_commands(self.registry)
-        for name, (run, description, terminal) in self._frontend_commands.items():
-            self.registry.register_builtin_command(name, run, description, terminal)
+        for name, (run, description, terminal, complete) in self._frontend_commands.items():
+            self.registry.register_builtin_command(name, run, description, terminal, complete)
 
-    def add_frontend_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
+    def add_frontend_command(
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
+    ) -> None:
         """Add a built-in command of the terminal UI (``/theme``); kept across reloads."""
-        self._frontend_commands[name] = (run, description, terminal)
-        self.registry.register_builtin_command(name, run, description, terminal)
+        self._frontend_commands[name] = (run, description, terminal, complete)
+        self.registry.register_builtin_command(name, run, description, terminal, complete)
 
     def take_queued(self) -> str | None:
         """The oldest message queued with ``ctx.queue_user_message``, removed from the queue; ``None`` if none."""
@@ -522,8 +584,9 @@ class App:
             read_error = f"{project_extensions_dir(self.cwd)}: cannot read the project extensions ({e}), skipped them"
         project_trusted = self.trust_project or (snapshot is not None and trusted)
         self.settings = config.Settings(tuple(layers), trusted, project_trusted)
-        self.permissions = Permissions(self.settings)
+        self.permissions = Permissions(self.settings, self.permissions.session)
         self.setting_errors = setting_errors
+        self.stop_git()
         self.registry.dispose()
         self.registry.reset()
         register_builtin_tools(self.registry)
@@ -610,6 +673,7 @@ class App:
         """Fire ``shutdown`` (minimal is exiting), run the extensions' ``on_dispose`` functions and release the session."""
         try:
             self.registry.emit("shutdown", {"ctx": self.context})
+            self.stop_git()
             self.registry.dispose()
         finally:
             self.session.unlock()
@@ -681,13 +745,163 @@ class App:
                 return usage["input_tokens"] + usage["output_tokens"]
         return None
 
+    @property
+    def context_window(self) -> int | None:
+        """The model's context size in tokens: the ``context_window`` setting, else what the provider's spec or minimal's
+        table says for the current model; ``None`` if unknown."""
+        configured = self.settings.context_window
+        if configured is not None:
+            return configured
+        spec = self.registry.providers.get(self.provider_name)
+        return windows.context_window(self.provider_name, self.model, spec.context_windows if spec else None)
+
+    def theme_info(self) -> ThemeInfo:
+        """The current colour theme with every colour resolved: the frontend's, else the ``theme`` setting, else the built-in one."""
+        name = self.frontend.theme_name() or self.settings.theme or palette.DEFAULT
+        spec = self.registry.themes.get(name) if name != palette.DEFAULT else None
+        return palette.theme_info(spec or palette.BUILTIN)
+
+    def theme_changed(self) -> None:
+        """Fire ``theme_change`` for the theme the frontend shows now."""
+        info = self.theme_info()
+        self.registry.emit("theme_change", {"ctx": self.context, "name": info.name, "dark": info.dark})
+
+    def invalidate(self) -> None:
+        """Ask the frontend to redraw what extensions show (``ctx.invalidate()``)."""
+        self.frontend.invalidate()
+
+    def git_info(self) -> GitInfo | None:
+        """The last git state the shared poller read (``ctx.git()``), starting the poller on the first call.
+
+
+        ``None`` until the first poll ends and outside a repository. The poller runs every ``git.refresh`` seconds,
+        asks the frontend to redraw (:meth:`invalidate`) when the state changes, and stops on :meth:`shutdown` and at
+        every reload (the next call starts it again, with the settings of that reload).
+        """
+        with self._git_lock:
+            if self._git is None:
+                self._git = GitPoller(self.cwd, self.settings.git_refresh, self._git_changed)
+                self._git.start()
+        return self._git_last
+
+    def _git_changed(self, info: GitInfo | None) -> None:
+        self._git_last = info
+        self.invalidate()
+
+    def poke_git(self) -> None:
+        """Poll git again now, if the poller runs (a turn or command probably changed files)."""
+        with self._git_lock:
+            if self._git is not None:
+                self._git.poke()
+
+    def stop_git(self) -> None:
+        """Stop the git poller; :meth:`git_info` starts a new one."""
+        with self._git_lock:
+            poller, self._git = self._git, None
+        if poller is not None:
+            poller.stop()
+
     def confirm(self, call: dict) -> bool:
-        """Ask the user, through the frontend, whether a tool call may run."""
+        """Ask the user, through the frontend, whether a tool call may run.
+
+        Besides allowing it once, the user may allow what a rule (:func:`~minimal.core.permissions.suggest_rule`)
+        covers for the rest of the session (:meth:`Permissions.allow_session`), or save that rule in the project's
+        ``settings.local.json`` (:meth:`save_allow_rule`) and tell the transcript which one.
+        """
         if self.auto_approve:
             return True
         name, inp = call["name"], call["input"]
         detail = inp.get("command") if name == "bash" else (inp.get("path") or json.dumps(inp))
-        return self.frontend.ask(f"Allow {name}: {detail}?")
+        tool = self.registry.tools.get(name)
+        rule = suggest_rule(tool, inp, self.cwd) if tool is not None else None
+        file = config.project_settings_files(self.cwd)["local"] if rule is not None and self._rule_will_apply() else None
+        answer = self.frontend.permission(f"Allow {name}: {detail}?", rule, str(file) if file is not None else None)
+        if answer not in ("once", "session", "always"):
+            return False
+        if rule is None or answer == "once":
+            return True
+        self.permissions.allow_session(rule)
+        shown = _visible(rule)
+        if answer == "always" and file is not None:
+            try:
+                self.save_allow_rule(rule)
+            except (OSError, ValueError) as e:
+                print(f"Could not save the rule {shown} ({e}): it is allowed for this session only.", file=sys.stderr)
+            else:
+                print(f"Saved the rule {shown} in permissions.allow of {file}. Deny rules still win.")
+        else:
+            print(f"Allowing {shown} for this session (until minimal exits). Deny rules still win.")
+        return True
+
+    def _project_trusted_by_digest(self) -> bool | None:
+        """Whether the project's extensions and trust-gated settings are the ones the user trusted (or there are none);
+        ``None`` if they cannot be read."""
+        try:
+            snapshot = read_project_snapshot(self.cwd, config.risky_subset(config.read_layers(self.cwd)[0]))
+        except OSError:
+            return None
+        return snapshot is None or config.load_trusted().get(snapshot.key) == snapshot.digest
+
+    def _rule_will_apply(self) -> bool:
+        """Whether an allow rule written to the project's ``settings.local.json`` applies from the next start:
+        the project is trusted (or asks for nothing), so :meth:`save_allow_rule` can keep it trusted."""
+        return self._project_trusted_by_digest() is True
+
+    def save_allow_rule(self, rule: str) -> Path:
+        """Add ``rule`` to ``permissions.allow`` of the project's ``settings.local.json`` and return that file.
+
+        The project's trust-gated settings count as trusted only for the digest the user accepted, so a project that
+        was trusted (or had nothing to trust) stays trusted with the new rule: the user just chose it.
+
+        Raises:
+            ValueError: if the project is not trusted (the rule would not apply), or the file cannot be edited
+                (:func:`~minimal.config.add_allow_rule`).
+            OSError: if the file cannot be written.
+        """
+        if not self._rule_will_apply():
+            raise ValueError("the project is not trusted: run /trust first, or the rule would not apply")
+        path = config.add_allow_rule(self.cwd, rule)
+        snapshot = read_project_snapshot(self.cwd, config.risky_subset(config.read_layers(self.cwd)[0]))
+        if snapshot is not None:
+            config.save_trusted(snapshot.key, snapshot.digest)
+        return path
+
+    def _require_idle(self, action: str) -> None:
+        """Raise ``ValueError`` if a turn or agent is running: ``action`` would change the history under it."""
+        if any(a.status == "running" for a in self.agents.snapshot()):
+            raise ValueError(f"cannot {action} while a turn is running")
+
+    def fork_session(self, at_index: int | None = None) -> str:
+        """Continue in a new session holding the first ``at_index`` messages of this one (all by default).
+
+        What :meth:`~minimal.core.context.Context.fork` does: the old session stays saved, the new one names it as
+        its ``parent`` and ``session_switch`` fires. Returns the new session's id.
+
+        Raises:
+            ValueError: if a turn is running, ``at_index`` is out of range or the cut would split a tool call from its result.
+        """
+        self._require_idle("fork the session")
+        old = self.session
+        end = len(old.messages) if at_index is None else at_index
+        check_cut(old.messages, end)
+        session = open_session(new_id(), self.cwd)
+        session.parent = old.id
+        session.messages.extend(copy.deepcopy(old.messages[:end]))
+        self.switch_session(session)
+        session.save()
+        return session.id
+
+    def truncate_session(self, at_index: int) -> int:
+        """Drop the messages from ``at_index`` on from this session and its file; return how many.
+
+        Raises:
+            ValueError: if a turn is running, ``at_index`` is out of range or the cut would split a tool call from its result.
+        """
+        self._require_idle("rewind the session")
+        dropped = self.session.truncate(at_index)
+        if dropped:
+            self.truncations += 1
+        return dropped
 
     def permit(self, tool: Tool, input: dict) -> bool:
         """Whether the permission rules let ``tool`` run with ``input`` without asking.
@@ -708,9 +922,30 @@ class App:
     def request_options(self, provider_name: str | None = None, model: str | None = None) -> dict:
         """Provider request options of the next request: ``max_tokens`` from the settings
         (:meth:`~minimal.config.Settings.max_tokens_for`) for the current provider and model, or for the given
-        ones; empty for the provider's defaults."""
+        ones, and :attr:`reasoning_effort` when set; empty for the provider's defaults."""
+        options: dict[str, Any] = {}
         n = self.settings.max_tokens_for(provider_name or self.provider_name, model or self.model)
-        return {} if n is None else {"max_tokens": n}
+        if n is not None:
+            options["max_tokens"] = n
+        if self.reasoning_effort is not None:
+            options["reasoning_effort"] = self.reasoning_effort
+        return options
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        """How much the model should think (one of :data:`~minimal.config.REASONING_EFFORTS`): what
+        :meth:`set_reasoning_effort` set, else the ``reasoning_effort`` setting; ``None`` for the provider's default."""
+        return self.settings.reasoning_effort if self._effort_override is None else self._effort_override[0]
+
+    def set_reasoning_effort(self, value: str | None) -> None:
+        """Use ``value`` from the next request on, over the setting (``None``: the provider's default).
+
+        Raises:
+            ValueError: if ``value`` is not ``None`` or one of :data:`~minimal.config.REASONING_EFFORTS`.
+        """
+        if value is not None and value not in config.REASONING_EFFORTS:
+            raise ValueError(f"reasoning effort must be one of {', '.join(config.REASONING_EFFORTS)} (or None), not {value!r}")
+        self._effort_override = (value,)
 
     # --- modes ---------------------------------------------------------------
 
@@ -825,6 +1060,8 @@ class App:
                 cancelled=self.cancelled,
                 permit=self.permit,
                 gate=self.mode_block_reason,
+                max_turns=self.settings.max_turns,
+                max_parallel=self.settings.max_parallel,
                 options=self.request_options(),
                 switch_provider=self.fallback_provider,
             )
@@ -927,7 +1164,8 @@ class App:
                 exclude_tools=exclude,
                 gate=gate,
                 nested=True,
-                max_turns=50 if max_turns is None else max_turns,
+                max_turns=self.settings.max_turns if max_turns is None else max_turns,
+                max_parallel=self.settings.max_parallel,
                 options=self.request_options(llm_name, llm_model),
                 switch_provider=switch,
                 agent_id=run.id,
@@ -955,8 +1193,13 @@ class App:
         return on_tool
 
     def _on_reply(self, run: AgentRun) -> Callable[[Any], None]:
-        """The loop's ``on_reply`` for ``run``: add the reply's usage to the agent's."""
-        return lambda reply: self.agents.replied(run, reply.usage)
+        """The loop's ``on_reply`` for ``run``: add the reply's usage to the agent's and to the process totals."""
+
+        def on_reply(reply: Any) -> None:
+            self.agents.replied(run, reply.usage)
+            self.usage.add(reply.usage)
+
+        return on_reply
 
     def _emit_agent_start(self, ctx: Context, run: AgentRun) -> None:
         self.registry.emit(

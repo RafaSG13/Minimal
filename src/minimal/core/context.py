@@ -16,11 +16,13 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from minimal.core import agent
-from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun
+from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun, UsageTotals
+from minimal.core.git import GitInfo
+from minimal.core.layout import resolve_keys
 from minimal.core.session import list_sessions, new_id, open_session
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import ModeSpec, Tool
-from minimal.providers.base import Reply
+from minimal.extensions.registry import KeyInfo, ModeSpec, ThemeInfo, Tool, TurnInterrupted
+from minimal.providers.base import Reply, result_text
 
 if TYPE_CHECKING:
     from minimal.core.app import App
@@ -106,9 +108,65 @@ class Context:
         return self._app.model
 
     @property
+    def max_turns(self) -> int:
+        """Most model requests one user turn may make (the ``agent.max_turns`` setting, default 50): also the default of
+        ``run_agent``'s ``max_turns``. API 2.3."""
+        return self._app.settings.max_turns
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        """How much the model is asked to think: ``"low"``, ``"medium"`` or ``"high"`` (the ``reasoning_effort`` setting or
+        :meth:`set_reasoning_effort`); ``None`` for the provider's default. API 2.3."""
+        return self._app.reasoning_effort
+
+    @property
     def context_tokens(self) -> int | None:
         """Size of the context after the last reply that reported usage; ``None`` if none did."""
         return self._app.context_tokens
+
+    @property
+    def context_window(self) -> int | None:
+        """The current model's context size in tokens, or ``None`` if unknown. API 2.3.
+
+        The ``context_window`` setting (an integer) wins; else the provider's own table
+        (:attr:`~minimal.providers.base.ProviderSpec.context_windows`), else minimal's table of the built-in providers'
+        model families by name prefix. Divide :attr:`context_tokens` by it for a gauge."""
+        return self._app.context_window
+
+    @property
+    def theme(self) -> ThemeInfo:
+        """The current colour theme, every colour resolved to ``#rrggbb`` (:class:`~minimal.extensions.registry.ThemeInfo`). API 2.3.
+
+        The terminal UI's theme (the built-in ``minimal`` one when no UI shows themes); read it again after
+        ``theme_change``. Use it for colours a style string cannot name: ``ctx.theme.colors["accent"]``."""
+        return self._app.theme_info()
+
+    def invalidate(self) -> None:
+        """Ask the UI to redraw panels, status segments and widgets now. API 2.3.
+
+        For code that learns of a change off the UI thread (a poller, a subscription): call it from any thread instead
+        of polling with a panel ``interval``. It is cheap and coalesced: calls arriving while a redraw is already
+        pending share it. The terminal UI calls each panel's ``render``, each status segment and each widget's
+        ``refresh_state``; a frontend that shows none of those does nothing."""
+        self._app.invalidate()
+
+    def git(self) -> GitInfo | None:
+        """The state of the working directory's git repository (:class:`~minimal.core.git.GitInfo`: branch, ahead/behind,
+        counts of staged, unstaged and untracked files, up to 50 changed files). API 2.3.
+
+        One background poller shared by every caller refreshes it every ``git.refresh`` seconds (default 3) and calls
+        :meth:`invalidate` when it changes; the first call starts it. Cheap: it returns the cached result and never runs
+        git itself. ``None`` until the first poll ends and outside a git repository."""
+        return self._app.git_info()
+
+    def keybindings(self) -> list[KeyInfo]:
+        """Every bound key as a help screen lists it: minimal's own actions (as ``ui.keys`` remapped them) then the
+        extensions' keybindings (:class:`~minimal.extensions.registry.KeyInfo`). API 2.3. A binding the user unbound
+        is left out."""
+        bound, _ = resolve_keys(self._app.registry, self._app.settings)
+        return [
+            KeyInfo(b.key, b.id, b.description, "built-in" if b.spec is None else b.spec.ext) for b in bound if b.key
+        ]
 
     @property
     def tools(self) -> Mapping[str, Tool]:
@@ -139,29 +197,113 @@ class Context:
         system: str | None = None,
         tools: bool = True,
         options: Mapping[str, Any] | None = None,
+        model: str | None = None,
     ) -> Reply:
         """One model request with the current provider and model; no tools are run.
+
+        A failed request goes to the ``provider_error`` handlers, which may retry it as for a turn. The request counts
+        in :attr:`usage`.
 
         Args:
             messages: The conversation to send, in the canonical format.
             system: System prompt (default: :meth:`system_prompt`).
             tools: Offer the registered tools, as a turn does (keeps the provider's prompt cache warm).
-            options: Request options (``max_tokens``, ``temperature``) over the ones a turn uses.
+            options: Request options (``max_tokens``, ``temperature``, ``reasoning_effort``) over the ones a turn uses.
+            model: Another model of the current provider (API 2.3); the request uses its ``max_tokens`` setting.
 
         Raises:
             TurnInterrupted: if the user interrupts while the reply streams.
         """
         app = self._app
-        opts = {**app.request_options(), **(options or {})}
+        opts = {**app.request_options(app.provider_name, model), **(options or {})}
         assert app.provider is not None  # startup picks a provider before any extension runs
-        return app.provider.stream(
-            model=app.model,
-            system=self.system_prompt() if system is None else system,
-            messages=messages,
-            tools=agent.tool_specs(app.registry, gate=app.mode_block_reason) if tools else [],
-            on_text=lambda _chunk: self.check_cancelled(),
-            **({"options": opts} if opts else {}),
+        provider, model_name = app.provider, model or app.model
+        system_text = self.system_prompt() if system is None else system
+        tool_list = agent.tool_specs(app.registry, gate=app.mode_block_reason) if tools else []
+        who = {"agent_id": self.agent_id, "parent_id": self.parent_id}
+        switch = app.fallback_provider if model is None else app.create_provider
+        flag = self._flag()
+        reply = None
+        attempt = 0
+        while reply is None:
+            try:
+                reply = provider.stream(
+                    model=model_name,
+                    system=system_text,
+                    messages=messages,
+                    tools=tool_list,
+                    on_text=lambda _chunk: self.check_cancelled(),
+                    **({"options": opts} if opts else {}),
+                )
+            except TurnInterrupted:
+                raise
+            except Exception as e:
+                attempt += 1
+                retry = agent._provider_error(
+                    e, attempt, app.registry, self, provider, model_name, self._run is not None, switch, flag, who
+                )
+                if retry is None:
+                    raise
+                provider, model_name = retry
+                self.check_cancelled()
+        app.usage.add(reply.usage)
+        return reply
+
+    def complete_text(
+        self, prompt: str, *, system: str | None = None, model: str | None = None, max_tokens: int = 1024
+    ) -> str:
+        """Ask the model one question and return its answer as text: one request, no tools, not added to the history.
+
+        API 2.3. A thin layer over :meth:`complete` for utilities such as a title, a summary or a classification:
+        the conversation is not sent, only ``prompt``. The request counts in :attr:`usage` and a failure goes
+        to the ``provider_error`` handlers.
+
+        Args:
+            prompt: The user message.
+            system: The system prompt; none by default (pass :meth:`system_prompt` to send the session's).
+            model: Another model of the current provider; default the current model.
+            max_tokens: The most tokens the answer may have.
+
+        Raises:
+            ValueError: if ``prompt`` is empty or ``max_tokens`` is not a positive integer.
+            TurnInterrupted: if the user interrupts while the reply streams.
+        """
+        if not prompt.strip():
+            raise ValueError("complete_text: prompt is empty")
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+            raise ValueError("complete_text: max_tokens must be an integer >= 1")
+        reply = self.complete(
+            [{"role": "user", "content": prompt}],
+            system=system or "",
+            tools=False,
+            options={"max_tokens": max_tokens},
+            model=model,
         )
+        return result_text(reply.content)
+
+    @property
+    def usage(self) -> UsageTotals:
+        """Tokens and requests this minimal process has spent so far (API 2.3): every model request of the user's
+        turns, of the agents they start and of :meth:`complete`, since it started. A new or resumed session does not
+        reset it, and it is not saved: ``minimal -c`` starts counting again. A snapshot, not live."""
+        return self._app.usage.totals
+
+    def progress(self, text: str | None) -> None:
+        """Show ``text`` as a one-line progress note next to the working indicator while a tool or command runs;
+        ``None`` clears it.
+
+        API 2.3. Only the first line is shown, at most 120 characters; the terminal UI also clears it when the
+        turn or command ends. Call it as often as you like, from any thread (the console prints each change on stderr
+        when it is a terminal).
+
+        Raises:
+            TypeError: if ``text`` is neither a string nor ``None``.
+        """
+        if text is not None:
+            if not isinstance(text, str):
+                raise TypeError("progress: text must be a string or None")
+            text = " ".join(text.split("\n", 1)[0].split())[:120] or None
+        self._app.frontend.progress(text)
 
     def run_agent(
         self,
@@ -241,7 +383,7 @@ class Context:
             model: A model name; with ``provider`` omitted, the current provider's.
             provider: Name of a provider to use for this agent only (its default model unless ``model`` is
                 given); the app's current provider and model do not change.
-            max_turns: Most model requests it may make (default 50).
+            max_turns: Most model requests it may make (default :attr:`max_turns`).
 
         Returns:
             Its :class:`~minimal.core.agents.AgentResult`.
@@ -326,6 +468,32 @@ class Context:
         app.session.save()
         return old.id
 
+    def fork(self, at_index: int | None = None) -> str:
+        """Continue in a new session that starts as a copy of this one up to message ``at_index``; return its id.
+
+        API 2.3. The copy holds ``messages[:at_index]`` (every message if ``at_index`` is ``None``); the current
+        session stays saved as it is, and the new session's header names it as its ``parent``. Fires
+        ``session_switch``, and the terminal UI redraws the transcript from the new session.
+
+        Raises:
+            ValueError: if a turn is running (a command or a tool's ``ctx`` of the user's turn cannot fork it),
+                ``at_index`` is not in ``0..len(messages)``, or the cut would separate an assistant ``tool_use``
+                from the ``tool_result`` message after it: cut before the call or after its results.
+        """
+        return self._app.fork_session(at_index)
+
+    def truncate(self, at_index: int) -> int:
+        """Drop the messages from ``at_index`` on from the current session, and from its file; return how many.
+
+        API 2.3. ``ctx.messages`` is cut in place and the session file is rewritten atomically, so a crash never
+        leaves half a history. The terminal UI redraws the transcript. It does not fire ``session_switch``: this is
+        still the same session. ``fork`` first to keep the dropped messages.
+
+        Raises:
+            ValueError: as for :meth:`fork`.
+        """
+        return self._app.truncate_session(at_index)
+
     def sessions(self, *, all_projects: bool = False) -> list[str]:
         """Saved session ids, oldest first: this project's (see ``cwd``), or every project's with ``all_projects``."""
         return list_sessions(None if all_projects else self._app.cwd)
@@ -364,6 +532,16 @@ class Context:
     def set_model(self, name: str) -> None:
         """Use model ``name`` of the current provider from the next request on."""
         self._app.model = name
+
+    def set_reasoning_effort(self, value: str | None) -> None:
+        """Ask for ``"low"``, ``"medium"`` or ``"high"`` reasoning effort from the next request on, or ``None`` for the
+        provider's default. It beats the ``reasoning_effort`` setting until minimal restarts. A provider or model that
+        cannot think more or less ignores it. API 2.3.
+
+        Raises:
+            ValueError: if ``value`` is none of those.
+        """
+        self._app.set_reasoning_effort(value)
 
     def widget(self, name: str) -> object | None:
         """The widget the frontend shows for extension widget ``name`` (see ``register_widget``); ``None`` if none."""

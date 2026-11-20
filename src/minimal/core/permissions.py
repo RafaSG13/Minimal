@@ -24,6 +24,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from minimal import config
@@ -104,12 +105,97 @@ def matches(rule: str, tool: Tool, input: dict, cwd: str, *, any_command: bool =
     return fnmatch.fnmatchcase(str(value), pattern)
 
 
-class Permissions:
-    """The allow and deny rules of :class:`~minimal.config.Settings` (a project's allow rules only once trusted)."""
+_EXACT_ONLY = frozenset(
+    "sh bash zsh dash ksh fish csh tcsh env sudo doas su xargs eval exec nohup nice time timeout watch find awk gawk sed "
+    "ssh command builtin source npx uvx pipx bunx rm mv cp dd chmod chown ln kill pkill killall curl wget tee truncate "
+    "shred".split()
+)
+"""First words of ``bash`` commands that run other programs or change many files by their arguments: a rule suggested
+for them matches only the exact command, never a prefix."""
 
-    def __init__(self, settings: config.Settings) -> None:
+_INTERPRETER = re.compile(r"(?:python|pypy|node|ruby|perl|php)[\d.]*")
+_PLAIN_WORD = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+_SUBCOMMAND = re.compile(r"[a-z][a-z0-9_-]*")
+
+
+def _escape(text: str) -> str:
+    """``text`` as a pattern that matches only itself (``*``, ``?``, ``[`` and ``{`` are wildcards in the patterns)."""
+    return re.sub(r"[*?\[{]", lambda m: f"[{m.group()}]", text)
+
+
+def _bash_pattern(command: str) -> str | None:
+    """The narrowest pattern worth saving for ``command``; ``None`` if no allow rule can ever match it.
+
+    A command that chains, pipes, substitutes or redirects is never matched by an allow rule, so none is offered.
+    ``git status --short`` gives ``git status*``; a command whose first word runs other programs
+    (:data:`_EXACT_ONLY`) or whose second word is not a plain subcommand matches only itself.
+    """
+    command = command.strip()
+    if not command or any(op in command for op in _SHELL_OPERATORS):
+        return None
+    words = command.split()
+    first = words[0]
+    if (
+        len(words) > 1
+        and _PLAIN_WORD.fullmatch(first)
+        and first not in _EXACT_ONLY
+        and not _INTERPRETER.fullmatch(first)
+        and _SUBCOMMAND.fullmatch(words[1])
+    ):
+        return f"{first} {words[1]}*"
+    return _escape(command)
+
+
+def suggest_rule(tool: Tool, input: dict, cwd: str) -> str | None:
+    """The allow rule that would cover this call and little else, for the "this session" and "always" answers.
+
+    ``bash`` gets a command pattern (:func:`_bash_pattern`), a tool with a ``subject_key`` the exact path (relative to
+    ``cwd`` inside it) or subject, and a tool without one its bare name. ``None`` if no safe rule exists: the call
+    could never be matched by an allow rule, or the tool's name or subject cannot be written as one.
+    """
+    key = tool.subject_key
+    if key is None:
+        rule = tool.name
+    else:
+        value = input.get(key, _DEFAULT_SUBJECTS.get(tool.name) if key == "path" else None)
+        if not isinstance(value, str) or not value:
+            return None
+        pattern: str | None
+        if tool.name == "bash":
+            pattern = _bash_pattern(value)
+        elif key == "path":
+            root = Path(cwd).resolve()
+            resolved = Path(cwd, value).resolve()
+            subject = resolved.relative_to(root).as_posix() if resolved.is_relative_to(root) else resolved.as_posix()
+            pattern = None if "[" in subject else _escape(subject)  # a path glob has no way to write a literal [
+        else:
+            pattern = _escape(value)
+        if pattern is None:
+            return None
+        rule = f"{tool.name}({pattern})"
+    if RULE_RE.fullmatch(rule) is None or not matches(rule, tool, input, cwd):
+        return None
+    return rule
+
+
+class Permissions:
+    """The allow and deny rules of :class:`~minimal.config.Settings` (a project's allow rules only once trusted),
+    and the allow rules the user granted "for this session" (:meth:`allow_session`)."""
+
+    def __init__(self, settings: config.Settings, session: Iterable[str] = ()) -> None:
         self.allow = settings.allow
         self.deny = settings.deny
+        self.session: list[str] = list(session)
+
+    def allow_session(self, rule: str) -> None:
+        """Allow calls that ``rule`` covers until minimal exits (a reload keeps it); deny rules still win.
+
+        Raises:
+            ValueError: if ``rule`` is neither ``name`` nor ``name(pattern)``.
+        """
+        parse_rule(rule)
+        if rule not in self.session:
+            self.session.append(rule)
 
     def check(self, tool: Tool, input: dict, cwd: str) -> bool:
         """Whether the call may run without asking.
@@ -122,4 +208,4 @@ class Permissions:
                 raise PermissionDenied(f"denied by permission rule '{rule}' ({scope} settings)")
         if tool.name == "bash" and any(op in str(input.get("command", "")) for op in _SHELL_OPERATORS):
             return False
-        return any(matches(rule, tool, input, cwd) for rule, _ in self.allow)
+        return any(matches(rule, tool, input, cwd) for rule in (*(r for r, _ in self.allow), *self.session))

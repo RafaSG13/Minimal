@@ -24,8 +24,6 @@ settings from ``extensions.settings.<id>`` in settings.json::
 
 from __future__ import annotations
 
-import hashlib
-import os
 import types
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -33,7 +31,20 @@ from typing import Any, TypedDict
 
 from minimal import config
 from minimal.extensions.metadata import Metadata
-from minimal.extensions.registry import CommandRun, EventHandler, PromptText, Registry, Tool, ToolRun, check_event
+from minimal.extensions.registry import (
+    CommandComplete,
+    CommandRun,
+    EventHandler,
+    PromptText,
+    Registry,
+    SettingsSpec,
+    Tool,
+    ToolRun,
+    check_event,
+    check_schema,
+    check_setting,
+    setting_matches,
+)
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage
 
 
@@ -56,6 +67,7 @@ class ToolResultEvent(TypedDict):
     name: str
     input: dict
     output: str
+    """The tool's text; a picture a tool returned shows as ``[image: media_type, N bytes]``. A rewrite replaces everything, pictures too."""
     is_error: bool
     ctx: Any
     agent_id: str
@@ -192,17 +204,19 @@ class ModeChangeEvent(TypedDict):
     """The mode that is current now; ``None`` for no mode."""
 
 
+class ThemeChangeEvent(TypedDict):
+    """Payload of ``theme_change``: the terminal UI's colour theme changed (``/theme``, the ``Ctrl+P`` picker or a
+    reload). ``ctx.theme`` has the new theme's colours. API 2.3."""
+
+    ctx: Any
+    name: str
+    """The theme that is current now."""
+    dark: bool
+    """Whether it is a dark theme."""
+
+
 def _first_line(doc: str | None) -> str:
     return doc.strip().splitlines()[0] if doc and doc.strip() else ""
-
-
-def _matches(default: object, value: object) -> bool:
-    """Whether a user ``value`` has the type of ``default``: ``bool`` is strict, a ``float`` default takes an ``int``."""
-    if isinstance(default, bool) or isinstance(value, bool):
-        return isinstance(default, bool) and isinstance(value, bool)
-    if isinstance(default, float):
-        return isinstance(value, (int, float))
-    return isinstance(value, type(default))
 
 
 class Extension:
@@ -281,8 +295,7 @@ class Extension:
             ValueError: if ``scope`` is neither.
         """
         if scope == "project":
-            key = hashlib.sha256(os.path.realpath(self._cwd).encode()).hexdigest()[:16]
-            path = config.HOME_DIR / "data" / "projects" / key / self._id
+            path = config.project_data_dir(self._cwd) / self._id
         elif scope == "global":
             path = config.HOME_DIR / "data" / "global" / self._id
         else:
@@ -300,24 +313,53 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
+        read_only: bool = False,
     ) -> None:
         """Add a tool the model can call as ``run(input, ctx)``; see :meth:`Registry.register_tool`.
 
         ``subject_key`` names the ``input`` field that permission rules ``name(pattern)`` match.
+        ``read_only`` (API 2.3) says the tool changes nothing and is thread-safe, so calls to it may run concurrently
+        with each other (see :attr:`~minimal.extensions.registry.Tool.read_only`).
         """
-        self._registry.register_tool(name, run, description, input_schema, confirm, subject_key)
+        self._registry.register_tool(name, run, description, input_schema, confirm, subject_key, read_only)
 
-    def register_command(self, name: str, run: CommandRun, description: str = "", terminal: bool = False) -> None:
-        """Add the slash command ``/name``, run as ``run(args, ctx)``; see :meth:`Registry.register_command`."""
-        self._registry.register_command(name, run, description, terminal)
+    def register_command(
+        self,
+        name: str,
+        run: CommandRun,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
+    ) -> None:
+        """Add the slash command ``/name``, run as ``run(args, ctx)``; see :meth:`Registry.register_command`.
 
-    def register_widget(self, name: str, create: Callable[[Any], Any], area: str = "sidebar") -> None:
-        """Add a terminal UI widget built by ``create(ctx)``; see :meth:`Registry.register_widget`."""
-        self._registry.register_widget(name, create, area)
+        ``complete(args, ctx)`` returns candidate completions of the text typed after ``/name `` (API 2.3).
+        """
+        self._registry.register_command(name, run, description, terminal, complete)
 
-    def register_status(self, name: str, render: Callable[[Any], Any], side: str = "right") -> None:
-        """Add a status-line segment drawn by ``render(ctx)``; see :meth:`Registry.register_status`."""
-        self._registry.register_status(name, render, side)
+    def register_widget(
+        self,
+        name: str,
+        create: Callable[[Any], Any],
+        area: str = "sidebar",
+        *,
+        order: int = 0,
+        title: str | None = None,
+        collapsible: bool = False,
+    ) -> None:
+        """Add a terminal UI widget built by ``create(ctx)``; see :meth:`Registry.register_widget`.
+
+        ``area`` may also be ``"left"`` or ``"footer"``, and ``order`` stacks an area's widgets. API 2.3.
+        ``title`` draws a heading above the widget and ``collapsible`` lets a click on it collapse the widget. API 2.3."""
+        self._registry.register_widget(name, create, area, order=order, title=title, collapsible=collapsible)
+
+    def register_status(
+        self, name: str, render: Callable[[Any], Any], side: str = "right", *, order: int = 0
+    ) -> None:
+        """Add a status-line segment drawn by ``render(ctx)``; see :meth:`Registry.register_status`.
+
+        ``order`` sorts the segments of a side (API 2.3)."""
+        self._registry.register_status(name, render, side, order=order)
 
     def register_panel(
         self,
@@ -326,9 +368,55 @@ class Extension:
         area: str = "sidebar",
         live: Callable[[Any, dict], Any] | None = None,
         interval: float = 0.0,
+        *,
+        order: int = 0,
+        title: str | None = None,
+        collapsible: bool = False,
     ) -> None:
-        """Add a panel of styled text lines the terminal UI can draw; see :meth:`Registry.register_panel`. API 1.3."""
-        self._registry.register_panel(name, render, area, live, interval)
+        """Add a panel of styled text lines the terminal UI can draw; see :meth:`Registry.register_panel`. API 1.3.
+
+        ``area`` may also be ``"left"`` or ``"footer"``, and ``order`` stacks an area's panels and widgets. API 2.3.
+        ``title`` draws a heading line above the panel and ``collapsible`` lets a click or Enter on it collapse the
+        panel to it (the user's ``ui.widgets.<name>.title`` / ``collapsed`` and ``/ui title|collapse`` override). API 2.3."""
+        self._registry.register_panel(
+            name, render, area, live, interval, order=order, title=title, collapsible=collapsible
+        )
+
+    def register_keybinding(
+        self,
+        key: str,
+        run: Callable[[Any], Any],
+        description: str = "",
+        *,
+        show: bool = False,
+        name: str = "",
+    ) -> None:
+        """Bind the global key ``key`` (``ctrl+o``, ``alt+x``, ``f5``) to ``run(ctx)``; see :meth:`Registry.register_keybinding`.
+
+        ``run`` runs on a worker thread like a slash command, so it may ask the user questions and use ``ctx``;
+        a key is ignored while a turn, a command or a dialog is running. Keys the UI needs
+        (:data:`~minimal.extensions.registry.RESERVED_KEYS`) are refused. The user can give the binding another
+        key with ``ui.keys``, under ``"<extension id>:<name or description>"``. If another extension already bound
+        the key, this one replaces it and the reload reports it. API 2.3.
+
+        Raises:
+            ValueError: if ``key`` is not a valid, unreserved key or ``run`` is not callable.
+        """
+        replaced = self._registry.register_keybinding(
+            key, run, description, show=show, name=name, ext=self._id
+        )
+        if replaced is not None:
+            who = f"{replaced.ext}'s " if replaced.ext and replaced.ext != self._id else "its own earlier "
+            self._errors.append(f"{self._id}: key {replaced.key} was bound by {who}binding {replaced.label!r}; replaced")
+
+    def register_css(self, name: str, css: str) -> None:
+        """Add a Textual stylesheet for the terminal UI, replacing the one of the same ``name`` this extension added;
+        see :meth:`Registry.register_css`. The stable selectors to style are in ``docs/extensions.md``. API 2.3.
+
+        Raises:
+            ValueError: if ``name`` is empty or ``css`` is not a string.
+        """
+        self._registry.register_css(name, css, self._id)
 
     def register_renderer(self, kind: str, render: Callable[[Any, dict], Any]) -> None:
         """Draw a transcript block kind (``fence:<language>``, ``blockquote:alert``, ``tool:<name>``) with ``render(ctx, block)``; see :meth:`Registry.register_renderer`. API 1.3."""
@@ -401,7 +489,7 @@ class Extension:
         """Subscribe ``handler(event)`` to ``event``: one of :data:`~minimal.extensions.registry.EVENTS`
         (``tool_call``, ``tool_result``, ``turn_end``, ``session_start``, ``session_switch``,
         ``turn_start``, ``before_request``, ``after_response``, ``shutdown``, ``provider_error``,
-        ``agent_start``, ``agent_end``, ``mode_change``).
+        ``agent_start``, ``agent_end``, ``mode_change``, ``theme_change``).
 
         Without ``handler``, returns a decorator that subscribes the decorated function.
 
@@ -440,9 +528,10 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
+        read_only: bool = False,
     ) -> Callable[[ToolRun], ToolRun]:
         """Decorator registering ``fn(input, ctx)`` as a tool: the name defaults to the function's,
-        the description to the first line of its docstring."""
+        the description to the first line of its docstring. ``read_only`` (API 2.3): see :meth:`register_tool`."""
 
         def decorate(fn: ToolRun) -> ToolRun:
             self.register_tool(
@@ -452,47 +541,84 @@ class Extension:
                 input_schema,
                 confirm,
                 subject_key,
+                read_only,
             )
             return fn
 
         return decorate
 
     def command(
-        self, name: str | None = None, *, description: str = "", terminal: bool = False
+        self,
+        name: str | None = None,
+        *,
+        description: str = "",
+        terminal: bool = False,
+        complete: CommandComplete | None = None,
     ) -> Callable[[CommandRun], CommandRun]:
         """Decorator registering ``fn(args, ctx)`` as ``/name``: the name defaults to the function's,
-        the description to the first line of its docstring."""
+        the description to the first line of its docstring. ``complete`` is as in :meth:`register_command`."""
 
         def decorate(fn: CommandRun) -> CommandRun:
-            self.register_command(name or fn.__name__, fn, description or _first_line(fn.__doc__), terminal)
+            self.register_command(name or fn.__name__, fn, description or _first_line(fn.__doc__), terminal, complete)
+            return fn
+
+        return decorate
+
+    def keybinding(
+        self, key: str, *, description: str = "", show: bool = False, name: str = ""
+    ) -> Callable[[Callable[[Any], Any]], Callable[[Any], Any]]:
+        """Decorator binding the global key ``key`` to ``fn(ctx)``: the description defaults to the first line of its
+        docstring; see :meth:`register_keybinding`. API 2.3."""
+
+        def decorate(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+            self.register_keybinding(key, fn, description or _first_line(fn.__doc__), show=show, name=name)
             return fn
 
         return decorate
 
     # --- settings ------------------------------------------------------------
 
-    def declare_settings(self, defaults: dict) -> Mapping[str, Any]:
+    def declare_settings(self, defaults: dict, schema: Mapping[str, Mapping[str, Any]] | None = None) -> Mapping[str, Any]:
         """Declare this extension's settings and their defaults; return the effective values (read-only).
 
         Users set them under ``extensions.settings.<id>`` in settings.json. A key not
         in ``defaults``, or a value whose type differs from its default's, is reported
         as a reload error and ignored.
 
+        ``schema`` (API 2.3) documents and constrains settings: it maps a key of ``defaults`` to
+        ``{"description": str, "enum": [...], "min": n, "max": n}`` (every field optional; ``enum`` lists the allowed
+        values, ``min`` and ``max`` bound a number). A user's value that is the wrong type, not in ``enum`` or out of
+        range is a collected load error naming ``extensions.settings.<id>.<key>``, and the default is used. The
+        descriptions, enums and ranges are shown by ``/ext settings``, which also edits the values.
+
         Raises:
-            ValueError: if called twice.
+            ValueError: if called twice, or ``schema`` is malformed: it names a key that is not in ``defaults``, an
+                entry is not an object of those fields, or a default does not satisfy its own entry
+                (``minimal ext check`` reports it).
         """
         if self._declared:
             raise ValueError("declare_settings was already called")
+        schema = {key: dict(entry) if isinstance(entry, Mapping) else entry for key, entry in (schema or {}).items()}
+        check_schema(defaults, schema)
         self._declared = True
         values = dict(defaults)
         for key, value in self._user_settings.items():
             if key not in defaults:
                 self._errors.append(f"{self._id}: unknown setting '{key}' (declared: {', '.join(defaults)})")
-            elif not _matches(defaults[key], value):
+            elif key in schema:
+                problem = check_setting(defaults[key], value, schema[key])
+                if problem:
+                    self._errors.append(
+                        f"{self._id}: extensions.settings.{self._id}.{key} {problem}, got {value!r}; using the default {defaults[key]!r}"
+                    )
+                else:
+                    values[key] = value
+            elif not setting_matches(defaults[key], value):
                 self._errors.append(f"{self._id}: setting '{key}' must be {type(defaults[key]).__name__}")
             else:
                 values[key] = value
         self._settings = types.MappingProxyType(values)
+        self._registry.declared_settings[self._id] = SettingsSpec(self._id, dict(defaults), schema, dict(values))
         return self._settings
 
     @property

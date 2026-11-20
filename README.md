@@ -127,11 +127,11 @@ If an `AGENTS.md` exists in the current directory, it is added to the system pro
 
 **Interface.** `minimal` always opens the Textual terminal UI (`ui/tui/`). `/setup` and `/login` suspend it and run in the plain terminal.
 
-**Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
+**Confirmations.** `write`, `edit`, `bash`, `reload_extensions`, `ext_install` and `ext_publish` ask before running, and so do `read`, `grep` and `glob` for paths outside the working directory, minimal's own source and `~/.minimal/extensions` (a symlink counts where it leads). `-y` skips these questions. `permissions.allow` rules in [settings](#settings) skip them for matching calls (`bash(git status*)`, `write(src/**)`), and `permissions.deny` rules block matching calls even with `-y`. The terminal UI's dialog also offers "Allow this session" and "Always allow", which add the rule it shows (the narrowest that covers the call) in memory or to the project's `.minimal/settings.local.json` ([details](docs/settings.md#allow-this-session-allow-always)). A `tool_call` handler that raises blocks the call. Session files are private to your user (`~/.minimal/sessions`, mode 0700).
 
 **Files.** `edit` replaces one exact, unique piece of text, every occurrence with `replace_all`, or several pieces in one call with `edits` (all or none), and returns the changed lines. `edit` and `write` refuse a file that changed on disk since the model last read, wrote or edited it (you, a formatter or a `bash` command touched it), so the model reads it again instead of overwriting your changes. `read` shows bytes that are not UTF-8 as `�` and does not print binary files.
 
-**Sessions.** A session is open in one minimal at a time: `-c`, `-s` or `/resume` of a session another minimal has open fails and says which process holds it. `/title` names a session; `/sessions` and `/resume` show the title (else the first message) and, for a session an extension started from another one (as `compact` does), the one it came from.
+**Sessions.** A session is open in one minimal at a time: `-c`, `-s` or `/resume` of a session another minimal has open fails and says which process holds it. `/title` names a session; `/sessions` and `/resume` show the title (else the first message) and, for a session an extension started from another one (as `compact` does), the one it came from. `/fork` copies a session into a new one and `/rewind` cuts the last exchange off the current one (never between a tool call and its result).
 
 ### Providers
 
@@ -153,11 +153,17 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 | `/new`, `/sessions [--all]`  | Start a new session, list this project's saved sessions (every project's with `--all`) |
 | `/resume [--all] [id]`       | Resume a saved session of this project: pick one of the latest (`--all`: of any project), or give an id |
 | `/title [text]`              | Show or set this session's title                                           |
+| `/fork [n]`                  | Continue in a new session copied from this one (up to before your n-th last message); the old one stays saved |
+| `/rewind [n]`                | Drop your n-th last message (default 1) and everything after it from this session |
+| `/usage`                     | Show the tokens and model requests spent since minimal started             |
 | `/model [number\|name]`      | List models, or change model                                               |
 | `/provider [name [model]]`   | List providers, or switch for this session and keep the conversation       |
 | `/tools`                     | List the tools                                                             |
 | `/mode [name\|off]`          | List the modes extensions added and the current one, or switch (`Shift+Tab` cycles them) |
 | `/theme [name]`              | Pick the colour theme; the choice is saved in `~/.minimal/settings.json`   |
+| `/copy [n]`                  | Copy the last assistant message (the `n`-th from the end) to the clipboard: OSC 52 through the terminal, and `pbcopy`, `wl-copy`, `xclip` or `xsel` when installed; it says which |
+| `/export [path] [--force]`   | Write the session as Markdown to `path` (default `./minimal-session-<id>.md`); an existing file is only overwritten with `--force`. Tool calls and results are summarised and cut, images are placeholders |
+| `/ui …`                      | Show the layout and keys, or change them: `sidebar left\|right\|hidden`, `density compact`, `hide`/`show`/`move <name> …`, `reset` |
 | `/reload`                    | Reload extensions and settings from disk                                   |
 | `/settings`                  | Show the settings files and each effective setting with where it comes from |
 | `/trust`                     | Scan this project's extensions and trust-gated settings, then choose whether to trust and apply them |
@@ -169,7 +175,28 @@ More providers come from extensions. The marketplace's `claude_subscription` add
 
 `Esc` interrupts the turn in progress: a running `bash` command is killed. It takes effect at the next streamed chunk, tool call or model request. If the model had already replied, the turn stays in the history, closed with a `[turn interrupted: …]` note and an error result for each tool call that had not finished, so the model still knows what it did; otherwise the turn is dropped and the same prompt can be sent again. Interrupting during an automatic compaction (the `compact` extension) aborts it and keeps the answer. Resuming a session (`-c`, `-s`, `/resume`) redraws its last 200 messages in the transcript.
 
-Typing `/` and part of a command suggests the rest; `→` accepts it. Click a tool call to expand its output (up to 500 lines) and again to collapse it; edits show a diff with the file's line numbers, and `read`/`write` show syntax-highlighted code. `Ctrl+B` hides or shows the sidebar.
+Typing `/` and part of a command suggests the rest; `→` accepts it. Click a tool call to expand its output (up to 500 lines) and again to collapse it; edits show a diff with the file's line numbers, and `read`/`write` show syntax-highlighted code. `Ctrl+B` hides or shows the sidebars. The layout is yours to shape without code: `/ui` and the `ui.*` settings move, reorder and hide widgets and status segments, rebind keys (`ui.keys`), set the density and the prompt, and load your own Textual stylesheet (`ui.css`); extensions can bind keys too ([docs/settings.md](docs/settings.md#ui-settings)).
+
+### The composer
+
+The prompt is a multi-line editor that grows with the text up to `ui.composer_max_lines` rows ([settings](docs/settings.md)).
+
+| Key | Does |
+| --- | --- |
+| `Enter` | Send the message (or the `/command`) |
+| `Shift+Enter`, `Ctrl+J`, `Alt+Enter` | Insert a newline. Most terminals send a plain `Enter` for `Shift+Enter` unless they speak the kitty keyboard protocol (kitty, WezTerm, Ghostty, recent iTerm2; tmux needs `extended-keys`): use `Ctrl+J` or `Alt+Enter` (on macOS Terminal and iTerm2 set Option to send Esc+) there |
+| `Up` on the first line, `Down` on the last | Walk the project's prompt history (kept in `~/.minimal/data/projects/<key>/history.json`); what you had typed comes back after the newest entry |
+| `@` and some letters | Complete a project file (`.gitignore` is respected; letters may skip: `@rdm` finds `README.md`). `Up`/`Down` move, `Tab` puts one in the text (again for the next), `Enter` accepts it, `Esc` closes the list |
+| `/command ` and some letters | Complete the command's arguments when it offers completions: `/theme`, `/mode`, `/resume`, `/provider`, `/ext` and extension commands ([`complete`](docs/extensions.md#commands)); same keys |
+| `/` and some letters | List the slash commands that start with them, with their descriptions. `Up`/`Down` move, `Enter` runs the highlighted one, `Tab` puts it in the text to add arguments, `Esc` closes the list |
+| `→` or `Tab` after `/re` | Accept the ghost suggestion of a command name |
+| `Ctrl+P` | The command palette lists every slash command; choosing one runs it, or types `/name ` when it needs an argument |
+
+Every `@path` in a sent message that names a text file inside the working directory stays in the text and its content (cut at `ui.mention_max_chars`, 20000 characters) is appended to the message in a `<file path="…">` block, so the model has it without a tool call. Binary files, files outside the working directory (also through links) and paths that name nothing are not attached; the first two are reported.
+
+The prompt stays usable while a turn runs: a message sent meanwhile is shown dimmed above it as `queued: …` and sent when the turn ends, through the same queue as `ctx.queue_user_message`; `Esc` still interrupts the turn and the queued message goes out after it. A `/command` typed meanwhile is refused with a notice and kept in the prompt.
+
+With `ui.notify` set to `bell` or `osc9`, a turn that took longer than `ui.notify_after` seconds (default 10) rings the bell or sends a desktop notification when it ends while the terminal is in the background. A terminal that does not report focus changes is notified every time.
 
 ### Environment
 
@@ -185,7 +212,7 @@ Typing `/` and part of a command suggests the rest; `→` accepts it. Click a to
 
 ## Settings
 
-Settings are layered JSON files: `~/.minimal/settings.json` (global) < `.minimal/settings.json` (project, shared with the repository) < `.minimal/settings.local.json` (local, personal), then the environment, then the command line. They hold the provider, model and theme, extra prompt text and prompt files, permission rules, disabled extensions and per-extension settings, and (global only) the marketplaces and base prompt. `/settings` shows where each value comes from.
+Settings are layered JSON files: `~/.minimal/settings.json` (global) < `.minimal/settings.json` (project, shared with the repository) < `.minimal/settings.local.json` (local, personal), then the environment, then the command line. They hold the provider, model and theme, extra prompt text and prompt files, permission rules, disabled extensions and per-extension settings, the interface layout (`ui.*`), and (global only) the marketplaces and base prompt. `/settings` shows where each value comes from.
 
 ```json
 {
@@ -257,6 +284,7 @@ The default marketplace is [`RafaSG13/minimal-marketplace`](https://github.com/R
 /ext list                         list installed items by scope and category
 /ext search <query> [category]    search every marketplace by name, description or tag
 /ext publish <path> [name]        push a publish/<name>-<timestamp> branch and open a pull request (with `gh`)
+/ext settings [<id> [<key> <value>]]  list the settings extensions declare, show one extension's, or change a value
 ```
 
 `/ext` lists the default marketplace, `$MINIMAL_MARKETPLACE` and the ones you added. "Add a marketplace…" takes a git URL or a local path, checks that it can be cloned and saves it under `marketplaces` in `~/.minimal/settings.json`; "Remove a saved marketplace…" forgets one. Picking a marketplace shows its categories with item and install counts; picking a category shows a checklist with installed items ticked. Tick to install (then choose the global or the project folder), untick to uninstall; items with a newer version on offer are offered for update. `Space` toggles, `Enter` applies, `Esc` cancels; extensions are reloaded afterwards. `/ext publish` files an extension under the category of the folder it comes from (`~/.minimal/extensions/themes/x.py` → `themes/`), else under `extensions/`.
@@ -287,11 +315,11 @@ flowchart LR
   turn --> session[Session.save]
 ```
 
-**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply; `before_request` handlers may change what one request sends (a summary instead of a long history, say), and a failed request goes to `provider_error` handlers, which may retry it or switch provider. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), permission rules (a deny fails the call, an allow skips the question), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The results go back to the model, and this repeats until it answers without tools. If a turn fails or is interrupted before the model replied, it is dropped from the history; after that, it is kept, with the finished tool results, an error for each call not finished and a closing `[turn interrupted: …]` note. A reply cut off by the output token limit never runs its tool calls: each gets an error asking for smaller steps. The session file is appended to after every turn.
+**One user turn.** `App.run_turn` appends the user message and calls `run_agent`. The loop asks the current provider for a reply; `before_request` handlers may change what one request sends (a summary instead of a long history, say), and a failed request goes to `provider_error` handlers, which may retry it or switch provider. If the reply calls tools, each call goes through `tool_call` handlers (which can veto it; one that raises blocks it), permission rules (a deny fails the call, an allow skips the question), user confirmation, the tool itself, and `tool_result` handlers (which can rewrite the output). The calls of one reply run one by one, except that consecutive calls to tools marked `read_only` (`read`, `grep`, `glob`) run concurrently (`tools.max_parallel`, default 4), checked and answered in order. The results go back to the model, and this repeats until it answers without tools (`agent.max_turns` requests at most, default 50). If a turn fails or is interrupted before the model replied, it is dropped from the history; after that, it is kept, with the finished tool results, an error for each call not finished and a closing `[turn interrupted: …]` note. A reply cut off by the output token limit never runs its tool calls: each gets an error asking for smaller steps. The session file is appended to after every turn.
 
 **Interface.** The terminal UI (`ui/tui/`, Textual) drives minimal through a `Host` (`core/host.py`): send a message, run a command, interrupt, read the status and what extensions add to the interface; it shows minimal through a `Frontend` (`core/app.py`) that it attaches to the host. `cli.py` imports Textual only when the UI opens, and `import minimal.api` loads no UI toolkit. `ConsoleFrontend` (plain stdout) is what an `App` uses before the UI attaches and what `/setup` and `/login` use while the UI is suspended.
 
-**History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
+**History.** Stored in one provider-neutral format shaped like the Anthropic Messages API (see `providers/base.py`). Each provider converts it to its own API on every request. When a provider must replay its own replies exactly (Gemini's thought signatures), it keeps that data in the message's `provider_data`; other providers ignore it. Besides text and tool blocks it holds `image` blocks (in user messages and tool results: `read` returns a PNG, JPEG, GIF or WebP file as one) and `thinking` blocks (the model's reasoning, where a provider shows it). Assistant messages also record the request's token `usage` when the provider reports it, which is where the status line's context size comes from. Requests to Anthropic use prompt caching, so the unchanged start of the history is not paid for again.
 
 <details>
 <summary><b>Project layout</b></summary>
@@ -324,18 +352,22 @@ src/minimal/         packages from the bottom up; each imports only from the one
     agent.py         agent loop (model → tools → model …)
     app.py           App: runtime state, settings, provider switching, system prompt, one user turn, extension reload, Frontend
     host.py          Host: what the terminal UI drives minimal with
+    layout.py        the UI layout and key map: what extensions registered plus the user's ui.* settings
     context.py       Context and UI: the ctx extensions receive
     permissions.py   permission rules: allow/deny matching for tool calls
     session.py       JSONL sessions (~/.minimal/sessions)
+    history.py       the project's prompt history (Up/Down in the composer)
+    mentions.py      @file mentions: project files to complete, files attached to a message
     prompt.md        packaged base prompt
   ui/
     commands.py      slash commands (/help, /provider, /reload, /settings, /trust, /ext, …)
     setup.py         onboarding wizard: provider, login or API key, model
-    tui/             the Textual terminal UI: app (MinimalTui, run_tui), widgets, dialogs, markdown, theme
+    export.py        /copy and /export: assistant texts, the session as Markdown, the clipboard tools
+    tui/             the Textual terminal UI: app (MinimalTui, run_tui), composer (prompt, history, completion), palette, widgets, dialogs, markdown, theme
   cli.py             option parsing, entry point, `minimal ext check`
   api.py             the only module extensions import from: Extension, Context, event types, glyphs, …
 extensions/
-  example.py         example extension (tool, command, guardrail with a setting, prompt note, sidebar widget)
+  example.py         example extension (tool, command, guardrail with a setting, prompt note, sidebar panel, key)
 scripts/logo.py      standalone image -> header-logo extension converter (`uv run scripts/logo.py IMAGE`; not in the wheel)
 tests/               unittest suite (see Development)
 ```
@@ -344,11 +376,11 @@ tests/               unittest suite (see Development)
 
 ### Adding a provider
 
-A provider is a class with a `name` and a `stream(*, model, system, messages, tools, on_text, options=None) -> Reply` method (see `providers/base.py`). `options` holds request options such as `max_tokens` and `temperature`; minimal passes it only when one is set, and a provider ignores keys it does not know:
+A provider is a class with a `name` and a `stream(*, model, system, messages, tools, on_text, options=None) -> Reply` method (see `providers/base.py`). `options` holds request options such as `max_tokens`, `temperature` and `reasoning_effort`; minimal passes it only when one is set, and a provider ignores keys it does not know:
 
 1. Convert the canonical `messages` and `tools` to the API's request format.
 2. Stream the response, calling `on_text(chunk)` for text as it arrives.
-3. Return `Reply(content=[text/tool_use blocks], stop_reason="tool_use" | "end_turn" | ..., provider_data=...)`.
+3. Return `Reply(content=[text/tool_use blocks, and thinking blocks if the model's reasoning is shown], stop_reason="tool_use" | "end_turn" | ..., provider_data=...)`.
 
 Register it as a built-in in `providers/__init__.py` (`BUILTIN_PROVIDERS`), or from an extension with `minimal.register_provider(...)` or `minimal.add_provider(spec)`; a provider that signs in instead of using a key sets `ProviderSpec.login`, `logout` and `account` (`minimal --login`, `/login` and setup use them), and one whose SDK is optional sets `sdk` and `install`. `providers/gemini.py` is a complete example, including the history conversion.
 
@@ -369,6 +401,8 @@ CI runs one Ubuntu job on every pull request and on `main` (Python 3.12: `ruff`,
 | --------------------- | ------------------------------------------------------------------------------------------------ |
 | `test_smoke.py`       | Tools, extensions, hot reload, the agent loop with a fake provider, interruption, sessions, logo validation, the flat project folder, `minimal.api` without Textual |
 | `test_providers.py`   | Provider conversions (Gemini and OpenAI history/streaming, Anthropic requests, token usage), optional SDKs, OpenAI-compatible servers, which provider a login acts on |
+| `test_parallel_tools.py` | Concurrent read-only tool calls (order, confirmations, interruption), `agent.max_turns`, `tools.max_parallel`, `reasoning_effort` |
+| `test_blocks.py`      | Image and thinking blocks: the `read` tool, sessions, each provider's request and reply conversion, the UI replay |
 | `test_config.py`      | Saved keys, how the startup provider is chosen                                                   |
 | `test_settings.py`    | Settings layers and precedence, validation errors, trust-gated keys, prompt files |
 | `test_permissions.py` | Allow/deny rules for bash, paths and extension tools; deny with `-y`; shell operators             |
@@ -378,6 +412,7 @@ CI runs one Ubuntu job on every pull request and on `main` (Python 3.12: `ruff`,
 | `test_security.py`    | Trust digests and the `/trust` scan, `project_trusted`                                           |
 | `test_marketplace.py` | Search, install, publish, package folders, versions, the `/ext` picker, saved marketplaces and `minimal ext check`, against local bare git repos |
 | `test_logo.py`        | The image-to-logo converter (skipped without Pillow)                                             |
+| `test_customisation.py` | Keybindings, areas and ordering, `ui.*` settings and `/ui` through the pilot, `__depends__`/`__conflicts__` loading |
 | `test_tui.py`         | The Textual UI through Textual's pilot: streaming turns, dialogs, `/theme`, widgets and panels, the untrusted notice |
 | `test_bundled_extensions.py` | Marketplace items through `App`: web search, subagent, compaction (also in the middle of a turn), retries, scope fence. Loads them from `../minimal-marketplace` or `$MARKETPLACE_CHECKOUT`; skipped without a checkout |
 

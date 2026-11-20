@@ -18,6 +18,8 @@ class DiffPanelTest(BundledExtensionTest):
         self.assertEqual(errors, [])
         self.ctx = SimpleNamespace(cwd=str(self.tmp))
         self.handlers = {name: self.registry._handlers[name][0] for name in ("turn_start", "tool_call", "tool_result")}
+        self.turn = self.handlers["tool_result"].__self__  # the extension's Turn: its worker thread is flushed below
+        self.addCleanup(self.turn.dispose)
 
     def call(self, name, path, change=None):
         """Fire tool_call, apply ``change(path)`` to the disk, fire tool_result."""
@@ -26,6 +28,7 @@ class DiffPanelTest(BundledExtensionTest):
         if change:
             change(self.tmp / path)
         self.handlers["tool_result"]({**event, "output": "ok", "is_error": False})
+        self.turn.flush()  # the diffing runs on a worker thread
 
     def lines(self):
         panel = self.registry.panels["diff_panel"]

@@ -117,7 +117,7 @@ class SmokeTest(unittest.TestCase):
         self.assertIn("not valid UTF-8", out)
         with self.assertRaisesRegex(ValueError, "not UTF-8"):
             self.run_tool("edit", path="latin1.txt", old_string="ok", new_string="no")
-        (Path(self.cwd) / "img.bin").write_bytes(b"\x89PNG\r\n\x1a\n\0\0\0")
+        (Path(self.cwd) / "img.bin").write_bytes(b"\x7fELF\r\n\x1a\n\0\0\0")
         self.assertIn("is a binary file (11 bytes): not shown", self.run_tool("read", path="img.bin"))
 
     def test_bash(self):
