@@ -1,0 +1,68 @@
+CHANGELOG.md
+  h_e81853c41416fb 79-95
+README.md
+  h_e81853c41416fb 286
+docs/extensions.md
+  h_e81853c41416fb 142,200-201,236-240,375-376,395-396,401-423,573-574,598-599
+docs/settings.md
+  h_e81853c41416fb 43-45,90,165-166
+src/minimal/api.py
+  h_e81853c41416fb 24,36,43,48,53-54,61-62,80-82,84-85,87
+src/minimal/config.py
+  h_e81853c41416fb 77-79,136-140,148,156-157,171-173,194-195,217,349-358,494,497-499,514,516-523,525,527-531
+src/minimal/core/app.py
+  h_e81853c41416fb 30,40,47,52,305-311,434-440,523-525,589,676,748-803
+src/minimal/core/context.py
+  h_e81853c41416fb 20-21,24,127-170
+src/minimal/core/git.py
+  h_e81853c41416fb 1-173
+src/minimal/core/host.py
+  h_e81853c41416fb 25,199-203,214-225
+src/minimal/core/layout.py
+  h_e81853c41416fb 58,62-65,78-80,129,131
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 40,44-46,207-209,211-215,217-219,341-348,352-354,373-374,378-383,412-420,492,581,588-593,595-597,601-602,608-616,621
+src/minimal/extensions/palette.py
+  h_e81853c41416fb 1-108
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 63-66,73-75,117,166-227,238-239,340-341,348-349,363-365,374-375,498-617,634-652,785-786,804-805,829-830,903-910,931-935,937-938,945-946,949-955,1000-1001,1022-1026,1029-1030,1041-1042,1045-1061
+src/minimal/glyphs.py
+  h_e81853c41416fb 26-27
+src/minimal/providers/base.py
+  h_e81853c41416fb 50,187-189,202
+src/minimal/providers/openai.py
+  h_e81853c41416fb 263-269,282,303
+src/minimal/providers/windows.py
+  h_e81853c41416fb 1-29
+src/minimal/ui/commands.py
+  h_e81853c41416fb 40,346,356-369,385,471-479,492,517-523,544-546,751-775,834
+src/minimal/ui/ext_settings.py
+  h_e81853c41416fb 1-172
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 51,58,74-76,198-200,208,236-237,262,398,431,461-487,502-503,520-522,524-527,626,628-631,633-643,645-667,669-676,710-711,713
+src/minimal/ui/tui/frontend.py
+  h_e81853c41416fb 87-92
+src/minimal/ui/tui/theme.py
+  h_e81853c41416fb 22,25-26,44,49,100
+src/minimal/ui/tui/widgets.py
+  h_e81853c41416fb 14,18,29,59-68,343-348,352-354,360,363-372,378-380,414-419,422-436,443-497
+tests/test_composer.py
+  h_e81853c41416fb 462
+tests/test_extension_ui_api.py
+  h_e81853c41416fb 1-359
+tests/test_marketplace.py
+  h_e81853c41416fb 251
+tests/test_tui.py
+  h_e81853c41416fb 19,187,189,193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "0d8e14a18a512b21e6b0f670444c54cc2ae065d0",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
