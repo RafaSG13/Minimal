@@ -1,0 +1,30 @@
+CHANGELOG.md
+  h_e81853c41416fb 3,103
+src/minimal/__init__.py
+  h_e81853c41416fb 16
+tests/test_bundled_agent_monitor.py
+  h_e81853c41416fb 124,126,129-152,215,226-227,230
+tests/test_bundled_diff_kit.py
+  h_e81853c41416fb 21-22,31
+tests/test_bundled_look.py
+  h_e81853c41416fb 1-4,7,9,15,18-19,22,32-214,218-315,318-335,338-339,342,350-351,355-383,387-392,405-417,421-422,429-430,434,463-466,469,486-488,494-519,522-625,627-629,631-658,660-661,663-733,735-763
+tests/test_bundled_modes.py
+  h_e81853c41416fb 276,279,293-307,323,328-407
+tests/test_bundled_panels_kit.py
+  h_e81853c41416fb 5,40,86-253
+tests/test_bundled_themes_kit.py
+  h_e81853c41416fb 5-6,8,13-16,63-236,295-296,326-331,342-345,354,356,391-490
+tests/test_bundled_widgets_kit.py
+  h_e81853c41416fb 1-988
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "9319e7295f641983ca691d8fe39c3854e349c36e",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
