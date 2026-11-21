@@ -171,6 +171,23 @@ class UI:
             content = styled_lines(list(content))
         self._app.frontend.overlay(content, title, **kwargs)
 
+    def get_draft(self) -> str:
+        """The text in the prompt box that the user has not sent; ``""`` if it is empty or the frontend has no prompt box. API 2.4."""
+        return self._app.frontend.draft()
+
+    def set_draft(self, text: str, *, append: bool = False) -> None:
+        """Put ``text`` in the prompt box, replacing the draft (or after it with ``append``), cursor at the end. API 2.4.
+
+        The user can undo it, it opens no completion popup and it does not send anything. A frontend without a
+        prompt box ignores it.
+
+        Raises:
+            ValueError: if ``text`` is not a str.
+        """
+        if not isinstance(text, str):
+            raise ValueError("set_draft: text must be a str")
+        self._app.frontend.set_draft(text, append)
+
 
 class Transcript:
     """The conversation as the terminal UI draws it (``ctx.transcript``): jump to a message, mark messages, search them.
@@ -256,23 +273,6 @@ def _searchable(content: Any) -> str:
         elif kind == "tool_result":
             parts.append(result_text(block.get("content", "")))
     return "\n".join(parts)
-
-    def get_draft(self) -> str:
-        """The text in the prompt box that the user has not sent; ``""`` if it is empty or the frontend has no prompt box. API 2.4."""
-        return self._app.frontend.draft()
-
-    def set_draft(self, text: str, *, append: bool = False) -> None:
-        """Put ``text`` in the prompt box, replacing the draft (or after it with ``append``), cursor at the end. API 2.4.
-
-        The user can undo it, it opens no completion popup and it does not send anything. A frontend without a
-        prompt box ignores it.
-
-        Raises:
-            ValueError: if ``text`` is not a str.
-        """
-        if not isinstance(text, str):
-            raise ValueError("set_draft: text must be a str")
-        self._app.frontend.set_draft(text, append)
 
 
 class ContextSettings:
