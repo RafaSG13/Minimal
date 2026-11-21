@@ -3,7 +3,7 @@
 Settings are JSON files read as layers, lowest first (see :func:`read_layers`):
 
 - ``~/.minimal/settings.json`` (``global``): written by setup, ``/theme``, ``/ui`` and
-  the ``/ext`` picker too (:func:`update_global`).
+  the ``/ext`` picker too (:func:`update_global`); ``ctx.settings`` writes any layer (:func:`update_settings`).
 - ``<project>/.minimal/settings.json`` (``project``): shared with the project.
 - ``<project>/.minimal/settings.local.json`` (``local``): personal, not committed; the permission dialog's
   "Always allow" adds its rule here (:func:`add_allow_rule`).
@@ -26,11 +26,13 @@ Secrets and state live in their own files:
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
 import re
 import tempfile
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -227,6 +229,35 @@ _GROUPS = ("prompt", "permissions", "extensions", "agent", "tools", "ui", "git")
 """Top-level keys holding an object of settings."""
 
 
+def split_key(key: str | tuple[str, ...]) -> tuple[str, list[str]]:
+    """``(setting, rest)`` of a dotted key: the longest prefix that is a setting of :data:`_TYPES`, and the names below it.
+
+    ``ui.widgets.git.area`` is ``("ui.widgets", ["git", "area"])``; a tuple holds the names when one contains a dot.
+    API 2.4.
+
+    Raises:
+        ValueError: if no prefix is a setting, naming the settings.
+    """
+    parts = list(key) if isinstance(key, tuple) else key.split(".")
+    for end in range(len(parts), 0, -1):
+        base = ".".join(parts[:end])
+        if base in _TYPES:
+            return base, parts[end:]
+    shown = key if isinstance(key, str) else ".".join(key)
+    raise ValueError(f"unknown setting '{shown}'; see docs/settings.md for the keys (/settings shows the ones in effect)")
+
+
+def deep_merge(low: dict, high: dict) -> dict:
+    """``low`` with ``high`` over it: objects present in both are merged key by key, anything else is ``high``'s.
+    Neither argument is changed."""
+    merged = dict(low)
+    for key, value in high.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            value = deep_merge(merged[key], value)
+        merged[key] = value
+    return merged
+
+
 def project_settings_files(cwd: str) -> dict[str, Path]:
     """The project and local settings files of ``cwd``, by scope."""
     folder = Path(cwd) / ".minimal"
@@ -419,13 +450,86 @@ class Settings:
         """Ids not to load (a project's only once trusted: it could switch off a global guardrail)."""
         return frozenset(ext for ext, _ in self._concat("extensions.disabled"))
 
-    def extension_settings(self, ext_id: str) -> dict:
-        """The user's settings for extension ``ext_id``: each layer's object updating the lower ones (a project's only once trusted)."""
+    def extension_settings(self, ext_id: str, deep: Collection[str] = ()) -> dict:
+        """The user's settings for extension ``ext_id``: each layer's object updating the lower ones (a project's only once trusted).
+
+        A key listed in ``deep`` (an extension's ``"merge": "deep"`` settings, API 2.4) whose values are objects is merged
+        key by key through the layers instead of replaced by the highest one.
+        """
         merged: dict = {}
         for layer in self.layers:
-            if self._applies(layer, "extensions.settings"):
-                merged.update(layer.data.get("extensions.settings", {}).get(ext_id, {}))
+            if not self._applies(layer, "extensions.settings"):
+                continue
+            for key, value in layer.data.get("extensions.settings", {}).get(ext_id, {}).items():
+                if key in deep and isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    value = deep_merge(merged[key], value)
+                merged[key] = value
         return merged
+
+    def get(self, key: str, default: Any = None, *, deep: Mapping[str, Collection[str]] | None = None) -> Any:
+        """The effective value of ``key`` (dotted, e.g. ``ui.sidebar`` or ``extensions.settings.lenses.head``): the layers
+        merged the way minimal reads them; ``default`` if no layer that applies sets it. API 2.4.
+
+        Scalars come from the highest layer that sets them; ``prompt.append``, ``permissions.*`` and
+        ``extensions.disabled`` are the layers' lists joined (project and local ones only once trusted); ``ui.widgets``,
+        ``ui.status`` and ``ui.keys`` are merged entry by entry (:meth:`ui_map`); ``extensions.settings`` is merged per
+        extension id (:meth:`extension_settings`; ``deep`` maps an extension id to its ``"merge": "deep"`` keys). A key
+        below one of those (``ui.widgets.git.area``, ``extensions.settings.lenses.head``) is looked up in the merged
+        object. The result is a copy: changing it does not change the settings.
+
+        Raises:
+            ValueError: if ``key`` is not a setting (see :func:`split_key`).
+        """
+        base, rest = split_key(key)
+        found = True
+        if base in ("prompt.append", "permissions.allow", "permissions.deny", "extensions.disabled"):
+            value: Any = [v for v, _ in self._concat(base)]
+            found = any(base in layer.data and self._applies(layer, base) for layer in self.layers)
+        elif base == "marketplaces":
+            value, found = self._global().get(base), base in self._global()
+        elif base in ("ui.widgets", "ui.status", "ui.keys"):
+            value = self.ui_map(base)
+            found = any(base in layer.data for layer in self.layers)
+        elif base == "extensions.settings":
+            ids = {
+                ext
+                for layer in self.layers
+                if self._applies(layer, base)
+                for ext in layer.data.get(base, {})
+            }
+            value = {ext: self.extension_settings(ext, (deep or {}).get(ext, ())) for ext in sorted(ids)}
+            found = bool(ids)
+        else:
+            value, scope = self.scalar(base)
+            found = scope is not None
+        for part in rest:
+            if not (found and isinstance(value, dict) and part in value):
+                return default
+            value = value[part]
+        return copy.deepcopy(value) if found else default
+
+    def layers_setting(self, key: str) -> dict[str, Any]:
+        """``{scope: value}`` for every layer that sets ``key`` and applies, lowest layer first. API 2.4.
+
+        ``key`` is dotted as for :meth:`get`; the values are the layers' own, not merged. A project's
+        trust-gated key is left out while the project is not trusted.
+
+        Raises:
+            ValueError: if ``key`` is not a setting.
+        """
+        base, rest = split_key(key)
+        found: dict[str, Any] = {}
+        for layer in self.layers:
+            if base not in layer.data or not self._applies(layer, base) or (base in GLOBAL_ONLY and layer.scope != "global"):
+                continue
+            value = layer.data[base]
+            for part in rest:
+                if not isinstance(value, dict) or part not in value:
+                    break
+                value = value[part]
+            else:
+                found[layer.scope] = copy.deepcopy(value)
+        return found
 
     @property
     def ui_sidebar(self) -> str:
@@ -501,44 +605,104 @@ def load_global() -> dict:
 
 
 def update_global(changes: dict[str | tuple[str, ...], Any]) -> None:
-    """Set keys of :data:`SETTINGS_FILE` (``None`` deletes one), keeping everything else.
+    """:func:`update_settings` on :data:`SETTINGS_FILE`: what setup, ``/theme``, ``/ext`` and the marketplaces use."""
+    update_settings(changes)
+
+
+def update_settings(
+    changes: Mapping[str | tuple[str, ...], Any], *, scope: str = "global", cwd: str = "", trusted: bool = False
+) -> Path:
+    """Set keys of the settings file of ``scope`` (``None`` deletes one), keeping everything else; return that file.
 
     A dotted key (``ui.sidebar``, ``extensions.settings.lenses.head``) sets a key inside its group objects, which are
     created as needed; a key may also be a tuple of names (for one that contains a dot). Group objects left empty are
-    removed.
+    removed. Every key must be a setting (:data:`_TYPES`) and the value left at it must pass the same check as when
+    settings are loaded; the file is written (atomically, mode 0600, by :func:`write_private` for the global one) only
+    if every change is valid, so a refused change writes nothing. API 2.4 added ``scope``.
+
+    Args:
+        changes: Dotted key (or tuple of names) -> value; ``None`` deletes.
+        scope: ``"global"``, ``"project"`` or ``"local"`` (:data:`SCOPES`).
+        cwd: The project folder, for ``project`` and ``local``.
+        trusted: Whether the project's trust-gated keys apply now (:attr:`Settings.trusted`): :data:`RISKY` keys are
+            written to a project or local file only then.
 
     Raises:
-        ValueError: if the file exists but is not a JSON object, or a group in it is not one: it is left untouched
-            for the user to fix.
+        ValueError: if ``scope`` is unknown, a key is unknown, :data:`GLOBAL_ONLY` or (untrusted) :data:`RISKY` in a
+            project or local file, a value is invalid, or the file exists but is not a JSON object, or a group in it
+            is not one: it is left untouched for the user to fix.
     """
+    if scope not in SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(SCOPES)}, not {scope!r}")
+    if scope == "global":
+        path = SETTINGS_FILE
+    elif not cwd:
+        raise ValueError(f"the {scope} settings need the project folder")
+    else:
+        path = project_settings_files(cwd)[scope]
+    touched: dict[str, str] = {}
+    for key in changes:
+        base, _ = split_key(key)
+        shown = key if isinstance(key, str) else ".".join(key)
+        if scope != "global" and base in GLOBAL_ONLY:
+            raise ValueError(f"{shown} is only read from ~/.minimal/settings.json: set it in the global scope")
+        if scope != "global" and base in RISKY and not trusted:
+            raise ValueError(
+                f"{shown} is a trust-gated setting and this project is not trusted yet: review and accept it with "
+                f"/trust first, or set it in the global scope"
+            )
+        touched[base] = shown
     data = {}
-    if SETTINGS_FILE.exists():
+    if path.exists():
         try:
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (UnicodeDecodeError, ValueError) as e:
-            raise ValueError(f"{SETTINGS_FILE} is not valid JSON ({e}); fix it first") from None
+            raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
         if not isinstance(data, dict):
-            raise ValueError(f"{SETTINGS_FILE} is not a JSON object; fix it first")
+            raise ValueError(f"{path} is not a JSON object; fix it first")
     for key, value in changes.items():
-        path = list(key) if isinstance(key, tuple) else key.split(".")
+        names = list(key) if isinstance(key, tuple) else key.split(".")
         target = data
         parents: list[tuple[dict, str]] = []
-        for i, part in enumerate(path[:-1]):
+        for i, part in enumerate(names[:-1]):
             child = target.get(part, {})
             if not isinstance(child, dict):
-                raise ValueError(f"{SETTINGS_FILE}: {'.'.join(path[: i + 1])} is not a JSON object; fix it first")
+                raise ValueError(f"{path}: {'.'.join(names[: i + 1])} is not a JSON object; fix it first")
             target[part] = child
             parents.append((target, part))
             target = child
         if value is None:
-            target.pop(path[-1], None)
+            target.pop(names[-1], None)
         else:
-            target[path[-1]] = value
+            target[names[-1]] = value
         for container, part in reversed(parents):
             if container[part]:
                 break
             del container[part]
-    write_private(SETTINGS_FILE, data)
+    for base, shown in touched.items():
+        _check_written(data, base, shown)
+    if scope == "global":
+        write_private(path, data)
+    else:
+        path.parent.mkdir(exist_ok=True)
+        _write_atomic(path, data)
+    return path
+
+
+def _check_written(data: dict, base: str, shown: str) -> None:
+    """Raise ``ValueError`` naming ``shown`` unless the value ``data`` holds for setting ``base`` passes its check."""
+    value: Any = data
+    for part in base.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return  # deleted (or never set): nothing to check
+        value = value[part]
+    check = _TYPES[base]
+    if not check[0](value):
+        raise ValueError(f"{shown}: {base} must be {check[1]}")
+    if base.startswith("permissions."):
+        bad = [rule for rule in value if not RULE_RE.fullmatch(rule)]
+        if bad:
+            raise ValueError(f"{shown}: invalid permission rule {bad[0]!r}: use name or name(pattern)")
 
 
 def add_allow_rule(cwd: str, rule: str) -> Path:

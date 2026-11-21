@@ -263,6 +263,12 @@ class Agents:
                 for r in self._runs.values()
             ]
 
+    def main_running(self) -> bool:
+        """Whether the user's turn (agent ``"main"``) is running."""
+        with self._lock:
+            run = self._runs.get(MAIN_AGENT)
+            return run is not None and run.status == "running"
+
     def cancel(self, agent_id: str) -> bool:
         """Interrupt agent ``agent_id`` and the agents started under it; ``False`` if there is none running."""
         with self._lock:

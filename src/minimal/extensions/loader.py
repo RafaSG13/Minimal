@@ -334,18 +334,18 @@ def load_source(
     register = getattr(module, "register", None)
     if not callable(register):
         raise ValueError("missing register(minimal) function")
-    register(
-        Extension(
-            id=ext_id(source.path),
-            path=source.path,
-            scope=scope,
-            cwd=cwd,
-            metadata=meta,
-            registry=registry,
-            settings=settings,
-            errors=errors,
-        )
+    extension = Extension(
+        id=ext_id(source.path),
+        path=source.path,
+        scope=scope,
+        cwd=cwd,
+        metadata=meta,
+        registry=registry,
+        settings=settings,
+        errors=errors,
     )
+    register(extension)
+    extension._finish_register()
 
 
 def _load_order(ids: list[str], depends: list[tuple[str, ...]]) -> tuple[list[int], dict[int, str]]:
@@ -541,15 +541,20 @@ def load_extensions(
     return loaded, errors + load_errors
 
 
-def reload_summary(loaded: list[Path], errors: list[str], notice: str | None) -> str:
+def reload_summary(
+    loaded: list[Path], errors: list[str], notice: str | None, problems: Iterable[str] = ()
+) -> str:
     """Describe the result of :meth:`~minimal.core.app.App.reload_extensions` for the user or the model.
 
-    ``notice`` is :meth:`~minimal.core.app.App.untrusted_notice`, added as a ``Not loaded:`` line when set.
+    ``notice`` is :meth:`~minimal.core.app.App.untrusted_notice`, added as a ``Not loaded:`` line when set;
+    ``problems`` (``App.extension_problems``, API 2.4) are the non-fatal ones extensions reported with
+    ``report_problem``, each a ``Warning:`` line after the ``Failed:`` ones.
     """
     summary = f"Loaded {len(loaded)} extension(s)"
     if loaded:
         summary += ": " + ", ".join(p.name for p in loaded)
     summary += "".join(f"\nFailed: {e}" for e in errors)
+    summary += "".join(f"\nWarning: {p}" for p in problems)
     if notice:
         summary += f"\nNot loaded: {notice}"
     return summary

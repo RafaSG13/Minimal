@@ -1105,7 +1105,8 @@ def check(
 
     Returns:
         ``(lines, ok)``: ``ok   category/name version``, ``WARN category/name: needs <module>``
-        when it imports a module that is not installed here, or ``FAIL category/name: problem``;
+        when it imports a module that is not installed here, ``WARN category/name: <text>`` for each problem it
+        reported with ``Extension.report_problem`` (it loads), or ``FAIL category/name: problem``;
         ``ok`` is false if any line is ``FAIL`` or installing the dependencies failed.
     """
     items = _check_items(paths)
@@ -1196,6 +1197,8 @@ def _check_one(item: _Item, make_registry: Callable[[], Registry]) -> str:
         registry.dispose()
     if errors:
         return f"FAIL {label}: {'; '.join(errors)}"
+    if registry.problems:  # Extension.report_problem: it loads, so it does not fail the check
+        return f"WARN {label}: {'; '.join(registry.problems)}"
     return f"ok   {label} {listing.version}"
 
 

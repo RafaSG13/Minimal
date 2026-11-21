@@ -75,6 +75,8 @@ An extension without `__api__` is not loaded (`declares no __api__; add __api__ 
 | `settings`             | What `declare_settings` returned; empty before it is called                                         |
 | `project_trusted`      | `bool`, read-only: the user trusted the current project ([Project trust](#project-trust)). Already right while `register` runs |
 | `builtin_commands()`   | API 2.4. `frozenset` of the names (no `/`) of minimal's own slash commands. They are registered before any extension loads, so it is complete inside `register`: use it to avoid shadowing one by accident, or to decide to hand over with `ctx.run_command(line, builtin=True)`. Extension commands are not in it. The terminal UI's own `/theme` is added when the UI starts, so it is in the set only from the first `/reload` on |
+| `ctx`                  | API 2.4. The app's `Context` once `register` has returned, for code outside any call: a timer or watcher thread, a subscription. `None` while `register` runs and under `minimal ext check` ([Using `ctx` outside a call](#using-ctx-outside-a-call)) |
+| `report_problem(text)` | API 2.4. Records a non-fatal problem: the extension still loads and the reload summary shows `Warning: <id>: <text>` ([Settings](#settings)). `ValueError` for empty text |
 
 ### Tools
 
@@ -200,6 +202,8 @@ def register(minimal):
 - An unknown key or a value of the wrong type is ignored, keeping the default, and reported by `/reload` (and by `reload_extensions`), e.g. `lenses: unknown setting 'min' (declared: min_chars, head, tail)` or `lenses: setting 'head' must be int`.
 - Call it once; a second call raises `ValueError`.
 - `declare_settings(defaults, schema=None)` (API 2.3) also takes `schema`: for any key of `defaults`, `{"description": str, "enum": [...], "min": n, "max": n}` (every field optional; `min`/`max` for numbers, `enum` a non-empty list of values of the default's type). A value outside it is a load error naming `extensions.settings.<id>.<key>` and the default stays. A schema that names an unknown key, has an unknown field or is not satisfied by its own default raises `ValueError` (so `minimal ext check` reports it).
+- `"merge"` (API 2.4) in a schema entry of a setting whose default is a `dict`: `"replace"` (the default) lets the highest layer that sets the key replace the lower layers' value; `"deep"` merges the objects of the global, project and local layers key by key (nested objects too; lists and scalars are replaced by the higher layer), so a project can add or change one entry of a user's table: `declare_settings({"tools": {}}, {"tools": {"merge": "deep"}})`. A non-`dict` default with `"merge": "deep"` raises `ValueError`. The trust rules of a project's `extensions.settings` apply as before; `ctx.settings.get("extensions.settings.<id>.<key>")` reads the same merged value.
+- `minimal.report_problem(text)` (API 2.4) is for what is not worth failing over: two settings that are fine alone but contradict each other, a missing optional binary, a value you clamped. Call it after `declare_settings` when a cross-field check fails and carry on with a fallback. The reload summary (`/reload`, `ctx.reload()`) lists it as `Warning: <id>: <text>` after the `Failed:` lines, the terminal UI shows it, `/ext list` prints it, and `minimal ext check` prints `WARN <name>: <text>` without failing the exit status. `reload_extensions` does not raise for it (only `Failed:` lines make the model's tool raise); raise from `register` instead to fail the extension.
 - The user does not have to edit JSON: `/ext settings` lists every loaded extension's settings with their value, default and description, `/ext settings <id>` details one, `/ext settings <id> <key> <value>` validates and writes it to the global settings file and reloads, and `/ext settings <id> <key> reset` removes it. Put a `description` on every key, it is what the user reads there.
 
 ## `ctx`: the `Context`
@@ -245,7 +249,9 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `read_session(session_id)`       | The messages of a saved session; `ValueError` if there is none                             |
 | `reload()`                       | Reloads every extension from disk; returns the summary                                     |
 | `commands()`                     | Every slash command name (without `/`) and its description: built-in and extension commands, an extension's replacing a built-in of the same name |
-| `run_command(line, *, builtin=False)` | Runs `"/name args"` as if the user typed it; its output is printed and errors are reported, not raised. `builtin=True` runs the built-in even when an extension replaced it, so a replacement can hand over to the original |
+| `run_command(line, *, builtin=False)` | Runs `"/name args"` as if the user typed it; its output is printed and errors are reported, not raised. `builtin=True` runs the built-in even when an extension replaced it, so a replacement can hand over to the original. API 2.4: the user's interrupt (`cancelled`) is cleared only when no turn or other command is running, so a timer thread calling it cannot swallow Esc; to run a command after the turn in progress use `queue_user_message("/name args")` |
+| `settings`                       | API 2.4. Read and write the settings: `get`, `layers`, `update`, `unset` ([Settings access](#settings-access)) |
+| `set_theme(name, *, save=False)` | API 2.4. Switches the terminal UI to a colour theme, as `/theme <name>` does; returns `True` if it did. `theme_change` fires as for any switch. An unknown name, or the plain terminal (no themes), returns `False` silently. `save=True` also stores it as the `theme` setting in `~/.minimal/settings.json` (`ValueError` if that cannot be written; the theme is switched anyway) |
 | `models()`, `set_model(name)`    | The current provider's models (queried from its API, falling back to its default) and switching to one |
 | `widget(name)`                   | The widget the terminal UI shows for `register_widget(name, ...)`, or `None` (the UI is not up, or it failed to mount) |
 | `notify(text, kind="info")`      | A short notice: a toast in the terminal UI, a line on stderr otherwise. `kind` is `"info"`, `"warning"` or `"error"` |
@@ -273,6 +279,46 @@ def fold(args, ctx):
     if ctx.ui.ask("Start a new session from the summary?"):
         old = ctx.new_session([{"role": "user", "content": result_text(reply.content)}])
         print(f"Continued from {old}")
+```
+
+## Using `ctx` outside a call
+
+Tools, commands, events and widgets are handed a `ctx`. Code that runs on its own (a `loop` or `watch` timer thread, an OS-theme poller, a subscription) has none, so (API 2.4) `minimal.ctx` is the same live `Context` commands get (`agent_id` `"main"`), from the moment `register` returns:
+
+```python
+def register(minimal):
+    stop = threading.Event()
+
+    def poll():
+        while not stop.wait(30):
+            ctx = minimal.ctx                    # read it when the thread fires, not in register
+            if ctx is not None and dark_mode() != ctx.theme.dark:
+                ctx.set_theme("night" if dark_mode() else "day")
+
+    threading.Thread(target=poll, daemon=True).start()
+    minimal.on_dispose(stop.set)
+```
+
+`minimal.ctx` is `None` while `register` runs (a thread started there must read it when it fires), and always under `minimal ext check` and in any registry no app owns. After a `/reload` the new `Extension` gets it too; the old one's `on_dispose` functions ran first, so stop your threads there. From a thread outside a turn, prefer `ctx.queue_user_message(text)` (it waits for the turn in progress) to `ctx.run_command(line)`, which runs now but, since API 2.4, never clears the user's interrupt flag while a turn or another command runs. `ctx.settings.update` reloads live too.
+
+## Settings access
+
+`ctx.settings` (API 2.4) reads and writes minimal's own settings ([settings](settings.md)) with dotted keys (`ui.sidebar`, `reasoning_effort`, `permissions.allow`, `extensions.settings.tui_tools.tools`): for profiles, layouts, glyph sets and the like.
+
+| Method | What it does |
+| ------ | ------------ |
+| `get(key, default=None)` | The effective value with every layer merged as minimal reads them: scalars from the highest layer; `prompt.append`, `permissions.*` and `extensions.disabled` joined; `ui.widgets`, `ui.status` and `ui.keys` merged entry by entry; `extensions.settings.<id>.<name>` with the extension's `"merge": "deep"`. A project's trust-gated keys count only once the project is trusted. `default` if no layer sets it (a declared extension setting the user never set reads as `default`; `minimal.settings` has those with defaults). A copy: change it freely. `ValueError` for a key that is not a setting |
+| `layers(key)` | `{scope: value}` of the `global`, `project` and `local` files that set `key` and apply, lowest first (the last wins for a scalar); the files' own values, not merged; `{}` if none |
+| `update(changes, *, scope="global", apply=True)` | Writes dotted keys (`None` deletes) to `~/.minimal/settings.json` (`"global"`), the project's `.minimal/settings.json` (`"project"`) or its `settings.local.json` (`"local"`), atomically through `config.write_private` (a project file is replaced atomically too, mode 0600), then reloads **once** so the change takes effect (the terminal UI re-lays itself out). All changes are validated first and nothing is written if one fails. `apply=False` skips the reload so you can batch writes and call `ctx.reload()` yourself. A key may be a tuple of names for one that contains a dot |
+| `unset(key, *, scope="global", apply=True)` | `update({key: None}, ...)`: the lower layers' value, or the default, applies again |
+
+`update` refuses, with a `ValueError` saying what to do: an unknown key or scope; a value that is not what `docs/settings.md` says (and, for `extensions.settings.<id>.<name>` of a loaded extension, one its `declare_settings` schema rejects); the global-only keys (`marketplaces`, `prompt.base`, `ui.css`) at `project` or `local` scope; the trust-gated keys (`permissions.allow`, `extensions.disabled`, `extensions.settings`) at `project` or `local` scope while the project's settings are not trusted (`/trust`). Writing a trust-gated key to a trusted project changes what `/trust` reviewed, so after the reload minimal leaves the project's trust-gated settings and extensions unapplied until the user runs `/trust` again (the usual notice says so). A settings file that is not valid JSON is left untouched and reported. `/ui` and `/ext settings` use the same `update`.
+
+```python
+@minimal.command(description="focus layout")
+def focus(args, ctx):
+    ctx.settings.update({"ui.sidebar": "hidden", "ui.density": "compact", "ui.widgets.git": {"enabled": False}})
+    print(ctx.settings.layers("ui.sidebar"))      # {'global': 'hidden'}
 ```
 
 ## Modes
@@ -551,10 +597,11 @@ It loads each extension without a terminal or a provider and prints one line per
 ```
 ok   tools/fetch 1.0
 WARN extensions/mermaid: needs termaid
+WARN extensions/lenses: head is larger than tail; using 20
 FAIL widgets/broken: syntax error: '(' was never closed (broken.py, line 2)
 ```
 
-In a marketplace checkout `ext check` looks at every item of every category folder. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, `__depends__` or `__conflicts__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+In a marketplace checkout `ext check` looks at every item of every category folder. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself), or (API 2.4) the extension reported a non-fatal problem with `minimal.report_problem(text)`: it loads, so a `WARN` never fails the exit status; `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, `__depends__` or `__conflicts__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
 
 Only the package name of a `__dependencies__` entry is checked when deciding what is missing, not its version range.
 
@@ -582,6 +629,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `UsageTotals`                                               | What `ctx.usage` returns: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests` |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
 | `ThemeInfo`, `ThemeChangeEvent`, `CSS_VARIABLES`, `CssSpec`  | What `ctx.theme` returns (`name`, `dark`, `colors`: `#rrggbb` by name), the `theme_change` payload, the CSS variables `$name` may stand for in styled text, and a registered stylesheet (API 2.3) |
+| `ContextSettings`, `SETTING_MERGES`, `normalize_key`        | What `ctx.settings` is; the values of a `declare_settings` schema entry's `merge` (`"replace"`, `"deep"`); `normalize_key(key, what="key")` returns a key name as Textual spells it (stripped, lowercased) or raises `ValueError` starting with `what` if it is not one a binding can take (a bare letter would steal typing): validate a user-chosen key before `register_keybinding` or writing `ui.keys` (API 2.4) |
 | `GitInfo`, `KeyInfo`, `SettingsSpec`                        | What `ctx.git()`, `ctx.keybindings()` and a `declare_settings` call (`id`, `defaults`, `schema`, `values`) give (API 2.3) |
 
 ## API versions
@@ -609,6 +657,8 @@ API 2.3 added, for customisable interfaces: `minimal.register_keybinding` and th
 API 2.3 added, for extensions that look and behave the way the user wants: `ctx.invalidate()` (redraw from any thread), `ctx.theme` (`ThemeInfo`) and the `theme_change` event (`ThemeChangeEvent`), `$name` and `#rrggbb` pieces in styled text, the `title` and `collapsible` keywords of `register_panel` and `register_widget`, `minimal.register_css` (`CssSpec`, `CSS_VARIABLES`) with the stable selectors of [Styling the terminal UI](#styling-the-terminal-ui), the `schema` argument of `declare_settings` (`SettingsSpec`) with `/ext settings`, `ctx.context_window`, `ctx.git()` (`GitInfo`) and `ctx.keybindings()` (`KeyInfo`). An extension using any of them declares `__api__ = "2.3"`.
 
 API 2.4 added, for terminal tools and richer interfaces (terminal UI slice): `terminal=True` on `register_keybinding` and `@minimal.keybinding` (the key runs under a suspended UI like a `terminal` command; `KeybindingSpec.terminal`), `ctx.ui.get_draft()` and `ctx.ui.set_draft(text, *, append=False)` (the prompt's text, with `Frontend.draft` and `Frontend.set_draft`), `ctx.show(text, kind="output")` (a transcript block that survives a `terminal` command or key; `Frontend.show`) together with a str returned by a `terminal` command or key being shown after the resume, `Extension.builtin_commands()` (the built-in command names at `register` time), `ctx.git_refresh()`, `ctx.focus_widget(name, *, hold=False)` and `ctx.focus_composer()` (focus control with a hold that `after_action` respects; `Frontend.focus_widget` and `Frontend.focus_composer`) and the `height` field of `ui.widgets` overrides. Every new `Frontend` method has a no-op default in the plain terminal's frontend.
+
+API 2.4 added, for extensions that act on their own and drive the user's configuration: `minimal.ctx` (the `Context` once `register` returned), `ctx.settings` (`get`, `layers`, `update`, `unset`; `ContextSettings`), `ctx.set_theme(name, *, save=False)`, `minimal.api.normalize_key`, the `"merge": "deep"` field of a `declare_settings` schema entry (`SETTING_MERGES`), `minimal.report_problem(text)` (a `Warning:` line in the reload summary, `WARN` in `minimal ext check`), and a `ctx.run_command` that no longer clears the user's interrupt flag while a turn or command runs. A frontend implements `Frontend.set_theme(name) -> bool`. An extension using any of them declares `__api__ = "2.4"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 
