@@ -13,9 +13,9 @@ Packages, from the bottom up; a package imports only from the ones above it in t
 Extensions import only from :mod:`minimal.api`.
 """
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
-API_VERSION = "2.3"
+API_VERSION = "2.4"
 """Version of :mod:`minimal.api`, separate from :data:`__version__`: ``MAJOR.MINOR``.
 
 A minor release only adds to the API; a major one changes or removes something. An extension

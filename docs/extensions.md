@@ -1,6 +1,6 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes and sections, modes, widgets, status-line segments, colour themes and a header logo, and run agents of its own. This guide covers minimal API 2.3 ([API versions](#api-versions)).
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes and sections, modes, widgets, status-line segments, colour themes and a header logo, and run agents of its own. This guide covers minimal API 2.4 ([API versions](#api-versions)).
 
 ```python
 """Greets the user."""
@@ -44,7 +44,7 @@ If both `name.py` and `name/` exist, only `name.py` loads and the reload reports
 
 Directly in an extensions folder, `themes/`, `tools/` and `widgets/` are always category folders, never packages. Helpers are imported only from the files read at load time: a module added to the folder afterwards is not found until the next reload (and, in a project, the next `/trust`). The marketplace refuses a package with a symlink to a folder or to a file outside it.
 
-**Ids.** An extension's id is its name (`compact`), or `category/name` inside `themes/`, `tools/` or `widgets/` (`tools/subagent`). The id is the key of its settings (`extensions.settings.<id>`) and what `extensions.disabled` lists (see [settings](settings.md)).
+**Ids.** An extension's id is its name (`compact`), or `category/name` inside `themes/`, `tools/` or `widgets/` (`legacy_menu`). The id is the key of its settings (`extensions.settings.<id>`) and what `extensions.disabled` lists (see [settings](settings.md)).
 
 ## Metadata
 
@@ -58,7 +58,7 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
 | `__tags__`     | `["git", "ui"]`: optional list of lowercase keywords (`[a-z0-9_-]+`) that `/ext search` and `ext_search` match besides the name and description; shown after the description |
 | `__depends__`  | `["modes"]`: optional list of extension ids ([ids](#layout-and-where-to-save)) that must be loaded before this one. It is loaded after them; if one is missing, failed or skipped, this one is skipped with `needs 'modes': install it with /ext`. API 2.3 |
-| `__conflicts__` | `["tools/subagent"]`: optional list of extension ids it cannot be loaded with. Whichever of the two loads first stays; the other is skipped with `conflicts with 'tools/subagent', which is already loaded`. API 2.3 |
+| `__conflicts__` | `["legacy_menu"]`: optional list of extension ids it cannot be loaded with. Whichever of the two loads first stays; the other is skipped with `conflicts with 'legacy_menu', which is already loaded`. API 2.3 |
 
 `__depends__` and `__conflicts__` are ids, not package names (those are `__dependencies__`), and are read without running the extension: `minimal ext check` fails a malformed list, an extension that lists itself, and an id in both. Loading goes in the usual order (bundled, global, project, `--ext`; alphabetical in a folder), except that an extension comes after the ones it depends on; a dependency cycle skips its members. `/ext list` shows each extension's `needs` and `conflicts with`.
 
@@ -695,7 +695,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.3`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.4`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
 API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response`, `shutdown` and `provider_error`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
