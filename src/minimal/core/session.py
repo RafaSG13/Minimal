@@ -109,6 +109,36 @@ def check_cut(messages: list[dict], at_index: int) -> None:
         )
 
 
+@dataclass(frozen=True)
+class SessionInfo:
+    """What a session's file says about it, without its messages (:meth:`Context.session_info <minimal.core.context.Context.session_info>`). API 2.4.
+
+    Attributes:
+        id: Session id.
+        title: The name given with ``/title`` (``""`` if none).
+        parent: The session this one continues or was forked from (``""`` if none).
+        cwd: The project directory in its header (``""`` if the file has none).
+        preview: The start of the first message the user wrote, on one line, at most 200 characters (``""`` if the
+            session has none or it is not plain text).
+        mtime: When the file was last written, in seconds since the epoch (that of now for a current session that is
+            not saved yet).
+        n_messages: How many messages the session holds.
+        created: When the session started, in seconds since the epoch, read from its id (they are timestamps);
+            ``None`` for an id that is not one.
+        locked: Whether a minimal process (this one included) holds the session open.
+    """
+
+    id: str
+    title: str
+    parent: str
+    cwd: str
+    preview: str
+    mtime: float
+    n_messages: int
+    created: float | None
+    locked: bool
+
+
 @dataclass
 class Session:
     """A conversation and the file it is saved to.
@@ -371,3 +401,115 @@ def preview(id: str) -> str:
     except (OSError, ValueError, AttributeError):
         return ""
     return " ".join(content.split())[:60] if isinstance(content, str) else ""
+
+
+_PREVIEW_CHARS = 200
+_PREVIEW_SCAN_LINES = 100  # how far into a file the first user message is looked for
+
+
+def created_at(id: str) -> float | None:
+    """The time encoded in a :func:`new_id` id, or ``None``."""
+    try:
+        return datetime.strptime(id, "%Y-%m-%dT%H-%M-%S-%fZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _held(file: Path) -> bool:
+    """Whether some process holds ``file``'s ``.lock`` (see :meth:`Session.lock`); never creates it."""
+    try:
+        fd = os.open(file.with_suffix(".lock"), os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return False
+
+
+def _scan(file: Path) -> tuple[dict, str, int]:
+    """``(header, preview, n_messages)`` of ``file`` without parsing it all: the first line, the first user message
+    among the first lines, and a count of the other lines. Anything unreadable gives empty values."""
+    header: dict = {}
+    preview = ""
+    count = 0
+    last = b""
+    with open(file, "rb") as f:
+        for number, raw in enumerate(f):
+            if not raw.strip():
+                continue
+            last = raw
+            record = None
+            if number == 0 or (not preview and number < _PREVIEW_SCAN_LINES):
+                with contextlib.suppress(ValueError):
+                    record = json.loads(raw)
+            if number == 0 and _is_header(record):
+                header = record  # type: ignore[assignment]
+                continue
+            count += 1
+            if not preview and isinstance(record, dict) and record.get("role") == "user" and not _only_tool_results(record):
+                preview = " ".join(prompt_text(record).split())[:_PREVIEW_CHARS]
+    if last and not last.endswith(b"\n"):  # a cut-off last line is not a message
+        try:
+            json.loads(last)
+        except ValueError:
+            count -= 1
+    return header, preview, count
+
+
+def read_session_info(id: str) -> SessionInfo:
+    """The :class:`SessionInfo` of saved session ``id``, read from its file's first lines and a count of the rest.
+
+    A file that is not valid (no header, lines that are not JSON) gives what could be read: empty strings and counts of
+    its non-blank lines, not an error.
+
+    Raises:
+        ValueError: if ``id`` is not a valid session id or there is no such session (also when the file is unreadable).
+    """
+    if not ID_RE.fullmatch(id):
+        raise ValueError(f"invalid session id {id!r}")
+    file = SESSIONS_DIR / f"{id}.jsonl"
+    try:
+        mtime = file.stat().st_mtime
+        header, preview, count = _scan(file)
+    except OSError:
+        raise ValueError(f"no session {id!r}") from None
+
+    def text(key: str) -> str:
+        value = header.get(key)
+        return value if isinstance(value, str) else ""
+
+    return SessionInfo(id, text("title"), text("parent"), text("cwd"), preview, mtime, count, created_at(id), _held(file))
+
+
+def read_session_infos(cwd: str | None = None, limit: int | None = None) -> list[SessionInfo]:
+    """:class:`SessionInfo` of the saved sessions (of project ``cwd`` if given), most recently written first.
+
+    Files are ordered by modification time first and read until ``limit`` matched, so asking for a few of many does not
+    read them all. A file that vanishes meanwhile is left out.
+    """
+    if not SESSIONS_DIR.is_dir() or (limit is not None and limit < 1):
+        return []
+    stamped = []
+    for path in SESSIONS_DIR.glob("*.jsonl"):
+        try:
+            stamped.append((path.stat().st_mtime, path.stem))
+        except OSError:
+            continue
+    project = None if cwd is None else project_dir(cwd)
+    found: list[SessionInfo] = []
+    for _, id in sorted(stamped, reverse=True):
+        if project is not None and session_project(id) != project:
+            continue
+        try:
+            found.append(read_session_info(id))
+        except ValueError:
+            continue
+        if limit is not None and len(found) >= limit:
+            break
+    return found

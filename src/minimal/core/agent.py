@@ -37,6 +37,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
+from minimal.core.agents import current_call
 from minimal.config import DEFAULT_MAX_PARALLEL, DEFAULT_MAX_TURNS
 from minimal.extensions.registry import Registry, Tool, TurnInterrupted
 from minimal.providers.base import Provider, Reply, result_text
@@ -86,7 +87,7 @@ def run_agent(
     on_text: Callable[[str], Any] | None = None,
     on_tool: Callable[[dict], Any] | None = None,
     on_tool_result: Callable[[dict, dict], Any] | None = None,
-    on_reply: Callable[[Reply], Any] | None = None,
+    on_reply: Callable[[Reply, str, str], Any] | None = None,
     confirm: Confirm | None = None,
     cancelled: threading.Event | None = None,
     permit: Permit | None = None,
@@ -115,7 +116,8 @@ def run_agent(
         on_tool: Called with each ``tool_use`` block before it runs (a copy with ``agent_id`` and ``parent_id`` added).
         on_tool_result: Called with each ``tool_use`` block and its ``tool_result`` block after it runs (copies with
             ``agent_id`` and ``parent_id`` added).
-        on_reply: Called with each reply, after it is appended to ``messages``.
+        on_reply: Called with each reply, the provider's name and the model that answered it, after the reply is
+            appended to ``messages``.
         confirm: Asked before running a tool marked ``confirm`` that ``permit`` did not allow.
         cancelled: Setting it interrupts the turn: at the next text chunk,
             before the next model request or before the next tool.
@@ -187,8 +189,20 @@ def run_agent(
                 raise_if_cancelled(cancelled)
         messages.append(_assistant_message(provider, reply))
         if on_reply:
-            on_reply(reply)
-        registry.emit("after_response", {"ctx": ctx, "reply": reply, "usage": reply.usage, "nested": nested, **who})
+            on_reply(reply, provider.name, model)
+        registry.emit(
+            "after_response",
+            {
+                "ctx": ctx,
+                "reply": reply,
+                "usage": reply.usage,
+                "nested": nested,
+                "model": model,
+                "provider": provider.name,
+                "source": "loop",
+                **who,
+            },
+        )
 
         calls = [block for block in reply.content if block["type"] == "tool_use"]
         if not calls or reply.stop_reason not in ("tool_use", "max_tokens"):
@@ -256,10 +270,17 @@ def _run_calls(
     On an exception ``results`` holds exactly the results of the calls that finished, so the caller can answer the rest.
     """
     index = 0
+    known: dict[int, bool] = {}  # a callable ``read_only`` is asked once per call
+
+    def read_only(i: int) -> bool:
+        if i not in known:
+            known[i] = _is_read_only(calls[i], registry, exclude, ctx)
+        return known[i]
+
     while index < len(calls):
         end = index + 1
-        if max_parallel > 1 and _is_read_only(calls[index], registry, exclude):
-            while end < len(calls) and _is_read_only(calls[end], registry, exclude):
+        if max_parallel > 1 and read_only(index):
+            while end < len(calls) and read_only(end):
                 end += 1
         if end - index > 1:
             _run_concurrently(
@@ -288,10 +309,20 @@ def _run_calls(
         index = end
 
 
-def _is_read_only(call: dict, registry: Registry, exclude: frozenset[str]) -> bool:
-    """Whether ``call`` is to a registered, not excluded tool marked ``read_only``."""
+def _is_read_only(call: dict, registry: Registry, exclude: frozenset[str], ctx: Any) -> bool:
+    """Whether ``call`` is to a registered, not excluded tool marked ``read_only`` (for this input, if it is a callable).
+
+    A callable that raises counts as not read-only: the call then runs alone, in order.
+    """
     tool = None if call["name"] in exclude else registry.tools.get(call["name"])
-    return tool is not None and tool.read_only
+    if tool is None:
+        return False
+    if callable(tool.read_only):
+        try:
+            return bool(tool.read_only(call["input"], ctx))
+        except Exception:
+            return False
+    return tool.read_only
 
 
 def _run_concurrently(
@@ -351,9 +382,27 @@ def _run_concurrently(
 def _invoke(tool: Tool, call: dict, ctx: Any) -> tuple[str | list[dict], bool]:
     """Run ``tool`` for ``call``: ``(output, is_error)``; an exception from the tool is the error text."""
     try:
-        return _output(tool.run(call["input"], ctx)), False
+        return _output(_run_tool(tool, call, ctx)), False
     except Exception as e:
         return f"Error: {e}", True
+
+
+def _run_tool(tool: Tool, call: dict, ctx: Any) -> Any:
+    """``tool.run`` for ``call``, with the call's progress slot as the one ``ctx.progress`` fills on this thread, and
+    that slot cleared when it ends."""
+    key = f"{getattr(ctx, 'agent_id', 'main')}/{call['id']}"
+    previous = getattr(current_call, "key", None)
+    current_call.key = key
+    try:
+        return tool.run(call["input"], ctx)
+    finally:
+        current_call.key = previous
+        progress = getattr(ctx, "progress", None)
+        if callable(progress):
+            try:
+                progress(None, key=key)
+            except Exception:  # a ctx without keyed progress: nothing to clear
+                pass
 
 
 def _output(value: Any) -> str | list[dict]:
@@ -399,7 +448,7 @@ def execute_tool_call(
     output: str | list[dict]
     try:
         tool = _vet_tool_call(call, registry, ctx, confirm, permit, exclude, gate, who)
-        output = _output(tool.run(call["input"], ctx))
+        output = _output(_run_tool(tool, call, ctx))
         is_error = False
     except Exception as e:
         output = f"Error: {e}"

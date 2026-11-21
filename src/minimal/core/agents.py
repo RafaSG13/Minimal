@@ -17,6 +17,8 @@ import dataclasses
 import secrets
 import threading
 import time
+import types
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from minimal.providers.base import Usage
@@ -26,6 +28,10 @@ MAIN_AGENT = "main"
 
 AGENT_STATUSES = ("running", "done", "interrupted", "error", "max_turns")
 """How an agent is doing: ``running``, or how it ended (``max_turns``: it kept calling tools until its turn limit)."""
+
+
+current_call = threading.local()
+"""``current_call.key`` is, on a thread running a tool call, that call's progress slot (``"<agent id>/<call id>"``)."""
 
 
 class CancelEvent(threading.Event):
@@ -133,6 +139,10 @@ class AgentRun:
     tool_calls: int = 0
     usage: Usage = field(default_factory=Usage)
     parent_cancel: CancelEvent | None = None
+    reasoning_effort: str | None = None
+    """The effort ``run_agent(reasoning_effort=...)`` gave this agent (inherited by the agents it starts); ``None``: the app's."""
+    cwd: str | None = None
+    """The working directory ``run_agent(cwd=...)`` gave this agent (inherited by the agents it starts); ``None``: the app's."""
 
 
 def add_usage(total: Usage, usage: Usage | None) -> None:
@@ -155,6 +165,9 @@ class UsageTotals:
         cache_read_tokens: Prompt tokens read from the provider's cache.
         cache_write_tokens: Prompt tokens written to the provider's cache.
         requests: How many model requests were made.
+        by_model: The same counts per model, keyed ``"provider/model"`` (API 2.4): each value is a
+            :class:`UsageTotals` with an empty ``by_model``, and the values sum to the totals above. Multiply them by
+            your own price table to get a cost; minimal knows no prices.
     """
 
     input_tokens: int = 0
@@ -162,6 +175,7 @@ class UsageTotals:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     requests: int = 0
+    by_model: Mapping[str, UsageTotals] = field(default_factory=dict, compare=True, hash=False)
 
 
 class UsageMeter:
@@ -170,25 +184,76 @@ class UsageMeter:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._totals = UsageTotals()
+        self._models: dict[str, UsageTotals] = {}
 
-    def add(self, usage: Usage | None) -> None:
-        """Count one request, and its ``usage`` if the provider reported it."""
+    def add(self, usage: Usage | None, model: str = "", provider: str = "") -> None:
+        """Count one request to ``provider``/``model``, and its ``usage`` if the provider reported it."""
+        u = usage or Usage()
+        key = f"{provider}/{model}"
         with self._lock:
-            t = self._totals
-            u = usage or Usage()
-            self._totals = UsageTotals(
-                t.input_tokens + u.input_tokens,
-                t.output_tokens + u.output_tokens,
-                t.cache_read_tokens + u.cache_read_tokens,
-                t.cache_write_tokens + u.cache_write_tokens,
-                t.requests + 1,
-            )
+            self._models[key] = self._bump(self._models.get(key, UsageTotals()), u)
+            t = self._bump(self._totals, u)
+            self._totals = dataclasses.replace(t, by_model=types.MappingProxyType(dict(self._models)))
+
+    @staticmethod
+    def _bump(t: UsageTotals, u: Usage) -> UsageTotals:
+        return UsageTotals(
+            t.input_tokens + u.input_tokens,
+            t.output_tokens + u.output_tokens,
+            t.cache_read_tokens + u.cache_read_tokens,
+            t.cache_write_tokens + u.cache_write_tokens,
+            t.requests + 1,
+        )
 
     @property
     def totals(self) -> UsageTotals:
-        """The totals now."""
+        """The totals now (a snapshot: later requests do not change it)."""
         with self._lock:
             return self._totals
+
+
+class ProgressSlots:
+    """The ``ctx.progress`` notes of the tool calls running now, one slot per key; shows the most recently set one.
+
+    The frontend gets one string: the newest live slot's text, followed by ``" (+n more)"`` when ``n`` other slots are
+    live; ``None`` when none is.
+
+    Args:
+        show: Called with that string (or ``None``) whenever a slot is set, or a live one cleared, under the lock, so
+            calls arrive in order.
+    """
+
+    def __init__(self, show: Callable[[str | None], None]) -> None:
+        self._show = show
+        self._lock = threading.RLock()
+        self._slots: dict[str, str] = {}
+
+    def set(self, key: str, text: str | None) -> None:
+        """Set slot ``key`` to ``text`` (making it the newest), or clear it with ``None`` (nothing happens if it is empty)."""
+        with self._lock:
+            had = self._slots.pop(key, None) is not None
+            if text is not None:
+                self._slots[key] = text
+            if text is not None or had:
+                self._refresh()
+
+    def clear(self, prefix: str | None = None) -> None:
+        """Clear every slot, or only those whose key is ``prefix`` or starts with ``prefix + "/"``."""
+        with self._lock:
+            gone = [k for k in self._slots if prefix is None or k == prefix or k.startswith(prefix + "/")]
+            for key in gone:
+                del self._slots[key]
+            if gone:
+                self._refresh()
+
+    def _refresh(self) -> None:
+        if not self._slots:
+            shown = None
+        else:
+            newest = next(reversed(self._slots.values()))
+            more = len(self._slots) - 1
+            shown = f"{newest} (+{more} more)" if more else newest
+        self._show(shown)
 
 
 class Agents:
@@ -215,7 +280,17 @@ class Agents:
             run.status, run.finished, run.error = "running", None, None
             return run
 
-    def begin(self, *, name: str, parent_id: str | None, prompt: str, model: str, provider: str) -> AgentRun:
+    def begin(
+        self,
+        *,
+        name: str,
+        parent_id: str | None,
+        prompt: str,
+        model: str,
+        provider: str,
+        cwd: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> AgentRun:
         """Register a new agent under ``parent_id`` and return its record.
 
         Its cancel flag is linked to its parent's while the parent runs, else to the app's.
@@ -229,9 +304,15 @@ class Agents:
                 agent_id = secrets.token_hex(4)
             run = AgentRun(agent_id, parent_id, name, prompt, model, provider, CancelEvent(), time.time())
             run.parent_cancel = parent_cancel
+            run.cwd, run.reasoning_effort = cwd, reasoning_effort
             self._runs[agent_id] = run
         parent_cancel.link(run.cancel)
         return run
+
+    def get(self, agent_id: str) -> AgentRun | None:
+        """The record of agent ``agent_id``; ``None`` if there is none."""
+        with self._lock:
+            return self._runs.get(agent_id)
 
     def tool_called(self, run: AgentRun) -> None:
         """Count one more tool call of ``run``."""

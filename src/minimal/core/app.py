@@ -13,6 +13,7 @@ from __future__ import annotations
 import collections
 import copy
 import json
+import os
 import re
 import sys
 import threading
@@ -25,9 +26,10 @@ import minimal.extensions.facade
 import minimal.extensions.loader
 from minimal import config
 from minimal.core.agent import MaxTurnsExceeded, run_agent
-from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent, UsageMeter
+from minimal.core.agents import MAIN_AGENT, AgentResult, Agents, AgentRun, CancelEvent, ProgressSlots, UsageMeter
 from minimal.core.context import Context
 from minimal.core.git import GitInfo, GitPoller
+from minimal.core.mentions import DEFAULT_MAX_CHARS, expand_mentions
 from minimal.core.permissions import Permissions, suggest_rule
 from minimal.core.session import Session, check_cut, new_id, open_session
 from minimal.extensions.loader import (
@@ -311,7 +313,11 @@ class Frontend(Protocol):
 
     def progress(self, text: str | None) -> None:
         """Transient progress text of the tool or command running (:meth:`~minimal.core.context.Context.progress`):
-        show it next to the working indicator; ``None`` clears it. May be called from any thread, often."""
+        show it next to the working indicator; ``None`` clears it. May be called from any thread, often.
+
+        Several tool calls may report at once (API 2.4): the app keeps one slot per call and passes the text of the one
+        that changed last, followed by ``" (+n more)"`` while ``n`` others are live, so a frontend only ever shows one
+        string. ``None`` means no slot is live."""
 
     def permission(self, question: str, rule: str | None, saved_in: str | None) -> str:
         """Ask whether a tool call may run; return ``"once"``, ``"session"``, ``"always"`` or ``"deny"``.
@@ -477,6 +483,7 @@ class App:
         cancelled: Set to interrupt the turn in progress, and with it every agent running under it.
         agents: The session's agent records (``ctx.agents()``, per-agent cancel flags).
         usage: The tokens and requests this process has spent (``ctx.usage``).
+        progress_slots: The ``ctx.progress`` notes of the tool calls running now (:class:`~minimal.core.agents.ProgressSlots`).
         truncations: How many times a session's history was cut (:meth:`truncate_session`); a frontend that
             shows the history redraws it when this or the session's id changes.
         mode: The current mode's name, or ``None`` for no mode (:meth:`set_mode`).
@@ -518,6 +525,8 @@ class App:
         self.context = Context(self)
         self.permissions = Permissions(self.settings)
         self.usage = UsageMeter()
+        self.progress_slots = ProgressSlots(lambda text: self.frontend.progress(text))
+        self._notifying = threading.local()
         self.truncations = 0
         self._register_commands = register_commands
         self._git: GitPoller | None = None
@@ -698,6 +707,17 @@ class App:
             found.insert(0, self.model)
         return found, problem
 
+    def notify(self, text: str, kind: str, source: str) -> None:
+        """Fire ``notify`` and show the notice (:meth:`Frontend.notify`). ``source`` is ``"extension"`` for
+        ``ctx.notify`` and ``"core"`` for minimal's own notices. A ``notify`` handler that notifies again only shows it."""
+        if not getattr(self._notifying, "active", False):
+            self._notifying.active = True
+            try:
+                self.registry.emit("notify", {"ctx": self.context, "text": text, "kind": kind, "source": source})
+            finally:
+                self._notifying.active = False
+        self.frontend.notify(text, kind)
+
     def commands(self) -> dict[str, Command]:
         """Every slash command by name: the built-ins, then extension commands (which replace a built-in of the same name)."""
         return {**self.registry.builtin_commands, **self.registry.commands}
@@ -730,6 +750,8 @@ class App:
             raise
         except Exception as e:
             print(f"Error in /{name}: {e}", file=sys.stderr)
+        finally:
+            self.progress_slots.set(MAIN_AGENT, None)
 
     @property
     def messages(self) -> list[dict]:
@@ -801,19 +823,20 @@ class App:
         if poller is not None:
             poller.stop()
 
-    def confirm(self, call: dict) -> bool:
+    def confirm(self, call: dict, cwd: str | None = None) -> bool:
         """Ask the user, through the frontend, whether a tool call may run.
 
         Besides allowing it once, the user may allow what a rule (:func:`~minimal.core.permissions.suggest_rule`)
         covers for the rest of the session (:meth:`Permissions.allow_session`), or save that rule in the project's
-        ``settings.local.json`` (:meth:`save_allow_rule`) and tell the transcript which one.
+        ``settings.local.json`` (:meth:`save_allow_rule`) and tell the transcript which one. ``cwd`` is the working
+        directory of the agent that makes the call (default: the app's): the rule offered is relative to it.
         """
         if self.auto_approve:
             return True
         name, inp = call["name"], call["input"]
         detail = inp.get("command") if name == "bash" else (inp.get("path") or json.dumps(inp))
         tool = self.registry.tools.get(name)
-        rule = suggest_rule(tool, inp, self.cwd) if tool is not None else None
+        rule = suggest_rule(tool, inp, cwd or self.cwd) if tool is not None else None
         file = config.project_settings_files(self.cwd)["local"] if rule is not None and self._rule_will_apply() else None
         answer = self.frontend.permission(f"Allow {name}: {detail}?", rule, str(file) if file is not None else None)
         if answer not in ("once", "session", "always"):
@@ -903,32 +926,37 @@ class App:
             self.truncations += 1
         return dropped
 
-    def permit(self, tool: Tool, input: dict) -> bool:
-        """Whether the permission rules let ``tool`` run with ``input`` without asking.
+    def permit(self, tool: Tool, input: dict, cwd: str | None = None) -> bool:
+        """Whether the permission rules let ``tool`` run with ``input`` without asking (in ``cwd``, default the app's).
 
         Raises:
             PermissionDenied: if a deny rule matches (even with ``-y``).
         """
-        return self.permissions.check(tool, input, self.cwd)
+        return self.permissions.check(tool, input, cwd or self.cwd)
 
-    def base_system_prompt(self) -> str:
-        """The system prompt without the current mode's note (:func:`build_system_prompt`)."""
-        return build_system_prompt(self.registry, self.cwd, self.settings, self.context)
+    def base_system_prompt(self, cwd: str | None = None) -> str:
+        """The system prompt without the current mode's note (:func:`build_system_prompt`), for working directory
+        ``cwd`` (default the app's)."""
+        return build_system_prompt(self.registry, cwd or self.cwd, self.settings, self.context)
 
-    def system_prompt(self) -> str:
+    def system_prompt(self, cwd: str | None = None) -> str:
         """The system prompt of the next turn: :meth:`base_system_prompt`, then the current mode's note."""
-        return _join(self.base_system_prompt(), self.mode_note())
+        return _join(self.base_system_prompt(cwd), self.mode_note())
 
-    def request_options(self, provider_name: str | None = None, model: str | None = None) -> dict:
+    def request_options(
+        self, provider_name: str | None = None, model: str | None = None, reasoning_effort: str | None = None
+    ) -> dict:
         """Provider request options of the next request: ``max_tokens`` from the settings
         (:meth:`~minimal.config.Settings.max_tokens_for`) for the current provider and model, or for the given
-        ones, and :attr:`reasoning_effort` when set; empty for the provider's defaults."""
+        ones, and :attr:`reasoning_effort` (or ``reasoning_effort``, which beats it) when set; empty for the
+        provider's defaults."""
         options: dict[str, Any] = {}
         n = self.settings.max_tokens_for(provider_name or self.provider_name, model or self.model)
         if n is not None:
             options["max_tokens"] = n
-        if self.reasoning_effort is not None:
-            options["reasoning_effort"] = self.reasoning_effort
+        effort = reasoning_effort or self.reasoning_effort
+        if effort is not None:
+            options["reasoning_effort"] = effort
         return options
 
     @property
@@ -937,14 +965,19 @@ class App:
         :meth:`set_reasoning_effort` set, else the ``reasoning_effort`` setting; ``None`` for the provider's default."""
         return self.settings.reasoning_effort if self._effort_override is None else self._effort_override[0]
 
+    @staticmethod
+    def check_reasoning_effort(value: str | None, what: str = "reasoning effort") -> None:
+        """Raise ``ValueError`` unless ``value`` is ``None`` or one of :data:`~minimal.config.REASONING_EFFORTS`."""
+        if value is not None and value not in config.REASONING_EFFORTS:
+            raise ValueError(f"{what} must be one of {', '.join(config.REASONING_EFFORTS)} (or None), not {value!r}")
+
     def set_reasoning_effort(self, value: str | None) -> None:
         """Use ``value`` from the next request on, over the setting (``None``: the provider's default).
 
         Raises:
             ValueError: if ``value`` is not ``None`` or one of :data:`~minimal.config.REASONING_EFFORTS`.
         """
-        if value is not None and value not in config.REASONING_EFFORTS:
-            raise ValueError(f"reasoning effort must be one of {', '.join(config.REASONING_EFFORTS)} (or None), not {value!r}")
+        self.check_reasoning_effort(value)
         self._effort_override = (value,)
 
     # --- modes ---------------------------------------------------------------
@@ -1010,7 +1043,7 @@ class App:
         mode = self.mode
         if mode is not None and mode not in self.registry.modes:
             self._swap_mode(lambda old: None)
-            self.frontend.notify(f"Mode {mode!r} is no longer registered: no mode now.", "warning")
+            self.notify(f"Mode {mode!r} is no longer registered: no mode now.", "warning", "core")
 
     def fallback_provider(self, name: str, model: str | None) -> tuple[Provider, str]:
         """Switch to provider ``name`` (:meth:`use_provider`) after a failed request; return the new provider and model.
@@ -1077,6 +1110,7 @@ class App:
             try:
                 self.session.save()
             finally:
+                self.progress_slots.clear()
                 self._emit_agent_end(self.context, run, status, error if status != "interrupted" else None, answer)
         self.frontend.turn_end(error)
 
@@ -1093,12 +1127,19 @@ class App:
         model: str | None = None,
         provider: str | None = None,
         max_turns: int | None = None,
+        cwd: str | None = None,
+        reasoning_effort: str | None = None,
+        mentions: bool = False,
     ) -> tuple[AgentResult, BaseException | None]:
         """Run ``prompt`` as a nested agent under agent ``parent_id``: what ``ctx.run_agent`` and ``ctx.run_agent_result`` do.
 
         Its tools are the registered ones minus ``exclude_tools`` (or only ``tools``), minus what the current mode
         blocks (asked live, so a mode can never be bypassed by ``tools``). With ``provider`` or ``model`` it talks to
         that provider/model for this agent only: the app's own do not change.
+
+        ``cwd`` (a folder, relative to the parent agent's working directory) and ``reasoning_effort`` are this agent's
+        own and are inherited by the agents it starts: its ``ctx.cwd``, system prompt, permission checks and (with
+        ``mentions``) the ``@file`` mentions of its prompt follow ``cwd``, and its requests ask for that effort.
 
         Returns:
             ``(result, error)``: the :class:`~minimal.core.agents.AgentResult`, and the exception that ended the
@@ -1123,6 +1164,19 @@ class App:
                 )
         if max_turns is not None and (isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1):
             raise ValueError("run_agent: max_turns must be an integer >= 1")
+        self.check_reasoning_effort(reasoning_effort, "run_agent: reasoning_effort")
+        parent = self.agents.get(parent_id)
+        base = (parent.cwd if parent is not None else None) or self.cwd
+        if cwd is None:
+            run_cwd = parent.cwd if parent is not None else None
+        else:
+            if not isinstance(cwd, (str, os.PathLike)) or not str(cwd):
+                raise ValueError("run_agent: cwd must be a folder path")
+            run_cwd = os.path.normpath(os.path.join(base, os.path.expanduser(cwd)))
+            if not os.path.isdir(run_cwd):
+                raise ValueError(f"run_agent: cwd {str(cwd)!r} is not a folder (looked for {run_cwd})")
+        effort = reasoning_effort or (parent.reasoning_effort if parent is not None else None)
+        where = run_cwd or self.cwd
         assert self.provider is not None  # startup (cli) picks a provider before any extension runs
         if provider is None and model is None:
             llm, llm_name, llm_model, switch = self.provider, self.provider_name, self.model, self.fallback_provider
@@ -1131,7 +1185,7 @@ class App:
         else:
             llm, llm_model = self.create_provider(provider, model)
             llm_name, switch = provider, self.create_provider
-        system_text = _join(self.base_system_prompt() if system is None else system, system_note)
+        system_text = _join(self.base_system_prompt(where) if system is None else system, system_note)
 
         def gate(tool: str) -> str | None:
             if allow is not None and tool not in allow:
@@ -1139,10 +1193,20 @@ class App:
             return self.mode_block_reason(tool)
 
         run = self.agents.begin(
-            name=name or "agent", parent_id=parent_id, prompt=prompt, model=llm_model, provider=llm_name
+            name=name or "agent",
+            parent_id=parent_id,
+            prompt=prompt,
+            model=llm_model,
+            provider=llm_name,
+            cwd=run_cwd,
+            reasoning_effort=effort,
         )
         ctx = Context(self, run)
-        messages: list[dict] = [{"role": "user", "content": prompt}]
+        first = prompt
+        if mentions:
+            limit = self.settings.scalar("ui.mention_max_chars")[0]
+            first = expand_mentions(prompt, where, DEFAULT_MAX_CHARS if limit is None else limit).text
+        messages: list[dict] = [{"role": "user", "content": first}]
         status, error, reply = "interrupted", None, None
         failure: BaseException | None = None
         try:
@@ -1158,15 +1222,15 @@ class App:
                 on_tool=self._on_tool(run),
                 on_tool_result=self.frontend.tool_result,
                 on_reply=self._on_reply(run),
-                confirm=self.confirm,
+                confirm=lambda call: self.confirm(call, where),
                 cancelled=run.cancel,
-                permit=self.permit,
+                permit=lambda tool, input: self.permit(tool, input, where),
                 exclude_tools=exclude,
                 gate=gate,
                 nested=True,
                 max_turns=self.settings.max_turns if max_turns is None else max_turns,
                 max_parallel=self.settings.max_parallel,
-                options=self.request_options(llm_name, llm_model),
+                options=self.request_options(llm_name, llm_model, effort),
                 switch_provider=switch,
                 agent_id=run.id,
                 parent_id=run.parent_id,
@@ -1179,6 +1243,7 @@ class App:
             status, error = _failure_status(e), str(e) or type(e).__name__
         finally:
             text = result_text(reply.content) if reply is not None else _last_text(messages)
+            self.progress_slots.clear(run.id)
             usage = self._emit_agent_end(ctx, run, status, error, text)
         result = AgentResult(run.id, text, usage, status, error, messages)
         return result, failure
@@ -1192,12 +1257,12 @@ class App:
 
         return on_tool
 
-    def _on_reply(self, run: AgentRun) -> Callable[[Any], None]:
+    def _on_reply(self, run: AgentRun) -> Callable[[Any, str, str], None]:
         """The loop's ``on_reply`` for ``run``: add the reply's usage to the agent's and to the process totals."""
 
-        def on_reply(reply: Any) -> None:
+        def on_reply(reply: Any, provider: str, model: str) -> None:
             self.agents.replied(run, reply.usage)
-            self.usage.add(reply.usage)
+            self.usage.add(reply.usage, model, provider)
 
         return on_reply
 

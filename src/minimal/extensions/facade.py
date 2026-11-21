@@ -130,7 +130,8 @@ class BeforeRequestEvent(TypedDict):
 
 
 class AfterResponseEvent(TypedDict):
-    """Payload of ``after_response``: a reply was appended to the history."""
+    """Payload of ``after_response``: a reply was appended to the history (or, ``source`` ``"complete"``, was returned
+    by ``ctx.complete``)."""
 
     ctx: Any
     reply: Reply
@@ -138,6 +139,13 @@ class AfterResponseEvent(TypedDict):
     nested: bool
     agent_id: str
     parent_id: str | None
+    model: str
+    """The model that answered (API 2.4)."""
+    provider: str
+    """The name of the provider that answered (API 2.4); with ``model``, the key of ``ctx.usage.by_model``."""
+    source: str
+    """``"loop"`` for a reply of an agent loop, ``"complete"`` for one of ``ctx.complete`` / ``ctx.complete_text``, which
+    is not in any history (API 2.4)."""
 
 
 class ShutdownEvent(TypedDict):
@@ -213,6 +221,17 @@ class ThemeChangeEvent(TypedDict):
     """The theme that is current now."""
     dark: bool
     """Whether it is a dark theme."""
+
+
+class NotifyEvent(TypedDict):
+    """Payload of ``notify``: a notice is about to be shown (``ctx.notify``, and minimal's own). API 2.4."""
+
+    ctx: Any
+    text: str
+    kind: str
+    """``"info"``, ``"warning"`` or ``"error"``."""
+    source: str
+    """``"extension"`` for ``ctx.notify``, ``"core"`` for a notice of minimal itself."""
 
 
 def _first_line(doc: str | None) -> str:
@@ -313,13 +332,14 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
-        read_only: bool = False,
+        read_only: bool | Callable[[dict, Any], bool] = False,
     ) -> None:
         """Add a tool the model can call as ``run(input, ctx)``; see :meth:`Registry.register_tool`.
 
         ``subject_key`` names the ``input`` field that permission rules ``name(pattern)`` match.
         ``read_only`` (API 2.3) says the tool changes nothing and is thread-safe, so calls to it may run concurrently
-        with each other (see :attr:`~minimal.extensions.registry.Tool.read_only`).
+        with each other (see :attr:`~minimal.extensions.registry.Tool.read_only`). API 2.4: it may be a callable
+        ``read_only(input, ctx) -> bool`` deciding per call, like ``confirm``.
         """
         self._registry.register_tool(name, run, description, input_schema, confirm, subject_key, read_only)
 
@@ -489,7 +509,7 @@ class Extension:
         """Subscribe ``handler(event)`` to ``event``: one of :data:`~minimal.extensions.registry.EVENTS`
         (``tool_call``, ``tool_result``, ``turn_end``, ``session_start``, ``session_switch``,
         ``turn_start``, ``before_request``, ``after_response``, ``shutdown``, ``provider_error``,
-        ``agent_start``, ``agent_end``, ``mode_change``, ``theme_change``).
+        ``agent_start``, ``agent_end``, ``mode_change``, ``theme_change``, ``notify``).
 
         Without ``handler``, returns a decorator that subscribes the decorated function.
 
@@ -528,7 +548,7 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
-        read_only: bool = False,
+        read_only: bool | Callable[[dict, Any], bool] = False,
     ) -> Callable[[ToolRun], ToolRun]:
         """Decorator registering ``fn(input, ctx)`` as a tool: the name defaults to the function's,
         the description to the first line of its docstring. ``read_only`` (API 2.3): see :meth:`register_tool`."""

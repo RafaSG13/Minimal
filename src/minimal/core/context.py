@@ -11,15 +11,25 @@ tools, and it is safe to use from the thread running a turn.
 from __future__ import annotations
 
 import threading
+import time
 import types
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from minimal.core import agent
-from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun, UsageTotals
+from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun, UsageTotals, current_call
 from minimal.core.git import GitInfo
 from minimal.core.layout import resolve_keys
-from minimal.core.session import list_sessions, new_id, open_session
+from minimal.core.session import (
+    SessionInfo,
+    created_at,
+    list_sessions,
+    new_id,
+    open_session,
+    prompt_text,
+    read_session_info,
+    read_session_infos,
+)
 from minimal.extensions.loader import reload_summary
 from minimal.extensions.registry import KeyInfo, ModeSpec, ThemeInfo, Tool, TurnInterrupted
 from minimal.providers.base import Reply, result_text
@@ -87,8 +97,9 @@ class Context:
 
     @property
     def cwd(self) -> str:
-        """Working directory of tools and of the system prompt."""
-        return self._app.cwd
+        """Working directory of tools and of the system prompt: the app's, or for the ``ctx`` of an agent started
+        with ``run_agent(cwd=...)`` (and the agents it starts) that folder (API 2.4)."""
+        return (self._run.cwd if self._run is not None else None) or self._app.cwd
 
     @property
     def messages(self) -> list[dict]:
@@ -116,8 +127,9 @@ class Context:
     @property
     def reasoning_effort(self) -> str | None:
         """How much the model is asked to think: ``"low"``, ``"medium"`` or ``"high"`` (the ``reasoning_effort`` setting or
-        :meth:`set_reasoning_effort`); ``None`` for the provider's default. API 2.3."""
-        return self._app.reasoning_effort
+        :meth:`set_reasoning_effort`); ``None`` for the provider's default. API 2.3. For the ``ctx`` of an agent started
+        with ``run_agent(reasoning_effort=...)`` (and the agents it starts) that value (API 2.4)."""
+        return (self._run.reasoning_effort if self._run is not None else None) or self._app.reasoning_effort
 
     @property
     def context_tokens(self) -> int | None:
@@ -187,8 +199,8 @@ class Context:
         agent.raise_if_cancelled(self._flag())
 
     def system_prompt(self) -> str:
-        """The system prompt the next turn would send."""
-        return self._app.system_prompt()
+        """The system prompt the next turn would send (for the working directory of this ``ctx``, see :attr:`cwd`)."""
+        return self._app.system_prompt(self.cwd)
 
     def complete(
         self,
@@ -198,11 +210,13 @@ class Context:
         tools: bool = True,
         options: Mapping[str, Any] | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> Reply:
         """One model request with the current provider and model; no tools are run.
 
         A failed request goes to the ``provider_error`` handlers, which may retry it as for a turn. The request counts
-        in :attr:`usage`.
+        in :attr:`usage`, and (API 2.4) fires ``after_response`` with ``source`` ``"complete"``: the reply is not
+        added to any history, so a handler that reads ``ctx.messages`` there should skip it.
 
         Args:
             messages: The conversation to send, in the canonical format.
@@ -210,12 +224,18 @@ class Context:
             tools: Offer the registered tools, as a turn does (keeps the provider's prompt cache warm).
             options: Request options (``max_tokens``, ``temperature``, ``reasoning_effort``) over the ones a turn uses.
             model: Another model of the current provider (API 2.3); the request uses its ``max_tokens`` setting.
+            reasoning_effort: ``"low"``, ``"medium"`` or ``"high"`` for this request only (API 2.4); it beats
+                :attr:`reasoning_effort` and ``options["reasoning_effort"]``.
 
         Raises:
+            ValueError: if ``reasoning_effort`` is not ``None`` or one of those.
             TurnInterrupted: if the user interrupts while the reply streams.
         """
         app = self._app
-        opts = {**app.request_options(app.provider_name, model), **(options or {})}
+        app.check_reasoning_effort(reasoning_effort, "complete: reasoning_effort")
+        opts = {**app.request_options(app.provider_name, model, self.reasoning_effort), **(options or {})}
+        if reasoning_effort is not None:
+            opts["reasoning_effort"] = reasoning_effort
         assert app.provider is not None  # startup picks a provider before any extension runs
         provider, model_name = app.provider, model or app.model
         system_text = self.system_prompt() if system is None else system
@@ -246,38 +266,68 @@ class Context:
                     raise
                 provider, model_name = retry
                 self.check_cancelled()
-        app.usage.add(reply.usage)
+        app.usage.add(reply.usage, model_name, provider.name)
+        app.registry.emit(
+            "after_response",
+            {
+                "ctx": self,
+                "reply": reply,
+                "usage": reply.usage,
+                "nested": self._run is not None,
+                "model": model_name,
+                "provider": provider.name,
+                "source": "complete",
+                **who,
+            },
+        )
         return reply
 
     def complete_text(
-        self, prompt: str, *, system: str | None = None, model: str | None = None, max_tokens: int = 1024
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        model: str | None = None,
+        max_tokens: int = 1024,
+        messages: list[dict] | None = None,
+        options: Mapping[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Ask the model one question and return its answer as text: one request, no tools, not added to the history.
 
         API 2.3. A thin layer over :meth:`complete` for utilities such as a title, a summary or a classification:
-        the conversation is not sent, only ``prompt``. The request counts in :attr:`usage` and a failure goes
-        to the ``provider_error`` handlers.
+        by default the conversation is not sent, only ``prompt``. The request counts in :attr:`usage` and a failure
+        goes to the ``provider_error`` handlers.
 
         Args:
-            prompt: The user message.
+            prompt: The user message. May be empty if ``messages`` is given and ends with a user message.
             system: The system prompt; none by default (pass :meth:`system_prompt` to send the session's).
             model: Another model of the current provider; default the current model.
             max_tokens: The most tokens the answer may have.
+            messages: A conversation to send before ``prompt`` (API 2.4), in the canonical format, e.g. ``ctx.messages``
+                for a summary of the history. It should end with an assistant message when ``prompt`` is not empty.
+            options: Further request options (``temperature``...), which beat ``max_tokens`` (API 2.4).
+            reasoning_effort: As for :meth:`complete` (API 2.4).
 
         Raises:
-            ValueError: if ``prompt`` is empty or ``max_tokens`` is not a positive integer.
+            ValueError: if both ``prompt`` and ``messages`` are empty, ``max_tokens`` is not a positive integer or
+                ``reasoning_effort`` is invalid.
             TurnInterrupted: if the user interrupts while the reply streams.
         """
-        if not prompt.strip():
+        if not prompt.strip() and not messages:
             raise ValueError("complete_text: prompt is empty")
         if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
             raise ValueError("complete_text: max_tokens must be an integer >= 1")
+        send = list(messages or [])
+        if prompt.strip():
+            send.append({"role": "user", "content": prompt})
         reply = self.complete(
-            [{"role": "user", "content": prompt}],
+            send,
             system=system or "",
             tools=False,
-            options={"max_tokens": max_tokens},
+            options={"max_tokens": max_tokens, **(options or {})},
             model=model,
+            reasoning_effort=reasoning_effort,
         )
         return result_text(reply.content)
 
@@ -285,10 +335,14 @@ class Context:
     def usage(self) -> UsageTotals:
         """Tokens and requests this minimal process has spent so far (API 2.3): every model request of the user's
         turns, of the agents they start and of :meth:`complete`, since it started. A new or resumed session does not
-        reset it, and it is not saved: ``minimal -c`` starts counting again. A snapshot, not live."""
+        reset it, and it is not saved: ``minimal -c`` starts counting again. A snapshot, not live.
+
+        API 2.4: ``usage.by_model`` splits the counts per ``"provider/model"``, e.g. for a cost budget:
+        ``sum(prices[m].input * t.input_tokens + prices[m].output * t.output_tokens for m, t in usage.by_model.items())``
+        with a price table of your own (minimal knows none)."""
         return self._app.usage.totals
 
-    def progress(self, text: str | None) -> None:
+    def progress(self, text: str | None, *, key: str | None = None) -> None:
         """Show ``text`` as a one-line progress note next to the working indicator while a tool or command runs;
         ``None`` clears it.
 
@@ -296,14 +350,28 @@ class Context:
         turn or command ends. Call it as often as you like, from any thread (the console prints each change on stderr
         when it is a terminal).
 
+        API 2.4: every tool call has a slot of its own, so tools running at once (parallel ``read_only`` calls, agents)
+        do not overwrite each other. The frontend shows the slot set last, and ``"… (+n more)"`` while ``n`` others
+        are live. A call's slot is cleared when the call ends, and ``progress(None)`` clears the caller's own. Outside
+        a tool call (a command, a widget, a thread the tool started) the slot is the agent's (``"main"`` for the user's
+        turn and commands).
+
+        Args:
+            text: The note, or ``None`` to clear the slot.
+            key: Another slot's name, for notes that are not tied to the running call (a background job): it stays
+                until ``progress(None, key=...)`` or the turn or command ends.
+
         Raises:
-            TypeError: if ``text`` is neither a string nor ``None``.
+            TypeError: if ``text`` is neither a string nor ``None``, or ``key`` is neither a string nor ``None``.
         """
         if text is not None:
             if not isinstance(text, str):
                 raise TypeError("progress: text must be a string or None")
             text = " ".join(text.split("\n", 1)[0].split())[:120] or None
-        self._app.frontend.progress(text)
+        if key is not None and not isinstance(key, str):
+            raise TypeError("progress: key must be a string or None")
+        slot = key if key is not None else getattr(current_call, "key", None) or self.agent_id
+        self._app.progress_slots.set(slot, text)
 
     def run_agent(
         self,
@@ -317,6 +385,9 @@ class Context:
         model: str | None = None,
         provider: str | None = None,
         max_turns: int | None = None,
+        cwd: str | None = None,
+        reasoning_effort: str | None = None,
+        mentions: bool = False,
     ) -> str:
         """Run ``prompt`` as its own agent loop with an empty history; return the text of its last reply.
 
@@ -330,7 +401,7 @@ class Context:
         Args:
             system_note: Appended to the system prompt.
             exclude_tools: Tools it may not use.
-            name, system, tools, model, provider, max_turns: See :meth:`run_agent_result`.
+            name, system, tools, model, provider, max_turns, cwd, reasoning_effort, mentions: See :meth:`run_agent_result`.
 
         Raises:
             ValueError: for an invalid argument (see :meth:`run_agent_result`).
@@ -346,6 +417,9 @@ class Context:
             model=model,
             provider=provider,
             max_turns=max_turns,
+            cwd=cwd,
+            reasoning_effort=reasoning_effort,
+            mentions=mentions,
         )
         if error is not None:
             raise error
@@ -363,6 +437,9 @@ class Context:
         model: str | None = None,
         provider: str | None = None,
         max_turns: int | None = None,
+        cwd: str | None = None,
+        reasoning_effort: str | None = None,
+        mentions: bool = False,
     ) -> AgentResult:
         """Run ``prompt`` as its own agent loop with an empty history, and say how it went.
 
@@ -384,14 +461,24 @@ class Context:
             provider: Name of a provider to use for this agent only (its default model unless ``model`` is
                 given); the app's current provider and model do not change.
             max_turns: Most model requests it may make (default :attr:`max_turns`).
+            cwd: A folder (relative to this ``ctx``'s :attr:`cwd`) the agent works in, API 2.4: the ``ctx.cwd`` its
+                tools and events get (so the built-in tools, ``bash`` and the "outside the workspace" check use it), its
+                default system prompt's working directory (and the project instructions it reads there) and its
+                permission checks follow it. The agents it starts inherit it. Other agents, and this one's parent,
+                keep theirs; any number may run at once in different folders. Default: this ``ctx``'s.
+            reasoning_effort: ``"low"``, ``"medium"`` or ``"high"`` for this agent's requests only (and the agents it
+                starts), API 2.4; ``None``: the current :attr:`reasoning_effort`. It replaces a ``before_request``
+                handler that changed the effort.
+            mentions: Expand ``@path`` mentions in ``prompt`` as the terminal UI does for the user's messages
+                (the files' content is attached to the agent's first message), resolved against ``cwd``. API 2.4.
 
         Returns:
             Its :class:`~minimal.core.agents.AgentResult`.
 
         Raises:
             ValueError: if ``tools`` and ``exclude_tools`` are both given, ``tools`` names a tool that is not
-                registered, ``max_turns`` is not a positive integer, or ``provider`` is unknown or lacks its
-                credentials.
+                registered, ``max_turns`` is not a positive integer, ``cwd`` is not an existing folder,
+                ``reasoning_effort`` is invalid, or ``provider`` is unknown or lacks its credentials.
         """
         return self._app.run_agent(
             self.agent_id,
@@ -404,6 +491,9 @@ class Context:
             model=model,
             provider=provider,
             max_turns=max_turns,
+            cwd=cwd,
+            reasoning_effort=reasoning_effort,
+            mentions=mentions,
         )[0]
 
     def agents(self) -> list[AgentInfo]:
@@ -498,6 +588,48 @@ class Context:
         """Saved session ids, oldest first: this project's (see ``cwd``), or every project's with ``all_projects``."""
         return list_sessions(None if all_projects else self._app.cwd)
 
+    def session_info(self, session_id: str | None = None) -> SessionInfo:
+        """What session ``session_id`` (default the current one) says about itself, without its messages. API 2.4.
+
+        A :class:`~minimal.core.session.SessionInfo`: id, title, parent, cwd, a preview of the first user message,
+        mtime, number of messages, creation time and whether another process holds it open. A saved session is read
+        from the first lines of its file and a count of the rest, so it is cheap for a long one. The current session
+        is read live (unsaved messages count; ``mtime`` is the file's, or now if it was never saved). A file that is
+        damaged (no header, lines that are not JSON) gives what could be read, not an error.
+
+        Raises:
+            ValueError: if ``session_id`` is not a valid id, or there is no such session or it cannot be read.
+        """
+        app = self._app
+        current = app.session
+        if session_id is None or session_id == current.id:
+            try:
+                mtime = current.file.stat().st_mtime
+            except OSError:
+                mtime = time.time()
+            first = next((m for m in current.messages if m.get("role") == "user" and prompt_text(m)), None)
+            return SessionInfo(
+                current.id,
+                current.title,
+                current.parent,
+                current.cwd or app.cwd,
+                " ".join(prompt_text(first).split())[:200] if first is not None else "",
+                mtime,
+                len(current.messages),
+                created_at(current.id),
+                current._lock_fd is not None,
+            )
+        return read_session_info(session_id)
+
+    def sessions_info(self, limit: int | None = None, *, all_projects: bool = False) -> list[SessionInfo]:
+        """:meth:`session_info` of the saved sessions, most recently written first: this project's, or every project's
+        with ``all_projects``; at most ``limit`` of them. API 2.4.
+
+        Files are ordered by modification time and read only until ``limit`` matched. The current session appears
+        once it is saved. A damaged file is listed with what could be read; a file that vanishes meanwhile is left out.
+        """
+        return read_session_infos(None if all_projects else self._app.cwd, limit)
+
     def read_session(self, session_id: str) -> list[dict]:
         """The messages of saved session ``session_id``.
 
@@ -550,12 +682,14 @@ class Context:
     def notify(self, text: str, kind: str = "info") -> None:
         """Show a short notice to the user (a toast in the terminal UI); ``kind`` is one of :data:`NOTIFY_KINDS`.
 
+        API 2.4: fires ``notify`` (``{ctx, text, kind, source}``) first, so an extension can keep a history of notices.
+
         Raises:
             ValueError: if ``kind`` is not one of them.
         """
         if kind not in NOTIFY_KINDS:
             raise ValueError(f"notify: kind must be one of {', '.join(NOTIFY_KINDS)}")
-        self._app.frontend.notify(text, kind)
+        self._app.notify(text, kind, "extension")
 
     def use_provider(self, name: str, model: str | None = None) -> None:
         """Switch to provider ``name`` and ``model`` (default: its default model) from the next request on, keeping the conversation.

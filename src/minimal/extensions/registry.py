@@ -39,8 +39,12 @@ agent a tool starts with ``ctx.run_agent``) has an ``agent_id`` (``"main"`` for 
         for that request only: the history does not change; ``{"options": dict}``
         is merged into the request options (``max_tokens``, ``temperature``).
         Handlers must not mutate what they receive; they return copies.
-    ``after_response`` ``{ctx, reply, usage, nested, agent_id, parent_id}``
-        Fired after each reply is appended to the history. Results are ignored.
+    ``after_response`` ``{ctx, reply, usage, nested, agent_id, parent_id, model, provider, source}``
+        Fired after each reply is appended to the history. Results are ignored. ``model`` and ``provider`` (API 2.4) are
+        the model and provider's name that answered (after any ``provider_error`` switch). ``source`` (API 2.4) is
+        ``"loop"`` for a reply of an agent loop, or ``"complete"`` for one of ``ctx.complete`` /
+        ``ctx.complete_text``, which is not added to any history: a handler that reads the history should skip it, one
+        that adds up ``usage`` (a cost budget) wants both.
     ``shutdown``     ``{ctx}``
         Fired when minimal exits.
     ``provider_error`` ``{ctx, error, attempt, provider, model, nested, agent_id, parent_id}``
@@ -64,6 +68,10 @@ agent a tool starts with ``ctx.run_agent``) has an ``agent_id`` (``"main"`` for 
         Fired after the terminal UI's colour theme changed (``/theme``, the ``Ctrl+P`` theme picker, or a reload that
         switched it); ``name`` and ``dark`` are the new theme's (``ctx.theme`` has its colours). Not fired for the theme
         the UI starts with. A frontend without themes never fires it. API 2.3. Results are ignored.
+    ``notify``       ``{ctx, text, kind, source}``
+        Fired before a notice is shown (``ctx.notify``, and minimal's own notices): ``kind`` is ``"info"``,
+        ``"warning"`` or ``"error"``, ``source`` is ``"extension"`` for ``ctx.notify`` or ``"core"`` for minimal's.
+        A handler that notifies again only shows that notice. API 2.4. Results are ignored.
 """
 
 from __future__ import annotations
@@ -115,6 +123,7 @@ EVENTS = (
     "agent_end",
     "mode_change",
     "theme_change",
+    "notify",
 )
 """Events an extension can subscribe to with ``on``."""
 
@@ -295,7 +304,9 @@ class Tool:
         read_only: The tool changes nothing and is safe to run next to other calls (API 2.3). When one model reply calls
             several tools, a run of consecutive calls to ``read_only`` tools runs concurrently (at most ``tools.max_parallel``
             at once, default 4); any other call runs alone, in order. ``run`` must then be thread-safe. Not to be
-            confused with a mode's ``read_only``, which blocks tools that ask for confirmation.
+            confused with a mode's ``read_only``, which blocks tools that ask for confirmation. API 2.4: may also be
+            ``read_only(input, ctx) -> bool``, asked once per call when the reply's calls are scheduled (a ``gh`` tool
+            that only reads for ``pr view``); a call whose evaluation raises counts as not read-only.
     """
 
     name: str
@@ -304,7 +315,7 @@ class Tool:
     run: ToolRun
     confirm: bool | Callable[[dict, Any], bool] = False
     subject_key: str | None = None
-    read_only: bool = False
+    read_only: bool | Callable[[dict, Any], bool] = False
 
 
 @dataclass
@@ -844,17 +855,17 @@ class Registry:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
-        read_only: bool = False,
+        read_only: bool | Callable[[dict, Any], bool] = False,
     ) -> None:
         """Build and register a tool. ``input_schema`` defaults to an empty object.
 
         Raises:
-            ValueError: if ``name`` is empty or ``run`` is not callable, or ``read_only`` is not a bool.
+            ValueError: if ``name`` is empty or ``run`` is not callable, or ``read_only`` is neither a bool nor a callable.
         """
         if not name or not callable(run):
             raise ValueError("register_tool: name and run are required")
-        if not isinstance(read_only, bool):
-            raise ValueError("register_tool: read_only must be a bool")
+        if not isinstance(read_only, bool) and not callable(read_only):
+            raise ValueError("register_tool: read_only must be a bool or a callable (input, ctx) -> bool")
         schema = input_schema or {"type": "object", "properties": {}}
         self.add_tool(Tool(name, description, schema, run, confirm, subject_key, read_only))
 

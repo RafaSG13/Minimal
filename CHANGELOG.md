@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- `ctx.run_agent` / `run_agent_result` take `cwd=` (the agent's `ctx.cwd`, built-in tools, `bash`, "outside the
+  workspace" checks, system prompt and permission rules follow that folder; parallel agents may use different ones),
+  `reasoning_effort=` (for that agent only) and `mentions=` (expand `@file` in its prompt). `ctx.complete` and
+  `complete_text` take `reasoning_effort=`, and `complete_text` also `messages=` and `options=`.
+- Usage by model: `UsageTotals.by_model` (keyed `provider/model`), `model`, `provider` and `source` on `after_response`,
+  which `ctx.complete` now fires too (`source` `"complete"`).
+- `ctx.session_info(id=None)` and `ctx.sessions_info(limit=None, all_projects=False)` (`SessionInfo`): title, parent,
+  cwd, preview, mtime, message count, creation time and lock state without loading a transcript.
+- `ctx.progress(text, key=None)` keeps one slot per tool call: parallel tools and agents no longer overwrite each other;
+  the terminal UI shows the latest and `(+n more)`.
+- `notify` event (`NotifyEvent`: `text`, `kind`, `source`), fired by `ctx.notify` and minimal's own notices.
+- `Tool.read_only` (and `register_tool`/`@minimal.tool`) may be a function `(input, ctx) -> bool` decided per call.
+
 ## 0.9.0
 
 ### Added
