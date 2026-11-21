@@ -221,6 +221,7 @@ _TYPES = {
     "ui.mention_max_chars": (_is_positive_int, "a positive integer"),
     "ui.notify": (lambda v: v in ("off", "bell", "osc9"), 'one of "off", "bell", "osc9"'),
     "ui.notify_after": (_is_non_negative_number, "a non-negative number of seconds"),
+    "ui.preview_lines": (_is_positive_int, "a positive integer"),
 }
 """Every setting as a dotted key: ``(type check, type name for errors)``."""
 _TYPES.update(_UI_TYPES)

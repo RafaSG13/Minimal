@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.fuzzy import FuzzySearch
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Input, Label, OptionList, SelectionList
+from textual.widgets import Input, Label, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 from textual.widgets.selection_list import Selection
 
@@ -281,3 +282,219 @@ class TextScreen(DialogScreen):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()  # otherwise MinimalTui.on_input_submitted sends it as a message
         self.dismiss(event.value.strip() or None)
+
+
+MAX_PICK_ROWS = 300
+"""Most rows a :class:`PickScreen` lists at once; typing narrows a longer list."""
+
+_FUZZY = FuzzySearch()
+
+
+def fuzzy_match(query: str, text: str) -> tuple[float, list[int]] | None:
+    """How well ``text`` matches ``query``, or ``None`` if it does not.
+
+    Every whitespace-separated term of ``query`` must appear in ``text`` as a case-insensitive subsequence
+    (``fb`` matches ``foo_bar``); an empty query matches everything.
+
+    Returns:
+        ``(score, offsets)``: a score (higher is better) and the offsets in ``text`` of the matched characters.
+    """
+    terms = query.split()
+    if not terms:
+        return 1.0, []
+    total = 0.0
+    offsets: set[int] = set()
+    for term in terms:
+        score, found = _FUZZY.match(term, text)
+        if not score:
+            return None
+        total += score
+        offsets.update(found)
+    return total / len(terms), sorted(offsets)
+
+
+class PickScreen(DialogScreen):
+    """A list filtered as you type: pick one ``(value, label, detail)`` item; dismisses with its value.
+
+    The filter box takes the typing while the arrow keys, page keys and the mouse move through the list (``filter=False``
+    shows no box). ``on_highlight(value)`` is called each time the highlighted row changes, the first one included;
+    ``preview(value)`` gives the text of a side pane that follows the highlight.
+    """
+
+    DEFAULT_CSS = """
+    PickScreen.-preview > Vertical { width: 92%; max-width: 160; }
+    PickScreen Input { margin-bottom: 1; }
+    PickScreen #pick-body { height: auto; }
+    PickScreen #pick-list { width: 1fr; }
+    PickScreen #pick-preview {
+        width: 1fr; height: auto; max-height: 20; margin-left: 1; padding: 0 1;
+        border-left: solid $border-muted; color: $muted;
+    }
+    """
+
+    BINDINGS = [
+        Binding("up", "move('cursor_up')", "Up", show=False),
+        Binding("down", "move('cursor_down')", "Down", show=False),
+        Binding("pageup", "move('page_up')", "Page up", show=False),
+        Binding("pagedown", "move('page_down')", "Page down", show=False),
+    ]
+
+    def __init__(
+        self,
+        heading: str,
+        items: Sequence[tuple[str, str, str]],
+        *,
+        preview: Callable[[str], str] | None = None,
+        on_highlight: Callable[[str], Any] | None = None,
+        filtered: bool = True,
+    ) -> None:
+        super().__init__(heading)
+        self.items = items
+        self.preview = preview
+        self.on_highlight = on_highlight
+        self.filtered = filtered
+        self.query_text = ""
+        self.listed: list[str] = []  # the values of the rows listed, in order
+        self.highlighted_value: str | None = None  # the value on_highlight was last called with
+        self.callback_failed = False
+        self.set_class(preview is not None, "-preview")
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(self.heading, classes="title", markup=False)
+            if self.filtered:
+                yield Input(placeholder="type to filter", compact=True, id="pick-filter")
+            with Horizontal(id="pick-body"):
+                yield OptionList(compact=True, id="pick-list")
+                if self.preview is not None:
+                    yield Static("", id="pick-preview", markup=False)
+            yield Label("", classes="hint", id="pick-hint")
+
+    def on_mount(self) -> None:
+        self.refresh_rows()
+        (self.query_one(Input) if self.filtered else self.query_one(OptionList)).focus()
+
+    def ranked(self) -> list[tuple[int, list[int]]]:
+        """The items matching the filter, best first (the list's order among equals): ``(item index, label offsets)``."""
+        found: list[tuple[float, int, list[int]]] = []
+        for index, (_, label, detail) in enumerate(self.items):
+            match = fuzzy_match(self.query_text, f"{label} {detail}" if detail else label)
+            if match is not None:
+                found.append((-match[0], index, [o for o in match[1] if o < len(label)]))
+        found.sort(key=lambda row: row[:2])
+        return [(index, offsets) for _, index, offsets in found]
+
+    def refresh_rows(self) -> None:
+        """List the rows matching the filter and highlight the first."""
+        ranked = self.ranked()
+        shown = ranked[:MAX_PICK_ROWS]
+        options = []
+        for index, offsets in shown:
+            _, label, detail = self.items[index]
+            text = Content(label)
+            for offset in offsets:
+                if not label[offset].isspace():
+                    text = text.stylize("bold $accent", offset, offset + 1)
+            options.append(Option(Content.assemble(text, (f"  {detail}", "$dim")) if detail else text))
+        self.listed = [self.items[index][0] for index, _ in shown]
+        rows = self.query_one(OptionList)
+        rows.clear_options()
+        rows.add_options(options)
+        if shown:
+            rows.highlighted = 0  # the event reports it, unless it is still the value reported last
+        else:
+            self.highlighted_value = None
+            if self.preview is not None:
+                self.query_one("#pick-preview", Static).update("")
+        count = f"{len(shown)} of {len(self.items)}" if len(ranked) <= MAX_PICK_ROWS else f"first {MAX_PICK_ROWS} of {len(ranked)}"
+        keys = "↑↓ move · enter selects · esc cancels"
+        self.query_one("#pick-hint", Label).update(f"{'type to filter · ' if self.filtered else ''}{keys} · {count}")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        event.stop()
+        self.query_text = event.value
+        self.refresh_rows()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()  # otherwise MinimalTui.on_input_submitted sends it as a message
+        rows = self.query_one(OptionList)
+        if rows.highlighted is not None and rows.highlighted < len(self.listed):
+            self.dismiss(self.listed[rows.highlighted])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        if event.option_index < len(self.listed):
+            self.dismiss(self.listed[event.option_index])
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        event.stop()
+        if event.option_index >= len(self.listed):
+            return
+        value = self.listed[event.option_index]
+        if value == self.highlighted_value:
+            return
+        self.highlighted_value = value
+        if self.preview is not None:
+            try:
+                text = self.preview(value)
+            except Exception as e:
+                text = f"(preview failed: {e})"
+            self.query_one("#pick-preview", Static).update(str(text))
+        if self.on_highlight is not None:
+            try:
+                self.on_highlight(value)
+            except Exception as e:
+                if not self.callback_failed:  # once: the next row would fail the same way
+                    self.callback_failed = True
+                    self.app.notify(f"pick: on_highlight failed: {e}", severity="error", markup=False)
+
+    def action_move(self, action: str) -> None:
+        getattr(self.query_one(OptionList), f"action_{action}")()
+
+
+class OverlayScreen(DialogScreen):
+    """Read-only, scrollable text in a box over the transcript; esc or ``q`` closes it (dismisses with ``None``)."""
+
+    DEFAULT_CSS = """
+    OverlayScreen > Vertical { width: 90%; max-width: 120; }
+    OverlayScreen #overlay-body { height: auto; max-height: 70vh; background: $surface; }
+    OverlayScreen #overlay-body:focus { background-tint: $foreground 0%; }
+    """
+
+    HINT = "↑↓ pgup/pgdn scroll · esc closes"
+    BINDINGS = [
+        Binding("q", "cancel", "Close", show=False),
+        Binding("j", "scroll(1)", "Down", show=False),
+        Binding("k", "scroll(-1)", "Up", show=False),
+        Binding("space", "scroll_page(1)", "Page down", show=False),
+        Binding("b", "scroll_page(-1)", "Page up", show=False),
+    ]
+
+    def __init__(self, heading: str, content: Content | str) -> None:
+        super().__init__(heading)
+        self.content = content
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            if self.heading:
+                yield Label(self.heading, classes="title", markup=False)
+            with VerticalScroll(id="overlay-body"):
+                yield Static(self.content, markup=False) if isinstance(self.content, str) else Static(self.content)
+            yield Label(self.HINT, classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#overlay-body").focus()
+
+    def action_scroll(self, step: int) -> None:
+        body = self.query_one("#overlay-body", VerticalScroll)
+        if step > 0:
+            body.scroll_down(animate=False)
+        else:
+            body.scroll_up(animate=False)
+
+    def action_scroll_page(self, step: int) -> None:
+        body = self.query_one("#overlay-body", VerticalScroll)
+        if step > 0:
+            body.scroll_page_down(animate=False)
+        else:
+            body.scroll_page_up(animate=False)

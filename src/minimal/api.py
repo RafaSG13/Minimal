@@ -20,7 +20,7 @@ from minimal import API_VERSION, __version__
 from minimal.config import REASONING_EFFORTS
 from minimal.core.agent import USER_DENIED
 from minimal.core.agents import AGENT_STATUSES, MAIN_AGENT, AgentInfo, AgentResult, UsageTotals
-from minimal.core.context import UI, Context, ContextSettings
+from minimal.core.context import UI, Context, ContextSettings, Transcript
 from minimal.core.git import GitInfo
 from minimal.extensions.facade import (
     AfterResponseEvent,
@@ -87,7 +87,7 @@ __all__ = [
     "ModeChangeEvent", "ModeSpec", "PanelSpec", "PromptText", "Provider",
     "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
     "SettingsSpec", "ShutdownEvent", "ThemeChangeEvent", "ThemeInfo", "Tool",
-    "ToolCallEvent", "ToolResultEvent", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "UsageTotals",
+    "ToolCallEvent", "ToolResultEvent", "Transcript", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "UsageTotals",
     "__version__",
     "glob_regex", "glyphs", "image_block", "logo_content", "normalize_key", "openai_compatible", "result_text", "styled_line", "styled_lines", "theme",
 ]  # fmt: skip
