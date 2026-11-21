@@ -22,6 +22,7 @@ from minimal.core.agent import USER_DENIED
 from minimal.core.agents import AGENT_STATUSES, MAIN_AGENT, AgentInfo, AgentResult, UsageTotals
 from minimal.core.context import UI, Context, ContextSettings, Transcript
 from minimal.core.git import GitInfo
+from minimal.core.session import SessionInfo
 from minimal.extensions.facade import (
     AfterResponseEvent,
     AgentEndEvent,
@@ -29,6 +30,7 @@ from minimal.extensions.facade import (
     BeforeRequestEvent,
     Extension,
     ModeChangeEvent,
+    NotifyEvent,
     ProviderErrorEvent,
     SessionStartEvent,
     SessionSwitchEvent,
@@ -84,8 +86,8 @@ __all__ = [
     "THEME_COLORS", "UI", "USER_DENIED", "WIDGET_AREAS",
     "AfterResponseEvent", "AgentEndEvent", "AgentInfo", "AgentResult", "AgentStartEvent", "AnthropicProvider",
     "BeforeRequestEvent", "Context", "ContextSettings", "CssSpec", "Extension", "GitInfo", "KeyInfo", "KeybindingSpec", "LogoSpec",
-    "ModeChangeEvent", "ModeSpec", "PanelSpec", "PromptText", "Provider",
-    "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionStartEvent", "SessionSwitchEvent",
+    "ModeChangeEvent", "ModeSpec", "NotifyEvent", "PanelSpec", "PromptText", "Provider",
+    "ProviderErrorEvent", "ProviderSpec", "RendererSpec", "Reply", "SessionInfo", "SessionStartEvent", "SessionSwitchEvent",
     "SettingsSpec", "ShutdownEvent", "ThemeChangeEvent", "ThemeInfo", "Tool",
     "ToolCallEvent", "ToolResultEvent", "Transcript", "TurnEndEvent", "TurnInterrupted", "TurnStartEvent", "Usage", "UsageTotals",
     "__version__",
