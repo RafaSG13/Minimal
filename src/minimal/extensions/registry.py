@@ -73,10 +73,13 @@ import sys
 import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from minimal import config
 from minimal.providers.base import Provider, ProviderSpec
+
+if TYPE_CHECKING:
+    from minimal.core.context import Context
 
 ToolRun = Callable[[dict, Any], Any]
 """Tool implementation: ``run(input, ctx) -> str``. Raise to report an error. It may return a list of ``text`` and
@@ -533,8 +536,12 @@ class CssSpec:
         return f"{self.ext}:{self.name}" if self.ext else self.name
 
 
-SETTING_SCHEMA_KEYS = ("description", "enum", "min", "max")
-"""The keys of one entry of ``declare_settings``'s ``schema`` (API 2.3)."""
+SETTING_SCHEMA_KEYS = ("description", "enum", "min", "max", "merge")
+"""The keys of one entry of ``declare_settings``'s ``schema`` (API 2.3; ``merge`` API 2.4)."""
+
+SETTING_MERGES = ("replace", "deep")
+"""Values of a schema entry's ``merge``: ``replace`` (the default) lets the highest settings layer's value win; ``deep``
+merges object values of every layer key by key (API 2.4)."""
 
 
 def setting_matches(default: object, value: object) -> bool:
@@ -584,6 +591,11 @@ def check_schema(defaults: Mapping[str, Any], schema: Mapping[str, Any]) -> None
                 raise ValueError(f"{what}: enum must be a non-empty list")
             if not all(setting_matches(default, option) for option in options):
                 raise ValueError(f"{what}: every enum value must be {type(default).__name__}, like the default")
+        if "merge" in entry:
+            if entry["merge"] not in SETTING_MERGES:
+                raise ValueError(f"{what}: merge must be one of {', '.join(SETTING_MERGES)}")
+            if entry["merge"] == "deep" and not isinstance(default, dict):
+                raise ValueError(f"{what}: merge 'deep' needs an object setting; '{key}' is {type(default).__name__}")
         numeric = isinstance(default, (int, float)) and not isinstance(default, bool)
         for bound in ("min", "max"):
             if bound in entry:
@@ -605,7 +617,7 @@ class SettingsSpec:
     Attributes:
         ext: The extension's id.
         defaults: Every setting and its default.
-        schema: Each documented setting's ``description``, ``enum``, ``min`` and ``max`` (only the keys it gave).
+        schema: Each documented setting's ``description``, ``enum``, ``min``, ``max`` and ``merge`` (only the keys it gave).
         values: The effective values: the defaults with the user's valid values over them.
     """
 
@@ -784,6 +796,10 @@ class Registry:
         keybindings: Global keys extensions bound, by key (API 2.3).
         css: Stylesheets extensions added for the terminal UI, by ``<extension id>:<name>`` (API 2.3).
         declared_settings: What each extension declared with ``declare_settings``, by extension id (API 2.3).
+        problems: Non-fatal problems extensions reported with ``Extension.report_problem`` during the last load, as
+            ``"<extension id>: <text>"`` (API 2.4).
+        context: The app's ``ctx`` that ``Extension.ctx`` hands out once ``register`` has returned; ``None`` when no app
+            owns the registry (``minimal ext check``), and kept across :meth:`reset` (API 2.4).
     """
 
     def __init__(self) -> None:
@@ -803,6 +819,8 @@ class Registry:
         self.keybindings: dict[str, KeybindingSpec] = {}
         self.css: dict[str, CssSpec] = {}
         self.declared_settings: dict[str, SettingsSpec] = {}
+        self.problems: list[str] = []
+        self.context: Context | None = None
         self._placed: dict[tuple[str, str], int] = {}
         self._disposers: list[Callable[[], Any]] = []
 
@@ -828,6 +846,7 @@ class Registry:
         self.keybindings.clear()
         self.css.clear()
         self.declared_settings.clear()
+        self.problems.clear()
         self._placed.clear()
         self._handlers.clear()
         self._disposers.clear()

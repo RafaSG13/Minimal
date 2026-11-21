@@ -250,6 +250,8 @@ class MinimalTui(TextualApp):
             await pending
         for e in self.host.extension_errors:
             self.show_error(f"[extension] could not load {e}")
+        for warning in self.host.extension_problems:
+            self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" [extension] {warning}"), classes="output"))
         for problem in problems:
             self.show_error(f"[ui] {problem}")
         if notice := self.host.untrusted_notice():

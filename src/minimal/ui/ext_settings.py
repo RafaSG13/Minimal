@@ -93,12 +93,10 @@ def _parse(text: str, default: Any) -> Any:
 
 
 def _save(app: App, spec: SettingsSpec, key: str, value: Any) -> None:
-    path = ("extensions", "settings", spec.ext, key)
     try:
-        config.update_global({path: value})
+        app.context.settings.update({("extensions", "settings", spec.ext, key): value})
     except (OSError, ValueError) as e:
         raise ValueError(f"not saved: {e}") from None
-    app.reload_extensions()
 
 
 def _project_note(app: App, ext: str, key: str) -> None:

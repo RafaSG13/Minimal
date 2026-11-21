@@ -63,8 +63,12 @@ class TuiFrontend:
         """The colour themes on offer and the current one (the TUI's own: they are not part of the Frontend protocol)."""
         return list(self.tui.available_themes), self.tui.theme
 
-    def set_theme(self, name: str) -> None:
+    def set_theme(self, name: str) -> bool:
+        """Switch to theme ``name`` if the UI offers it; ``False`` if not. The UI fires ``theme_change`` when its colours changed."""
+        if name not in self.tui.available_themes:
+            return False
         self._on_ui(setattr, self.tui, "theme", name)
+        return True
 
     def copy_text(self, text: str) -> bool:
         """Put ``text`` on the clipboard through the terminal (OSC 52); ``/copy`` calls it. The TUI's own, like :meth:`themes`."""

@@ -32,7 +32,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `permissions.allow`   | list of rules                | all          | concatenated; project/local only once trusted                        |
 | `permissions.deny`    | list of rules                | all          | concatenated                                                         |
 | `extensions.disabled` | list of extension ids        | all          | union; project/local only once trusted                               |
-| `extensions.settings` | object: extension id → object | all         | per id, each layer's object updates the lower ones; project/local only once trusted |
+| `extensions.settings` | object: extension id → object | all         | per id, each layer's object updates the lower ones (a key the extension declared with `"merge": "deep"` is merged key by key too); project/local only once trusted |
 | `ui.composer_max_lines` | positive integer           | all          | highest layer wins; default `8`                                      |
 | `ui.history_size`     | integer ≥ 0                  | all          | highest layer wins; default `500`                                    |
 | `ui.mention_max_chars` | positive integer            | all          | highest layer wins; default `20000`                                  |
@@ -166,7 +166,7 @@ prints each file with its scope (or `(not found)`), then one line per effective 
 /ui collapse <name>   /ui expand <name>   collapse a collapsible widget or panel to its heading, or open it
 ```
 
-`/ui` prints the sidebar and density, then every area with its widgets and panels in order, the two sides of the status line with their segments in order (each marked `[extension]` or `[built-in]`, and `user: area order` for what your settings changed), what is hidden, the keys with the actions they run, and the problems found in the `ui.*` settings. The other forms save to `~/.minimal/settings.json` (only the keys they change, atomically, mode 0600) and reload, so the change shows at once. An unknown name lists the valid ones. `reset` without a name clears `ui.sidebar`, `ui.density`, `ui.widgets` and `ui.status`, not `ui.keys`, `ui.css`, the glyph or the placeholder. If a project or local file sets the same `ui` key it beats the global one, and `/ui` says so.
+`/ui` prints the sidebar and density, then every area with its widgets and panels in order, the two sides of the status line with their segments in order (each marked `[extension]` or `[built-in]`, and `user: area order` for what your settings changed), what is hidden, the keys with the actions they run, and the problems found in the `ui.*` settings. The other forms save to `~/.minimal/settings.json` (only the keys they change, atomically, mode 0600) and reload, through the same `ctx.settings.update` an extension uses ([Settings access](extensions.md#settings-access)), so the change shows at once. An unknown name lists the valid ones. `reset` without a name clears `ui.sidebar`, `ui.density`, `ui.widgets` and `ui.status`, not `ui.keys`, `ui.css`, the glyph or the placeholder. If a project or local file sets the same `ui` key it beats the global one, and `/ui` says so.
 
 ## Examples
 

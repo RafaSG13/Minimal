@@ -124,6 +124,11 @@ class Host:
         """Failures of the last reload (extensions that did not load, settings errors)."""
         return list(self._app.extension_errors)
 
+    @property
+    def extension_problems(self) -> list[str]:
+        """Non-fatal problems extensions reported with ``report_problem`` at the last reload (API 2.4)."""
+        return list(self._app.extension_problems)
+
     def untrusted_notice(self) -> str | None:
         """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""
         return self._app.untrusted_notice()

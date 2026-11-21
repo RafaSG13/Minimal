@@ -33,7 +33,6 @@ from minimal.core.session import (
     user_prompts,
 )
 from minimal.extensions import audit, loader, marketplace
-from minimal.extensions.loader import reload_summary
 from minimal.extensions.metadata import read_metadata
 from minimal.extensions.registry import MODE_OFF, STATUS_SIDES, WIDGET_AREAS, CommandComplete, Registry
 from minimal.providers import login_provider
@@ -283,7 +282,7 @@ def _trust(args: str, ctx: Context) -> None:
     if app.is_trusted(project):
         print(f"The project extensions and settings in {project.root} are already trusted.")
         if app.untrusted is not None:  # trusted elsewhere since the last reload
-            print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+            print(app.reload_summary())
         return
     print(audit.format_report(project))
     if not app.frontend.ask(
@@ -292,7 +291,7 @@ def _trust(args: str, ctx: Context) -> None:
         print("Not trusted: the project extensions and settings stay unapplied.")
         return
     config.save_trusted(project.key, project.digest)
-    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+    print(app.reload_summary())
 
 
 _SCALARS = (
@@ -430,8 +429,8 @@ def _ui_entry(entries: dict, name: str, **fields: object) -> None:
         entries.pop(name, None)
 
 
-def _ui_change(app: App, words: list[str]) -> str:
-    """The ``/ui`` subcommand ``words`` as changes to the global ``ui.*`` settings; returns what to tell the user."""
+def _ui_change(app: App, words: list[str]) -> tuple[str, dict]:
+    """The ``/ui`` subcommand ``words`` as changes to the global ``ui.*`` settings; returns what to tell the user and the changes."""
     verb, args = words[0], words[1:]
     glob = config.load_global()
     widgets, status = dict(glob.get("ui.widgets", {})), dict(glob.get("ui.status", {}))
@@ -491,11 +490,7 @@ def _ui_change(app: App, words: list[str]) -> str:
         raise ValueError(f"usage: {UI_USAGE}")
     if verb in ("hide", "show", "move", "title", "collapse", "expand", "reset"):
         changes["ui.widgets"], changes["ui.status"] = widgets or None, status or None
-    try:
-        config.update_global(changes)
-    except (OSError, ValueError) as e:
-        raise ValueError(f"not saved: {e}") from None
-    return done
+    return done, changes
 
 
 def _ui(args: str, ctx: Context) -> None:
@@ -504,8 +499,11 @@ def _ui(args: str, ctx: Context) -> None:
     if not words:
         print(_ui_report(app))
         return
-    done = _ui_change(app, words)
-    app.reload_extensions()
+    done, changes = _ui_change(app, words)
+    try:
+        ctx.settings.update(changes)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"not saved: {e}") from None
     print(f"UI: {done} (saved in {config.SETTINGS_FILE})")
     project = [
         layer.scope for layer in app.settings.layers if layer.scope != "global" and any(k.startswith("ui.") for k in layer.data)
@@ -554,6 +552,8 @@ def _ext(args: str, ctx: Context) -> None:
             print(f"{where:<8} {category:<10} {path.stem:<20} {path} {disabled} {_ext_relations(path)}".rstrip())
         if not rows:
             print("(none)")
+        for problem in app.extension_problems:
+            print(f"warning  {problem}")
     elif words[0] == "search" and 2 <= len(words) <= 3:
         lines = marketplace.search_lines(words[1], words[2] if len(words) > 2 else None)
         print("\n".join(lines) if lines else "No extensions found.")
@@ -722,7 +722,7 @@ def _ext_picker(app: App) -> None:
     for e in to_remove:
         for s in e.installed:
             print(f"Removed {marketplace.uninstall(e.listing.name, s, app.cwd, category)}")
-    print(reload_summary(*app.reload_extensions(), app.untrusted_notice()))
+    print(app.reload_summary())
 
 
 def _complete_word(args: str, options: Iterable[str]) -> list[str]:

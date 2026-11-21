@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- `minimal.ctx` (API 2.4): the app's `Context` once `register` has returned, so timer and watcher threads of an extension
+  can act without waiting for a widget or command, also after `/reload`; `None` while `register` runs and under
+  `minimal ext check`. `ctx.run_command` no longer clears the user's interrupt flag while a turn or another command
+  runs (it still does when idle); `ctx.queue_user_message("/cmd")` runs a command after the turn.
+- `ctx.settings` (API 2.4): `get(key, default)` reads the merged effective value of any dotted settings key,
+  `layers(key)` says which files set it, and `update(changes, *, scope="global"|"project"|"local", apply=True)` /
+  `unset(key, *, scope)` validate and write keys atomically and reload once. Project and local scopes refuse the
+  global-only keys, and the trust-gated keys while the project is untrusted. `/ui` and `/ext settings` now use the same
+  writer (`config.update_settings`), which also validates the values they write.
+- `ctx.set_theme(name, *, save=False)` switches the terminal UI's colour theme like `/theme <name>` (firing
+  `theme_change`), returns `False` for an unknown theme or in the plain terminal, and can save it as the `theme`
+  setting. Frontends implement `set_theme(name) -> bool`.
+- `minimal.api.normalize_key` (and `ContextSettings`, `SETTING_MERGES`) are exported for extensions that validate
+  user-chosen keys.
+- `declare_settings` schema entries take `"merge": "deep"` for `dict` settings: the global, project and local layers
+  are merged key by key instead of the highest replacing the others.
+- `minimal.report_problem(text)` records a non-fatal problem of an extension: the reload summary and the terminal UI show
+  it as a warning, `/ext list` prints it and `minimal ext check` prints a `WARN` line that does not fail the exit status.
+
 ## 0.9.0
 
 ### Added

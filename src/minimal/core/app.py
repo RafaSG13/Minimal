@@ -36,6 +36,7 @@ from minimal.extensions.loader import (
     load_extensions,
     project_extensions_dir,
     read_project_snapshot,
+    reload_summary,
 )
 from minimal.extensions import palette
 from minimal.extensions.registry import (
@@ -309,6 +310,10 @@ class Frontend(Protocol):
     def theme_name(self) -> str | None:
         """The name of the colour theme the frontend shows (``ctx.theme``); ``None`` if it has none. API 2.3."""
 
+    def set_theme(self, name: str) -> bool:
+        """Switch to the colour theme ``name`` (``ctx.set_theme``); return whether the frontend has it and switched.
+        API 2.4. The frontend announces the change (:meth:`App.theme_changed`) like any other switch."""
+
     def progress(self, text: str | None) -> None:
         """Transient progress text of the tool or command running (:meth:`~minimal.core.context.Context.progress`):
         show it next to the working indicator; ``None`` clears it. May be called from any thread, often."""
@@ -438,6 +443,10 @@ class ConsoleFrontend:
         """A console has no theme of its own."""
         return None
 
+    def set_theme(self, name: str) -> bool:
+        """A console has no themes: ``False``."""
+        return False
+
     def progress(self, text: str | None) -> None:
         """A dimmed line on stderr (only when it is a terminal) each time the text changes; ``None`` only forgets it."""
         if text is not None and text != self._progress and sys.stderr.isatty():
@@ -506,6 +515,7 @@ class App:
         self.model = ""
         self.extensions: list[Path] = []
         self.extension_errors: list[str] = []
+        self.extension_problems: list[str] = []
         self.untrusted: ProjectSnapshot | None = None
         self.cancelled = CancelEvent()
         self.agents = Agents(self.cancelled)
@@ -516,6 +526,9 @@ class App:
         self.setting_errors: list[str] = []
         self.queued: collections.deque[str] = collections.deque()
         self.context = Context(self)
+        self.registry.context = self.context
+        self._commands_running = 0
+        self._commands_lock = threading.Lock()
         self.permissions = Permissions(self.settings)
         self.usage = UsageMeter()
         self.truncations = 0
@@ -598,10 +611,16 @@ class App:
             errors.append(read_error)
         errors.extend(setting_errors)
         self.extensions, self.extension_errors = loaded, errors
+        self.extension_problems = list(self.registry.problems)
         self.untrusted = snapshot if snapshot is not None and not trusted else None
         self.frontend.reloaded()
         self._validate_mode()
         return loaded, errors
+
+    def reload_summary(self) -> str:
+        """:meth:`reload_extensions`, described for the user or the model (:func:`~minimal.extensions.loader.reload_summary`)."""
+        loaded, errors = self.reload_extensions()
+        return reload_summary(loaded, errors, self.untrusted_notice(), self.extension_problems)
 
     def untrusted_notice(self) -> str | None:
         """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""
@@ -712,8 +731,10 @@ class App:
         """Parse and run a ``/name args`` line; ``builtin`` runs the built-in even if an extension replaced it.
 
         Every command gets the :class:`~minimal.core.context.Context`.
-        The interrupt flag is cleared first: it may be left over from an interrupted turn. Unknown
-        commands and errors raised by a command are reported, not raised.
+        The interrupt flag is cleared first when nothing is running (no turn, no other command): it may be left over
+        from an interrupted turn. A call made while a turn or command runs, e.g. by an extension's timer thread through
+        ``ctx.run_command``, leaves it alone, so it cannot swallow the user's Esc. Unknown commands and errors raised by
+        a command are reported, not raised.
 
         Raises:
             ExitRepl: when the command asks to quit.
@@ -723,13 +744,20 @@ class App:
         if cmd is None:
             print(f"Unknown command: /{name}")
             return
-        self.cancelled.clear()
+        with self._commands_lock:
+            idle = self._commands_running == 0 and not self.agents.main_running()
+            self._commands_running += 1
+        if idle:
+            self.cancelled.clear()
         try:
             cmd.run(args.strip(), self.context)
         except ExitRepl:
             raise
         except Exception as e:
             print(f"Error in /{name}: {e}", file=sys.stderr)
+        finally:
+            with self._commands_lock:
+                self._commands_running -= 1
 
     @property
     def messages(self) -> list[dict]:
@@ -760,6 +788,23 @@ class App:
         name = self.frontend.theme_name() or self.settings.theme or palette.DEFAULT
         spec = self.registry.themes.get(name) if name != palette.DEFAULT else None
         return palette.theme_info(spec or palette.BUILTIN)
+
+    def set_theme(self, name: str, *, save: bool = False) -> bool:
+        """Switch the frontend to colour theme ``name`` (``ctx.set_theme``); ``False``, with nothing changed, if it has no such theme.
+
+        ``save`` also stores it as the ``theme`` setting in ``~/.minimal/settings.json``.
+
+        Raises:
+            ValueError: if ``save`` is set and the settings file cannot be written.
+        """
+        if not self.frontend.set_theme(name):
+            return False
+        if save:
+            try:
+                config.update_global({"theme": name})
+            except OSError as e:
+                raise ValueError(f"theme {name!r} is set but not saved: {e}") from None
+        return True
 
     def theme_changed(self) -> None:
         """Fire ``theme_change`` for the theme the frontend shows now."""

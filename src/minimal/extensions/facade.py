@@ -27,7 +27,7 @@ from __future__ import annotations
 import types
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from minimal import config
 from minimal.extensions.metadata import Metadata
@@ -46,6 +46,9 @@ from minimal.extensions.registry import (
     setting_matches,
 )
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage
+
+if TYPE_CHECKING:
+    from minimal.core.context import Context
 
 
 class ToolCallEvent(TypedDict):
@@ -247,10 +250,47 @@ class Extension:
         self._id, self._path, self._scope, self._metadata = id, path, scope, metadata
         self._cwd = cwd
         self._registry = registry
+        self._all_settings = settings
         self._user_settings = settings.extension_settings(id)
         self._errors = errors
         self._settings: Mapping[str, Any] = types.MappingProxyType({})
         self._declared = False
+        self._registered = False
+
+    def _finish_register(self) -> None:
+        """Called by the loader when ``register`` returned: :attr:`ctx` is available from now on."""
+        self._registered = True
+
+    @property
+    def ctx(self) -> Context | None:
+        """The app's :class:`~minimal.core.context.Context`, for code that runs outside any tool, command, event or
+        widget call: a timer or watcher thread started in ``register``, a subscription, a ``Panel`` callback. API 2.4.
+
+        ``None`` while ``register`` runs (the extensions are still loading: a thread that starts there should read
+        ``minimal.ctx`` when it fires, not at start) and always under ``minimal ext check`` and in any registry that no app
+        owns. After ``register`` returned it is the same live ``ctx`` as commands get (``agent_id`` ``"main"``), also on
+        the extension object a ``/reload`` creates. An old object's thread, if :meth:`on_dispose` did not stop it, would
+        keep reaching the app through it. It is safe from any thread, but calling ``ctx.run_command`` or
+        ``ctx.settings.update`` there acts on the app live; see their notes.
+        """
+        return self._registry.context if self._registered else None
+
+    def report_problem(self, text: str) -> None:
+        """Record a non-fatal problem of this extension: it still loads. API 2.4.
+
+        For settings or an environment the extension can work around (two settings that contradict each other, a missing
+        optional binary, a value it clamped). The reload summary and the terminal UI show it as a warning
+        (``Warning: <id>: <text>``), ``/ext list`` lists it and ``minimal ext check`` prints a ``WARN`` line for it
+        without failing the exit status. Unlike an exception from ``register`` it does not mark the extension as failed
+        (``reload_extensions`` does not raise for it), and unlike a setting rejected by ``declare_settings`` it is yours
+        to word.
+
+        Raises:
+            ValueError: if ``text`` is empty.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("report_problem: text must be a non-empty string")
+        self._registry.problems.append(f"{self._id}: {' '.join(text.split())}")
 
     @property
     def id(self) -> str:
@@ -591,6 +631,13 @@ class Extension:
         range is a collected load error naming ``extensions.settings.<id>.<key>``, and the default is used. The
         descriptions, enums and ranges are shown by ``/ext settings``, which also edits the values.
 
+        ``"merge"`` (API 2.4) in an entry of a setting whose default is a ``dict``: ``"replace"`` (the default) lets the highest
+        settings layer that sets the key replace the lower layers' value, as for every setting; ``"deep"`` merges the
+        objects of the global, project and local layers key by key (nested objects too; anything else, lists included,
+        is replaced by the higher layer), so a project can add one entry to a user's table. The trust rules
+        for a project's ``extensions.settings`` apply as before. To refuse a combination of settings that is valid one by one,
+        check it after this call and :meth:`report_problem` (the extension keeps loading) or raise (it fails).
+
         Raises:
             ValueError: if called twice, or ``schema`` is malformed: it names a key that is not in ``defaults``, an
                 entry is not an object of those fields, or a default does not satisfy its own entry
@@ -601,8 +648,10 @@ class Extension:
         schema = {key: dict(entry) if isinstance(entry, Mapping) else entry for key, entry in (schema or {}).items()}
         check_schema(defaults, schema)
         self._declared = True
+        deep = {key for key, entry in schema.items() if entry.get("merge") == "deep"}
+        user = self._all_settings.extension_settings(self._id, deep) if deep else self._user_settings
         values = dict(defaults)
-        for key, value in self._user_settings.items():
+        for key, value in user.items():
             if key not in defaults:
                 self._errors.append(f"{self._id}: unknown setting '{key}' (declared: {', '.join(defaults)})")
             elif key in schema:

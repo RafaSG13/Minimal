@@ -15,13 +15,13 @@ import types
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from minimal import config
 from minimal.core import agent
 from minimal.core.agents import MAIN_AGENT, AgentInfo, AgentResult, AgentRun, UsageTotals
 from minimal.core.git import GitInfo
 from minimal.core.layout import resolve_keys
 from minimal.core.session import list_sessions, new_id, open_session
-from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import KeyInfo, ModeSpec, ThemeInfo, Tool, TurnInterrupted
+from minimal.extensions.registry import KeyInfo, ModeSpec, ThemeInfo, Tool, TurnInterrupted, check_setting
 from minimal.providers.base import Reply, result_text
 
 if TYPE_CHECKING:
@@ -55,17 +55,114 @@ class UI:
         return self._app.frontend.ask_text(title)
 
 
+class ContextSettings:
+    """Read and write minimal's settings from an extension: ``ctx.settings``. API 2.4.
+
+    Keys are dotted as in ``settings.json`` (``ui.sidebar``, ``reasoning_effort``, ``permissions.allow``,
+    ``extensions.settings.tui_tools.tools``); see ``docs/settings.md`` for the keys and how layers merge. Reads see the
+    settings as the last reload loaded them; a write goes to one file and, by default, reloads once so it takes
+    effect (the terminal UI re-lays itself out, as after ``/ui``).
+    """
+
+    def __init__(self, app: App) -> None:
+        self._app = app
+
+    def _deep(self) -> dict[str, set[str]]:
+        return {
+            ext: {key for key, entry in spec.schema.items() if entry.get("merge") == "deep"}
+            for ext, spec in self._app.registry.declared_settings.items()
+        }
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """The effective value of ``key``, with every settings layer merged the way minimal reads them (a project's
+        trust-gated keys only once the project is trusted); ``default`` if no layer sets it.
+
+        Lists such as ``permissions.allow`` are the layers' lists joined; ``ui.widgets`` and friends are merged entry by
+        entry; ``extensions.settings.<id>.<name>`` honours the extension's ``"merge": "deep"``. The value is a copy.
+        Settings an extension declared with ``declare_settings`` and the user did not set read as ``default``: use
+        ``minimal.settings`` for those values with their defaults.
+
+        Raises:
+            ValueError: if ``key`` is not a setting.
+        """
+        return self._app.settings.get(key, default, deep=self._deep())
+
+    def layers(self, key: str) -> dict[str, Any]:
+        """Which settings files set ``key``: ``{scope: value}`` for the ``global``, ``project`` and ``local`` layers that
+        set it and apply, lowest first (the last one wins for a scalar); ``{}`` if none does. The values are the
+        files' own, not merged.
+
+        Raises:
+            ValueError: if ``key`` is not a setting.
+        """
+        return self._app.settings.layers_setting(key)
+
+    def update(
+        self, changes: Mapping[str | tuple[str, ...], Any], *, scope: str = "global", apply: bool = True
+    ) -> None:
+        """Set settings in the ``scope`` file and, with ``apply``, reload once so they take effect; ``None`` as a value deletes the key.
+
+        All changes are checked first and written together atomically (``config.write_private``): if any is refused,
+        nothing is written. A key may be a tuple of names for one that contains a dot. Pass ``apply=False`` to batch
+        several writes and reload once yourself with :meth:`Context.reload`.
+
+        The same rules as when settings are loaded apply: the value must have the type ``docs/settings.md`` gives
+        (and, for ``extensions.settings.<id>.<name>`` of a loaded extension, satisfy its ``declare_settings`` schema),
+        ``marketplaces``, ``prompt.base`` and ``ui.css`` can only be set in the ``global`` scope, and the trust-gated
+        keys (``permissions.allow``, ``extensions.disabled``, ``extensions.settings``) can be written to the ``project``
+        or ``local`` scope only while the project's settings are trusted. Writing one changes what ``/trust`` reviewed,
+        so the reload leaves the project's trust-gated settings and extensions unapplied until the user runs ``/trust``
+        again (the reload's notice says so). A project file is the repository's: ``project`` scope writes
+        ``.minimal/settings.json`` there.
+
+        Runs on whichever thread calls it, reload included: from a thread outside a turn it reloads the registry live.
+
+        Args:
+            changes: Dotted key (or tuple of names) -> value.
+            scope: ``"global"`` (``~/.minimal/settings.json``), ``"project"`` or ``"local"``.
+            apply: Reload after writing.
+
+        Raises:
+            ValueError: for an unknown scope or key, an invalid value (the message says what is expected), a key the
+                scope may not hold, or a settings file that is not valid JSON (it is left untouched).
+            OSError: if the file cannot be written.
+        """
+        for key, value in changes.items():
+            self._check_extension_value(key, value)
+        config.update_settings(changes, scope=scope, cwd=self._app.cwd, trusted=self._app.settings.trusted)
+        if apply:
+            self._app.reload_extensions()
+
+    def unset(self, key: str | tuple[str, ...], *, scope: str = "global", apply: bool = True) -> None:
+        """Remove ``key`` from the ``scope`` file (``update({key: None}, ...)``): the lower layers' value, or the default, applies again."""
+        self.update({key: None}, scope=scope, apply=apply)
+
+    def _check_extension_value(self, key: str | tuple[str, ...], value: Any) -> None:
+        """Check ``extensions.settings.<id>.<name>`` against the schema of the loaded extension ``<id>``."""
+        base, rest = config.split_key(key)
+        if base != "extensions.settings" or len(rest) != 2 or value is None:
+            return
+        spec = self._app.registry.declared_settings.get(rest[0])
+        if spec is None or rest[1] not in spec.defaults:
+            return
+        problem = check_setting(spec.defaults[rest[1]], value, spec.schema.get(rest[1]))
+        if problem:
+            raise ValueError(f"extensions.settings.{rest[0]}.{rest[1]} {problem}, got {value!r}")
+
+
 class Context:
     """The ``ctx`` of tools, commands, events and widgets.
 
     Attributes:
         ui: Questions to the user (:class:`UI`).
+        settings: Read and write the settings, layers merged (:class:`ContextSettings`; API 2.4).
     """
 
     def __init__(self, app: App, run: AgentRun | None = None) -> None:
         self._app = app
         self._run = run
         self.ui = UI(app)
+        self.settings = ContextSettings(app)
 
     @property
     def agent_id(self) -> str:
@@ -140,6 +237,19 @@ class Context:
         The terminal UI's theme (the built-in ``minimal`` one when no UI shows themes); read it again after
         ``theme_change``. Use it for colours a style string cannot name: ``ctx.theme.colors["accent"]``."""
         return self._app.theme_info()
+
+    def set_theme(self, name: str, *, save: bool = False) -> bool:
+        """Switch the terminal UI to colour theme ``name`` (what ``/theme <name>`` does); return whether it did. API 2.4.
+
+        ``theme_change`` fires as for any switch (from the UI thread, soon after this returns), and the UI redraws what
+        extensions show. An unknown name, or a frontend without themes (the console), returns ``False`` without a message:
+        ``ctx.theme.name`` is the current one and ``/theme`` lists the installed ones. ``save`` also stores ``name`` as the
+        ``theme`` setting in ``~/.minimal/settings.json`` (no reload).
+
+        Raises:
+            ValueError: if ``save`` is set and the settings file cannot be written (the theme is switched anyway).
+        """
+        return self._app.set_theme(name, save=save)
 
     def invalidate(self) -> None:
         """Ask the UI to redraw panels, status segments and widgets now. API 2.3.
@@ -510,7 +620,7 @@ class Context:
 
     def reload(self) -> str:
         """Reload every extension from disk; return the summary (loaded, failed, not trusted)."""
-        return reload_summary(*self._app.reload_extensions(), self._app.untrusted_notice())
+        return self._app.reload_summary()
 
     def commands(self) -> dict[str, str]:
         """Every slash command name (without ``/``) and its description: built-in and extension commands,
@@ -522,6 +632,10 @@ class Context:
 
         ``builtin`` runs the built-in command even when an extension replaced it, so a replacement can
         hand over to the original. Errors are reported, not raised.
+
+        The user's interrupt flag (:attr:`cancelled`) is cleared first only when no turn or other command is running
+        (API 2.4), so a timer thread calling this cannot swallow the user's Esc. To run a command after the turn in
+        progress instead, :meth:`queue_user_message` it (``"/name args"``).
         """
         self._app.run_command(line, builtin=builtin)
 
