@@ -284,6 +284,16 @@ class Extension:
         """Every registered tool by name (read-only, live): call ``tools["bash"].run(input, ctx)`` to reuse one."""
         return types.MappingProxyType(self._registry.tools)
 
+    def builtin_commands(self) -> frozenset[str]:
+        """The names (without ``/``) of minimal's own slash commands at this moment: what an extension must not
+        shadow by accident, or must hand over to with ``ctx.run_command(line, builtin=True)``. API 2.4.
+
+        The built-ins are registered before any extension loads, so the answer is complete at ``register`` time,
+        except for the commands only the terminal UI adds (``/theme``): they are there from the first ``/reload`` on.
+        Extension commands are not included; ``ctx.commands()`` lists all at run time.
+        """
+        return frozenset(self._registry.builtin_commands)
+
     def data_dir(self, scope: str = "project") -> Path:
         """A private folder (mode 0700) for this extension's files, outside the repository; created if missing.
 
@@ -390,11 +400,14 @@ class Extension:
         *,
         show: bool = False,
         name: str = "",
+        terminal: bool = False,
     ) -> None:
         """Bind the global key ``key`` (``ctrl+o``, ``alt+x``, ``f5``) to ``run(ctx)``; see :meth:`Registry.register_keybinding`.
 
         ``run`` runs on a worker thread like a slash command, so it may ask the user questions and use ``ctx``;
-        a key is ignored while a turn, a command or a dialog is running. Keys the UI needs
+        with ``terminal=True`` (API 2.4) it runs instead with the interface suspended, on the UI thread, like a
+        ``terminal`` command: for a full-screen program or one that reads the keyboard. A str it returns is shown in
+        the transcript afterwards. A key is ignored while a turn, a command or a dialog is running. Keys the UI needs
         (:data:`~minimal.extensions.registry.RESERVED_KEYS`) are refused. The user can give the binding another
         key with ``ui.keys``, under ``"<extension id>:<name or description>"``. If another extension already bound
         the key, this one replaces it and the reload reports it. API 2.3.
@@ -403,7 +416,7 @@ class Extension:
             ValueError: if ``key`` is not a valid, unreserved key or ``run`` is not callable.
         """
         replaced = self._registry.register_keybinding(
-            key, run, description, show=show, name=name, ext=self._id
+            key, run, description, show=show, name=name, ext=self._id, terminal=terminal
         )
         if replaced is not None:
             who = f"{replaced.ext}'s " if replaced.ext and replaced.ext != self._id else "its own earlier "
@@ -565,13 +578,15 @@ class Extension:
         return decorate
 
     def keybinding(
-        self, key: str, *, description: str = "", show: bool = False, name: str = ""
+        self, key: str, *, description: str = "", show: bool = False, name: str = "", terminal: bool = False
     ) -> Callable[[Callable[[Any], Any]], Callable[[Any], Any]]:
         """Decorator binding the global key ``key`` to ``fn(ctx)``: the description defaults to the first line of its
-        docstring; see :meth:`register_keybinding`. API 2.3."""
+        docstring; see :meth:`register_keybinding`. API 2.3; ``terminal`` API 2.4."""
 
         def decorate(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
-            self.register_keybinding(key, fn, description or _first_line(fn.__doc__), show=show, name=name)
+            self.register_keybinding(
+                key, fn, description or _first_line(fn.__doc__), show=show, name=name, terminal=terminal
+            )
             return fn
 
         return decorate

@@ -44,6 +44,12 @@ class TuiFrontend:
             return None
         return self.tui.call_from_thread(fn, *args)
 
+    def _get(self, fn: Callable[[], Any]) -> Any:
+        """Run ``fn`` on the UI thread and return what it returns (unlike :meth:`_on_ui`, which drops it there)."""
+        if threading.get_ident() == self.tui.ui_thread:
+            return fn()
+        return self.tui.call_from_thread(fn)
+
     def text(self, chunk: str) -> None:
         self._on_ui(self.tui.append_text, chunk)
 
@@ -80,6 +86,23 @@ class TuiFrontend:
 
     def queued(self) -> None:
         self._on_ui(self.tui.submit_queued)
+
+    def draft(self) -> str:
+        return self._get(lambda: self.tui.composer().text)
+
+    def set_draft(self, text: str, append: bool) -> None:
+        self._get(lambda: self.tui.composer().set_draft(text, append))
+
+    def show(self, text: str, kind: str) -> None:
+        """Draw a transcript block; while the interface is suspended for a terminal command it waits for the resume."""
+        if not self.tui.defer_block(text, kind):
+            self._on_ui(self.tui.add_block, text, kind)
+
+    def focus_widget(self, name: str, hold: bool) -> bool:
+        return bool(self._get(lambda: self.tui.focus_ext_widget(name, hold)))
+
+    def focus_composer(self) -> None:
+        self._get(self.tui.focus_composer)
 
     def mode_changed(self) -> None:
         self._on_ui(self.tui._render_status)

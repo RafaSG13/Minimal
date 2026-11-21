@@ -321,6 +321,26 @@ class Frontend(Protocol):
         ``"always"`` is not offered).
         """
 
+    def draft(self) -> str:
+        """The text in the prompt box, not yet sent (``ctx.ui.get_draft()``); ``""`` if the frontend has none. May be
+        called from any thread. API 2.4."""
+
+    def set_draft(self, text: str, append: bool) -> None:
+        """Put ``text`` in the prompt box, replacing what is there, or after it with ``append``; the cursor goes to the
+        end. A frontend without a prompt box ignores it. May be called from any thread. API 2.4."""
+
+    def show(self, text: str, kind: str) -> None:
+        """Add ``text`` to the conversation as a block of ``kind`` (``"output"`` or ``"error"``); a frontend that has
+        suspended itself for a terminal command shows it once it is back. May be called from any thread. API 2.4."""
+
+    def focus_widget(self, name: str, hold: bool) -> bool:
+        """Give the keyboard focus to the widget shown for extension widget ``name`` (or its first focusable part);
+        with ``hold`` the frontend does not move the focus back to the prompt box when a turn or command ends, until
+        the widget goes away or the focus leaves it. Returns whether the widget took it. API 2.4."""
+
+    def focus_composer(self) -> None:
+        """Give the keyboard focus to the prompt box and drop any hold of :meth:`focus_widget`. API 2.4."""
+
 
 class ExitRepl(Exception):
     """Raised by a command (``/exit``) to quit the interactive UI."""
@@ -437,6 +457,24 @@ class ConsoleFrontend:
     def theme_name(self) -> str | None:
         """A console has no theme of its own."""
         return None
+
+    def draft(self) -> str:
+        """A console has no prompt box to read."""
+        return ""
+
+    def set_draft(self, text: str, append: bool) -> None:
+        """A console has no prompt box to fill."""
+
+    def show(self, text: str, kind: str) -> None:
+        """On stdout, or on stderr for ``error``."""
+        print(_visible(text), file=sys.stderr if kind == "error" else sys.stdout, flush=True)
+
+    def focus_widget(self, name: str, hold: bool) -> bool:
+        """A console shows no widgets."""
+        return False
+
+    def focus_composer(self) -> None:
+        """A console has no focus to move."""
 
     def progress(self, text: str | None) -> None:
         """A dimmed line on stderr (only when it is a terminal) each time the text changes; ``None`` only forgets it."""
@@ -713,7 +751,8 @@ class App:
 
         Every command gets the :class:`~minimal.core.context.Context`.
         The interrupt flag is cleared first: it may be left over from an interrupted turn. Unknown
-        commands and errors raised by a command are reported, not raised.
+        commands and errors raised by a command are reported, not raised. What a ``terminal`` command returns, if it
+        is a non-blank str, is shown with :meth:`Frontend.show`: its prints are lost when the interface comes back.
 
         Raises:
             ExitRepl: when the command asks to quit.
@@ -725,7 +764,9 @@ class App:
             return
         self.cancelled.clear()
         try:
-            cmd.run(args.strip(), self.context)
+            result = cmd.run(args.strip(), self.context)
+            if cmd.terminal and isinstance(result, str) and result.strip():
+                self.frontend.show(result, "output")
         except ExitRepl:
             raise
         except Exception as e:

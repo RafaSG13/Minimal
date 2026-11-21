@@ -192,7 +192,9 @@ class Host:
         """Global keys extensions bound (``register_keybinding``), by key. API 2.3.
 
         Bind what :meth:`key_map` returns instead: it applies the user's ``ui.keys``. Run one as ``spec.run(ctx)`` on
-        a worker thread, as for a slash command.
+        a worker thread, as for a slash command; if ``spec.terminal`` is set (API 2.4), run it instead on the UI
+        thread with the interface suspended, like a ``terminal`` command (:meth:`command`), and show a str it
+        returns with ``ctx.show``.
         """
         return types.MappingProxyType(self._app.registry.keybindings)
 

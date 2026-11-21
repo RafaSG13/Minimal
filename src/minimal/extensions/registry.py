@@ -475,6 +475,8 @@ class KeybindingSpec:
         show: List the key in Textual's ``Footer`` widget (an extension widget may use one).
         name: What ``ui.keys`` calls it (default: the description).
         ext: The id of the extension that registered it.
+        terminal: Needs the real terminal: the terminal UI suspends itself and runs ``run`` on its own thread, as for
+            a ``terminal`` command, instead of on a worker thread. API 2.4.
     """
 
     key: str
@@ -483,6 +485,7 @@ class KeybindingSpec:
     show: bool = False
     name: str = ""
     ext: str = ""
+    terminal: bool = False
 
     @property
     def label(self) -> str:
@@ -1068,6 +1071,7 @@ class Registry:
         show: bool = False,
         name: str = "",
         ext: str = "",
+        terminal: bool = False,
     ) -> KeybindingSpec | None:
         """Bind the global key ``key`` to ``run(ctx)``, replacing (and returning) any binding of that key.
 
@@ -1075,7 +1079,8 @@ class Registry:
         ``ctrl+shift+left``. Keys the terminal UI needs itself are refused (:data:`RESERVED_KEYS`), and so
         is a bare letter, which would steal typing: use ``ctrl+``, ``alt+`` or a function key. ``name`` (else
         ``description``) is what ``ui.keys`` calls the binding to give it another key. ``ext`` is the id of the
-        registering extension (the facade sets it).
+        registering extension (the facade sets it). With ``terminal`` the terminal UI suspends itself and runs ``run``
+        on the UI thread, in the real terminal, like a ``terminal`` command (API 2.4).
 
         Returns:
             The binding that ``key`` replaced, if any.
@@ -1091,7 +1096,7 @@ class Registry:
         key = normalize_key(key, "register_keybinding")
         if key in RESERVED_KEYS:
             raise ValueError(f"register_keybinding: {key} is reserved for minimal; choose another key")
-        spec = KeybindingSpec(key, run, description, bool(show), name, ext)
+        spec = KeybindingSpec(key, run, description, bool(show), name, ext, bool(terminal))
         clash = next((s for k, s in self.keybindings.items() if k != key and s.id == spec.id), None)
         if clash is not None:
             raise ValueError(

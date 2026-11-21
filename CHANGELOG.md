@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- `register_keybinding(..., terminal=True)` and `@minimal.keybinding(key, terminal=True)`: the key suspends the terminal
+  UI and runs on the UI thread in the real terminal, like a `terminal` command, for `fzf`, `$EDITOR`, `lazygit` and
+  other programs that need the keyboard (`KeybindingSpec.terminal`). A key is still ignored while a turn or command
+  runs; an error it raises is shown after the resume.
+- `ctx.ui.get_draft()` and `ctx.ui.set_draft(text, *, append=False)` read and fill the prompt box (undoable, cursor at
+  the end, no completion popup, safe from any thread and from a `terminal` command or key); `Frontend.draft` and
+  `Frontend.set_draft`, a no-op in the plain terminal.
+- `ctx.show(text, kind="output")` adds a transcript block (`output` or `error`) that stays, from any thread; while the
+  UI is suspended for a `terminal` command or key it is drawn once the UI is back. A `terminal` command or key may also
+  return a str, which is shown the same way (`Frontend.show`).
+- `Extension.builtin_commands()` gives the names of minimal's own commands at `register` time, and
+  `ctx.git_refresh()` asks the shared git poller to look again now.
+- `ctx.focus_widget(name, *, hold=False)` and `ctx.focus_composer()` move the keyboard focus (`Frontend.focus_widget`,
+  `Frontend.focus_composer`). A widget focused with `hold=True` keeps the focus when a turn or command ends, until it
+  is removed, the focus leaves it, `escape` reaches the app or `focus_composer()` is called.
+- `ui.widgets.<name>.height` (1 to 100 rows) sizes any extension widget or panel in any area; `/ui` shows it.
+
 ## 0.9.0
 
 ### Added

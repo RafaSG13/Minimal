@@ -115,6 +115,9 @@ UI_DENSITIES = ("normal", "compact")
 UI_SIDEBAR_WIDTHS = (20, 80)
 """Smallest and largest ``ui.sidebar_width``."""
 
+UI_WIDGET_HEIGHTS = (1, 100)
+"""Fewest and most rows of a widget's ``ui.widgets`` ``height``."""
+
 UI_GLYPH_LENGTHS = (1, 3)
 """Fewest and most characters of ``ui.prompt_glyph``."""
 
@@ -136,7 +139,8 @@ def _is_prompt_glyph(value: object) -> bool:
 def _is_ui_overrides(places: tuple[str, ...], place_field: str, extra: dict[str, type] | None = None):
     """A check for ``ui.widgets`` / ``ui.status``: names → ``{<place_field>?, order?, enabled?, <extra>?}``.
 
-    ``extra`` maps further allowed fields to their type (``ui.widgets`` also takes ``title`` and ``collapsed``)."""
+    ``extra`` maps further allowed fields to their type (``ui.widgets`` also takes ``title``, ``collapsed`` and
+    ``height``, a number of rows within :data:`UI_WIDGET_HEIGHTS`)."""
     extra = extra or {}
 
     def check(value: object) -> bool:
@@ -153,7 +157,12 @@ def _is_ui_overrides(places: tuple[str, ...], place_field: str, extra: dict[str,
                 return False
             if "enabled" in entry and not isinstance(entry["enabled"], bool):
                 return False
-            if any(field in entry and not isinstance(entry[field], kind) for field, kind in extra.items()):
+            if any(
+                field in entry and (not isinstance(entry[field], kind) or isinstance(entry[field], bool) != (kind is bool))
+                for field, kind in extra.items()
+            ):
+                return False
+            if "height" in entry and not UI_WIDGET_HEIGHTS[0] <= entry["height"] <= UI_WIDGET_HEIGHTS[1]:
                 return False
         return True
 
@@ -168,9 +177,9 @@ _UI_TYPES = {
     "ui.sidebar": (_is_choice(*UI_SIDEBARS), "one of " + ", ".join(UI_SIDEBARS)),
     "ui.sidebar_width": (_is_sidebar_width, "an integer from {} to {}".format(*UI_SIDEBAR_WIDTHS)),
     "ui.widgets": (
-        _is_ui_overrides(UI_AREAS, "area", {"title": str, "collapsed": bool}),
+        _is_ui_overrides(UI_AREAS, "area", {"title": str, "collapsed": bool, "height": int}),
         f'an object mapping names to {{"area": one of {", ".join(UI_AREAS)}, "order": integer, "enabled": boolean, '
-        '"title": string, "collapsed": boolean}',
+        f'"title": string, "collapsed": boolean, "height": integer from {UI_WIDGET_HEIGHTS[0]} to {UI_WIDGET_HEIGHTS[1]}}}',
     ),
     "ui.status": (
         _is_ui_overrides(UI_STATUS_SIDES, "side"),

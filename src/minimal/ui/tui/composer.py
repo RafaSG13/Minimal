@@ -214,6 +214,13 @@ class Composer(TextArea):
         self._freeze()
         self._fit()
 
+    def set_draft(self, text: str, append: bool = False) -> None:
+        """Make ``text`` the draft (``ctx.ui.set_draft``): like :meth:`set_text`, and a walk through the history ends,
+        so the arrow keys do not replace the draft. With ``append`` the text goes after the current one."""
+        self._nav = None
+        self._draft = ""
+        self.set_text(self.text + text if append else text)
+
     def _freeze(self) -> None:
         self._frozen = (self.text, self.cursor_location)
 

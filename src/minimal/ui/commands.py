@@ -354,7 +354,7 @@ def _placed_origin(placed: Placed) -> str:
 
 
 def _placed_heading(placed: Placed) -> str:
-    """What ``/ui`` adds to a widget's or panel's line about its heading: ``title 'GIT'``, ``collapsible``, ``collapsed``."""
+    """What ``/ui`` adds to a widget's or panel's line about its heading: ``title 'GIT'``, ``collapsible``, ``collapsed``, ``height 12``."""
     parts = []
     if placed.title:
         parts.append(f"title {placed.title!r}")
@@ -364,6 +364,8 @@ def _placed_heading(placed: Placed) -> str:
         parts.append("collapsible")
     if placed.collapsed:
         parts.append("collapsed")
+    if placed.height is not None:
+        parts.append(f"height {placed.height}")
     return f"  ({', '.join(parts)})" if parts else ""
 
 

@@ -204,6 +204,10 @@ class MinimalTui(TextualApp):
         self.focus_reported = False  # the terminal reported a focus change at least once: app_focus can be trusted
         self.busy = False  # a turn or command is running: the prompt is locked
         self.ext_keys: list[KeybindingSpec] = []  # the extension keybindings apply_keys bound, by action index
+        self.terminal_active = False  # the interface is suspended for a terminal command or key (run_in_terminal)
+        self.terminal_blocks: list[tuple[str, str]] = []  # what ctx.show sent meanwhile: drawn on resume
+        self.terminal_lock = threading.Lock()
+        self.held_focus: Widget | None = None  # the extension widget that asked to keep the focus (focus_ext_widget)
         self.user_css: tuple[str, str] | None = None  # where the stylesheet of ui.css was added, if one was
         self.ext_css: list[tuple[str, str]] = []  # where the extensions' stylesheets (register_css) were added
 
@@ -315,6 +319,20 @@ class MinimalTui(TextualApp):
 
     def show_error(self, text: str) -> Any:
         return self._add(Static(Content(f"{theme.ERROR} {text}"), classes="error"))
+
+    def add_block(self, text: str, kind: str = "output") -> Any:
+        """Append a block of ``text`` to the transcript, drawn as command output (``kind`` ``"output"``) or as an
+        error (``"error"``); what ``ctx.show`` sends. Returns the mount awaitable."""
+        self.assistant = None  # the model's next text starts a block below this one
+        return self._add(Static(text.rstrip("\n"), markup=False, classes="error" if kind == "error" else "output"))
+
+    def defer_block(self, text: str, kind: str) -> bool:
+        """Hold ``text`` until the interface is back if it is suspended for a terminal command or key
+        (:meth:`run_in_terminal`); returns whether it did. Safe from any thread: if not, the caller draws it."""
+        with self.terminal_lock:
+            if self.terminal_active:
+                self.terminal_blocks.append((text, kind))
+            return self.terminal_active
 
     def on_print(self, event: events.Print) -> None:
         """Show printed text (command output, extension messages) as an output block."""
@@ -507,6 +525,7 @@ class MinimalTui(TextualApp):
     async def remount_widgets(self) -> None:
         """Replace every extension widget and panel with fresh ones, placed as :meth:`Host.layout` says."""
         layout = self.host.layout()
+        self.held_focus = None  # the widgets are made again
         for area in config.UI_AREAS:
             await self.query_one(f"#{area}").remove_children()
         self.ext_widgets = []
@@ -524,6 +543,8 @@ class MinimalTui(TextualApp):
                         widget = shown = PanelView(
                             placed.spec, self.host.ctx, self.show_error, placed.title, placed.collapsed
                         )
+                    if placed.height is not None:
+                        widget.styles.height = placed.height
                     await container.mount(shown)
                     self.ext_widgets.append((placed.name, widget))
                 except Exception as e:
@@ -601,13 +622,22 @@ class MinimalTui(TextualApp):
 
     def action_ext_key(self, index: int) -> None:
         """Run the extension keybinding ``index`` (of :attr:`ext_keys`) like a slash command: the prompt is locked and
-        the function runs on a worker, so it may ask the user questions."""
+        the function runs on a worker, so it may ask the user questions. A ``terminal`` binding runs on this thread
+        with the interface suspended, like a ``terminal`` command."""
         if index >= len(self.ext_keys):
             return
+        spec = self.ext_keys[index]
         self.in_turn = False
         self.set_busy(True)
         self.refresh_live({"kind": "start", "turn": False})
-        self.run_key_worker(self.ext_keys[index])
+        if spec.terminal:
+            self.run_terminal_key(spec)
+        else:
+            self.run_key_worker(spec)
+
+    @staticmethod
+    def _key_error(spec: KeybindingSpec, error: Exception) -> str:
+        return f"[extension] key {spec.key} ({spec.id}): {error}"
 
     @work(thread=True, exclusive=True, group="agent")
     def run_key_worker(self, spec: KeybindingSpec) -> None:
@@ -617,8 +647,85 @@ class MinimalTui(TextualApp):
             self.call_from_thread(self.exit)
             return
         except Exception as e:
-            self.call_from_thread(self.show_error, f"[extension] key {spec.key} ({spec.id}): {e}")
+            self.call_from_thread(self.show_error, self._key_error(spec, e))
         self.call_from_thread(self.after_action)
+
+    def run_terminal_key(self, spec: KeybindingSpec) -> None:
+        """Run a ``terminal`` keybinding with the interface suspended; a str it returns is shown afterwards, and so is
+        an error it raises (what it printed is gone)."""
+        failure: list[Exception] = []
+
+        def run() -> None:
+            try:
+                result = spec.run(self.host.ctx)
+                if isinstance(result, str) and result.strip():
+                    self.host.ctx.show(result)
+            except ExitRepl:
+                raise
+            except Exception as e:
+                failure.append(e)
+
+        try:
+            self.run_in_terminal(run)
+        except ExitRepl:
+            self.exit()
+            return
+        if failure:
+            self.show_error(self._key_error(spec, failure[0]))
+        self.after_action()
+
+    def run_in_terminal(self, fn: Callable[[], Any]) -> Any:
+        """Call ``fn()`` on this (the UI) thread with the interface suspended, so it can use the real terminal.
+
+        What ``ctx.show`` sends meanwhile is drawn in the transcript once the interface is back, in order, before
+        anything ``fn``'s caller does next. Returns what ``fn`` returns; lets what it raises through.
+        """
+        with self.terminal_lock:
+            self.terminal_active = True
+        try:
+            with self.suspend(), _outside_event_loop():
+                return fn()
+        finally:
+            with self.terminal_lock:
+                self.terminal_active = False
+                blocks, self.terminal_blocks = self.terminal_blocks, []
+            for text, kind in blocks:
+                self.add_block(text, kind)
+
+    # --- focus ---------------------------------------------------------------
+
+    def composer(self) -> Composer:
+        """The prompt box, wherever a dialog may be on top."""
+        return self.screen_stack[0].query_one("#prompt", Composer)
+
+    def focus_ext_widget(self, name: str, hold: bool = False) -> bool:
+        """Give the focus to the extension widget called ``name``, or to its first focusable part; with ``hold``,
+        :meth:`after_action` leaves it there. Returns whether it took the focus (``False``: not shown, nothing in it
+        can take focus, or a dialog is open)."""
+        widget = next((w for n, w in self.ext_widgets if n == name), None)
+        if widget is None or not widget.is_attached or isinstance(self.screen, ModalScreen):
+            return False
+        target = widget if widget.focusable else next((w for w in widget.query("*") if w.focusable), None)
+        if target is None:
+            return False
+        self.screen.set_focus(target)
+        self.held_focus = widget if hold else None
+        return True
+
+    def focus_composer(self) -> None:
+        """Give the focus to the prompt box and end any hold (:meth:`focus_ext_widget`)."""
+        self.held_focus = None
+        self.screen_stack[0].set_focus(self.composer())
+
+    def focus_is_held(self) -> bool:
+        """Whether a widget asked to keep the focus and still has it. A hold ends here, when its widget was removed or
+        the focus left it."""
+        held = self.held_focus
+        focused = self.focused
+        if held is not None and held.is_attached and focused is not None and held in focused.ancestors_with_self:
+            return True
+        self.held_focus = None
+        return False
 
     # --- status line and working indicator -----------------------------------
 
@@ -779,7 +886,12 @@ class MinimalTui(TextualApp):
         self.query_one("#working", Static).update(Content.assemble(*parts))
 
     def action_interrupt(self) -> None:
-        """Ask the turn in progress to stop (see :class:`~minimal.extensions.registry.TurnInterrupted`)."""
+        """Ask the turn in progress to stop (see :class:`~minimal.extensions.registry.TurnInterrupted`). While a widget
+        holds the focus (``ctx.focus_widget(name, hold=True)``) the key that reaches here only takes the focus back to
+        the prompt: press it again to interrupt."""
+        if self.focus_is_held():
+            self.focus_composer()
+            return
         if self.in_turn and not self.host.interrupting:
             self.host.interrupt()
             self.refresh_working()
@@ -845,8 +957,7 @@ class MinimalTui(TextualApp):
             cmd = self.host.command(line[1:].partition(" ")[0])
             if cmd is not None and cmd.terminal:
                 try:
-                    with self.suspend(), _outside_event_loop():
-                        self.host.run_command(line)
+                    self.run_in_terminal(lambda: self.host.run_command(line))
                 except ExitRepl:
                     self.exit()
                     return True
@@ -898,7 +1009,8 @@ class MinimalTui(TextualApp):
         self.refresh_widgets()
         self.in_turn = False
         self.set_busy(False)
-        self.query_one("#prompt", Composer).focus()
+        if not self.focus_is_held():
+            self.query_one("#prompt", Composer).focus()
         if was_turn:
             self.notify_turn_end()
         self.submit_queued()

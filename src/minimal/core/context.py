@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 NOTIFY_KINDS = ("info", "warning", "error")
 """The kinds of :meth:`Context.notify`."""
 
+SHOW_KINDS = ("output", "error")
+"""The kinds of :meth:`Context.show`: the transcript's output and error blocks."""
+
 
 class UI:
     """Questions to the user, through whatever frontend is showing minimal at call time."""
@@ -53,6 +56,23 @@ class UI:
     def ask_text(self, title: str) -> str | None:
         """Ask for one line of text; return it stripped, or ``None`` if empty or cancelled."""
         return self._app.frontend.ask_text(title)
+
+    def get_draft(self) -> str:
+        """The text in the prompt box that the user has not sent; ``""`` if it is empty or the frontend has no prompt box. API 2.4."""
+        return self._app.frontend.draft()
+
+    def set_draft(self, text: str, *, append: bool = False) -> None:
+        """Put ``text`` in the prompt box, replacing the draft (or after it with ``append``), cursor at the end. API 2.4.
+
+        The user can undo it, it opens no completion popup and it does not send anything. A frontend without a
+        prompt box ignores it.
+
+        Raises:
+            ValueError: if ``text`` is not a str.
+        """
+        if not isinstance(text, str):
+            raise ValueError("set_draft: text must be a str")
+        self._app.frontend.set_draft(text, append)
 
 
 class Context:
@@ -556,6 +576,50 @@ class Context:
         if kind not in NOTIFY_KINDS:
             raise ValueError(f"notify: kind must be one of {', '.join(NOTIFY_KINDS)}")
         self._app.frontend.notify(text, kind)
+
+    def show(self, text: str, kind: str = "output") -> None:
+        """Add ``text`` to the conversation as a block that stays: ``kind`` is one of :data:`SHOW_KINDS`. API 2.4.
+
+        Unlike :meth:`notify` (a toast that vanishes) and ``print`` (lost when a ``terminal`` command or key resumes
+        the interface), the block is kept in the transcript. Called while the interface is suspended for a
+        ``terminal`` command or key it is held and drawn once the interface is back. Safe from any thread; blank text
+        is ignored. The plain terminal prints it (``error`` on stderr).
+
+        Raises:
+            ValueError: if ``kind`` is not one of them or ``text`` is not a str.
+        """
+        if kind not in SHOW_KINDS:
+            raise ValueError(f"show: kind must be one of {', '.join(SHOW_KINDS)}")
+        if not isinstance(text, str):
+            raise ValueError("show: text must be a str")
+        if text.strip():
+            self._app.frontend.show(text, kind)
+
+    def focus_widget(self, name: str, *, hold: bool = False) -> bool:
+        """Give the keyboard focus to the widget of ``register_widget(name, ...)`` (to its first focusable part if it is
+        not focusable itself); returns whether it took it. API 2.4.
+
+        ``False`` if the widget is not shown (the user hid it, or no terminal UI), cannot take focus, or the UI
+        is showing a dialog. By default the UI moves the focus back to the prompt box when a turn or command ends.
+        With ``hold=True`` it does not, for a widget that wants to keep the keyboard (an embedded terminal, a file
+        browser): the hold ends by itself when the widget is removed (a reload, the user hiding it) or the focus leaves it
+        (the user clicked elsewhere), when it reaches the key ``escape`` (a widget that handles ``escape`` itself keeps
+        the focus), and on :meth:`focus_composer`. Safe from any thread.
+        """
+        return self._app.frontend.focus_widget(name, hold)
+
+    def focus_composer(self) -> None:
+        """Give the keyboard focus to the prompt box and end any hold of :meth:`focus_widget`. API 2.4. Safe from any thread."""
+        self._app.frontend.focus_composer()
+
+    def git_refresh(self) -> None:
+        """Ask the shared git poller behind :meth:`git` to look again now, after you changed files or branches. API 2.4.
+
+        Cheap, returns at once and does nothing until :meth:`git` started the poller; the new state shows in :meth:`git`
+        within moments, and the poller calls :meth:`invalidate` when it differs. minimal does this itself after each turn
+        and command; call it when something else changed the repository (a ``terminal`` command, a timer).
+        """
+        self._app.poke_git()
 
     def use_provider(self, name: str, model: str | None = None) -> None:
         """Switch to provider ``name`` and ``model`` (default: its default model) from the next request on, keeping the conversation.
