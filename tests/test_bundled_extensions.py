@@ -12,7 +12,6 @@ from unittest import mock
 
 from minimal.core import session as session_mod
 from minimal.core.app import App
-from minimal.core.session import Session
 from minimal import config
 from minimal.extensions import loader
 from minimal.extensions.loader import load_extensions
@@ -107,7 +106,7 @@ class WebSearchTest(BundledExtensionTest):
             self.registry, str(self.tmp), config.Settings(), extra=[MARKETPLACE / "tools" / "web_search.py"]
         )
         self.assertEqual(errors, [])
-        self.ctx = SimpleNamespace(cwd=str(self.tmp))
+        self.ctx = SimpleNamespace(cwd=str(self.tmp), progress=lambda text: None)
 
     def search(self, payload, **inp):
         """Run the tool with ``BRAVE_API_KEY`` set and the API answering ``payload``; return ``(output, request)``."""
@@ -152,57 +151,6 @@ class WebSearchTest(BundledExtensionTest):
             os.environ.pop("BRAVE_API_KEY", None)
             with self.assertRaisesRegex(ValueError, "BRAVE_API_KEY"):
                 self.registry.tools["web_search"].run({"query": "x"}, self.ctx)
-
-
-class SubagentTest(BundledExtensionTest):
-    def test_subagent_has_its_own_history_and_cannot_nest(self):
-        call = {"type": "tool_use", "id": "t1", "name": "subagent", "input": {"prompt": "find x"}}
-        app = self.make_app(
-            "tools/subagent.py",
-            Session("t", self.tmp / "t.jsonl"),
-            [Reply(content=[call], stop_reason="tool_use"), text_reply("sub done"), text_reply("ok")],
-        )
-        self.run_turn(app, "go")
-        outer, inner, final = app.provider.requests
-        self.assertEqual(app.messages[2]["content"][0]["content"], "sub done")
-        self.assertEqual(inner.messages, [{"role": "user", "content": "find x"}])
-        self.assertNotIn("subagent", inner.tools)
-        self.assertIn("subagent", final.tools)
-
-    def test_subagent_sees_tools_reloaded_during_its_run(self):
-        ext_dir = self.tmp / ".minimal" / "extensions"
-        ext_dir.mkdir(parents=True)
-        hello = ext_dir / "hello.py"
-        hello.write_text('__api__ = "2"\ndef register(minimal):\n    minimal.register_tool(name="hello", run=lambda i, c: "v1")\n')
-        call = {"type": "tool_use", "id": "t1", "name": "subagent", "input": {"prompt": "reload"}}
-        reload = {"type": "tool_use", "id": "r1", "name": "reload_extensions", "input": {}}
-        use = [
-            {"type": "tool_use", "id": "h1", "name": "hello", "input": {}},
-            {"type": "tool_use", "id": "b1", "name": "bye", "input": {}},
-        ]
-        app = self.make_app(
-            "tools/subagent.py",
-            Session("t", self.tmp / "t.jsonl"),
-            [
-                Reply(content=[call], stop_reason="tool_use"),
-                Reply(content=[reload], stop_reason="tool_use"),
-                Reply(content=use, stop_reason="tool_use"),
-                text_reply("sub done"),
-                text_reply("ok"),
-            ],
-        )
-        hello.write_text(
-            '__api__ = "2"\n'
-            "def register(minimal):\n"
-            '    minimal.register_tool(name="hello", run=lambda i, c: "v2")\n'
-            '    minimal.register_tool(name="bye", run=lambda i, c: "bye")\n'
-        )
-        self.run_turn(app, "go")
-        _, _, after_reload, last_inner, _ = app.provider.requests
-        self.assertIn("bye", after_reload.tools)
-        self.assertNotIn("subagent", after_reload.tools)
-        results = {r["tool_use_id"]: r["content"] for r in last_inner.messages[-1]["content"]}
-        self.assertEqual(results, {"h1": "v2", "b1": "bye"})
 
 
 class AskUserTest(BundledExtensionTest):

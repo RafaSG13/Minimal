@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from unittest import mock
@@ -170,6 +171,161 @@ class CreatorTest(BundledExtensionTest):
             self.app.registry.commands["create"].run("bogus x", context)
         with self.assertRaisesRegex(ValueError, "usage: /create"):
             self.app.registry.commands["create"].run("tool", context)
+
+
+    def test_skeletons_teach_api_2_3_and_pass_the_lint_without_a_note(self):
+        for kind in ("extension", "tool", "widget"):
+            with self.subTest(kind):
+                source = self.call("ext_template", kind=kind)
+                self.assertIn('__api__ = "2.3"', source)
+                self.assertIn("declare_settings(DEFAULTS, SCHEMA)", source)
+                self.assertIn("__tags__", source)
+        self.assertIn("read_only=True", self.call("ext_template", kind="tool"))
+        widget = self.call("ext_template", kind="widget")
+        self.assertIn("collapsible=True", widget)
+        self.assertIn("order=settings", widget)
+        self.assertIn("title=settings", widget)
+        self.assertIn("register_keybinding", self.call("ext_template", kind="extension"))
+        self.assertIn('__tags__ = ["theme"]', self.call("ext_template", kind="theme"))
+        for kind in ("extension", "tool", "widget", "theme"):
+            self.call("ext_new", name="demo", kind=kind)
+            path = {"extension": "", "tool": "tools/", "widget": "widgets/", "theme": "themes/"}[kind]
+            report = self.call("ext_check", path=str(self.extensions / f"{path}demo.py"))
+            self.assertEqual([x for x in report.splitlines() if x.startswith(("note", "LINT"))], [], report)
+
+    def test_the_skeleton_settings_are_listed_validated_and_change_the_behaviour(self):
+        self.call("ext_new", name="demo", kind="tool")
+        tool_file = self.extensions / "tools" / "demo.py"
+        app = App(
+            registry=Registry(),
+            session=Session("t", self.tmp / "t2.jsonl"),
+            cwd=str(self.project),
+            auto_approve=True,
+            trust_project=True,
+            extra_extensions=[str(tool_file)],
+        )
+        _, errors = app.reload_extensions()
+        self.assertEqual(errors, [])
+        tool = app.registry.tools["demo"]
+        self.assertTrue(tool.read_only)
+        self.assertEqual(tool.run({"text": "abc"}, app.context), "ABC")
+        with self.assertRaisesRegex(ValueError, "over 2000 characters .setting max_chars"):
+            tool.run({"text": "x" * 2001}, app.context)
+
+    def test_ext_api_starts_with_the_version_then_the_conventions_then_the_source(self):
+        out = self.call("ext_api")
+        head, _, rest = out.partition("\n")
+        self.assertRegex(head, r"^# minimal extension API 2\.\d+$")
+        self.assertIn("declare_settings(DEFAULTS, SCHEMA)", rest)
+        self.assertIn("register_css", rest)
+        self.assertIn("read_only=True", rest)
+        self.assertLess(rest.index("declare_settings"), rest.index("API_VERSION"))
+
+    def write(self, name, source):
+        path = self.project / name
+        path.write_text(source)
+        return path
+
+    def test_ext_check_fails_on_unknown_tags_and_on_an_api_older_than_the_features_used(self):
+        self.write(
+            "tagged.py",
+            '"""Tagged."""\n__version__ = "1.0"\n__api__ = "2"\n__tags__ = ["gadgets"]\n\n\n'
+            "def register(minimal):\n    pass\n",
+        )
+        with self.assertRaisesRegex(RuntimeError, "LINT __tags__ must be a list of marketplace tags .git ui safety"):
+            self.call("ext_check", path="tagged.py")
+        self.write(
+            "old.py",
+            '"""Old."""\n__version__ = "1.0"\n__api__ = "2"\n__tags__ = ["ui"]\n\n\n'
+            "def register(minimal):\n"
+            '    minimal.register_panel("p", lambda ctx: "x", title="P")\n',
+        )
+        with self.assertRaisesRegex(RuntimeError, r'LINT __api__ is "2" but .*register_panel\(title\).*__api__ = "2.3"'):
+            self.call("ext_check", path="old.py")
+
+    def test_ext_check_adds_notes_for_missing_metadata_and_unschemed_settings(self):
+        self.write(
+            "plain.py",
+            '"""Plain."""\n__version__ = "1.0"\n__api__ = "2.3"\n\n\n'
+            "def register(minimal):\n"
+            '    minimal.declare_settings({"a": 1})\n'
+            '    minimal.register_tool(name="t", run=lambda i, c: "x")\n'
+            '    minimal.register_panel("p", lambda ctx: "x")\n',
+        )
+        report = self.call("ext_check", path="plain.py")
+        for needle in (
+            "note add __tags__",
+            "note declare_settings has no schema",
+            "note a tool says neither read_only=True",
+            "note register_panel has no title=",
+        ):
+            self.assertIn(needle, report)
+
+    def test_lint_setting_turns_the_extra_checks_off(self):
+        (self.tmp / "settings.json").write_text(
+            json.dumps({"extensions": {"settings": {"creator": {"lint": False}}}})
+        )
+        app = App(
+            registry=Registry(),
+            session=Session("t", self.tmp / "t2.jsonl"),
+            cwd=str(self.project),
+            auto_approve=True,
+            trust_project=True,
+            extra_extensions=[str(MARKETPLACE / "extensions" / "creator.py")],
+        )
+        _, errors = app.reload_extensions()
+        self.assertEqual(errors, [])
+        self.write("old.py", '"""Old."""\n__version__ = "1.0"\n__api__ = "2"\n__tags__ = ["nope"]\n\n\ndef register(minimal):\n    pass\n')
+        report = app.registry.tools["ext_check"].run({"path": "old.py"}, app.context)
+        self.assertNotIn("LINT", report)
+
+    def test_default_scope_check_timeout_and_prompt_are_settings(self):
+        (self.tmp / "settings.json").write_text(
+            json.dumps(
+                {"extensions": {"settings": {"creator": {"default_scope": "project", "check_timeout": 7, "prompt": ""}}}}
+            )
+        )
+        app = App(
+            registry=Registry(),
+            session=Session("t", self.tmp / "t2.jsonl"),
+            cwd=str(self.project),
+            auto_approve=True,
+            trust_project=True,
+            extra_extensions=[str(MARKETPLACE / "extensions" / "creator.py")],
+        )
+        _, errors = app.reload_extensions()
+        self.assertEqual(errors, [])
+        app.registry.tools["ext_new"].run({"name": "p", "kind": "theme"}, app.context)
+        self.assertTrue((self.project / ".minimal" / "extensions" / "themes" / "p.py").is_file())
+        self.assertNotIn("ext_search first", app.context.system_prompt())
+        self.assertIn("ext_search first", self.app.context.system_prompt())
+        with mock.patch("subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("x", 7)) as run:
+            with self.assertRaisesRegex(RuntimeError, "timed out after 7s; raise the check_timeout setting"):
+                app.registry.tools["ext_check"].run({"path": "."}, app.context)
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+
+    def test_bad_settings_are_load_errors_with_the_name(self):
+        for settings in ({"default_scope": "everywhere"}, {"check_timeout": 0}, {"lint": "yes"}):
+            with self.subTest(settings):
+                (self.tmp / "settings.json").write_text(json.dumps({"extensions": {"settings": {"creator": settings}}}))
+                app = App(
+                    registry=Registry(),
+                    session=Session("t", self.tmp / "t2.jsonl"),
+                    cwd=str(self.project),
+                    auto_approve=True,
+                    trust_project=True,
+                    extra_extensions=[str(MARKETPLACE / "extensions" / "creator.py")],
+                )
+                _, errors = app.reload_extensions()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"creator.{next(iter(settings))}", errors[0])
+
+    def test_the_read_only_tools_are_marked_and_the_writing_ones_are_not(self):
+        tools = self.app.registry.tools
+        for name in ("ext_template", "ext_check", "ext_api", "ext_list", "ext_catalogue_row"):
+            self.assertTrue(tools[name].read_only, name)
+        for name in ("ext_new", "ext_bump", "ext_remove"):
+            self.assertFalse(tools[name].read_only, name)
 
 
 if __name__ == "__main__":

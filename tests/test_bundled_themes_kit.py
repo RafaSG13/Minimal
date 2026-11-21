@@ -76,8 +76,15 @@ THEME_FILES = sorted(p for p in (MARKETPLACE / "themes").glob("*.py") if p.stem 
 
 
 class BundledThemesTest(BundledExtensionTest):
-    def test_there_are_eleven_single_palette_themes(self):
-        self.assertEqual(len(THEME_FILES), 11)
+    def test_the_single_palette_themes_are_the_expected_twenty_two(self):
+        light = {"catppuccin_latte", "github_light", "light", "rose_pine_dawn", "solarized_light"}
+        self.assertEqual(len(THEME_FILES), 22)
+        for stem in ("ayu_mirage", "everforest", "github_dark", "github_light", "kanagawa", "monokai", "one_dark", "rose_pine", "rose_pine_dawn", "solarized_dark", "solarized_light"):
+            self.assertIn(stem, [path.stem for path in THEME_FILES])
+        for path in THEME_FILES:
+            with self.subTest(theme=path.stem):
+                registry, _ = load_one(self.tmp, path)
+                self.assertEqual(registry.themes[path.stem].dark, path.stem not in light)
 
     def test_each_registers_its_own_theme_with_every_colour_and_no_load_error(self):
         for path in THEME_FILES:
