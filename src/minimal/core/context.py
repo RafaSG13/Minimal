@@ -10,9 +10,11 @@ tools, and it is safe to use from the thread running a turn.
 
 from __future__ import annotations
 
+import json
+import re
 import threading
 import types
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from minimal.core import agent
@@ -21,7 +23,7 @@ from minimal.core.git import GitInfo
 from minimal.core.layout import resolve_keys
 from minimal.core.session import list_sessions, new_id, open_session
 from minimal.extensions.loader import reload_summary
-from minimal.extensions.registry import KeyInfo, ModeSpec, ThemeInfo, Tool, TurnInterrupted
+from minimal.extensions.registry import KeyInfo, ModeSpec, ThemeInfo, Tool, TurnInterrupted, styled_lines
 from minimal.providers.base import Reply, result_text
 
 if TYPE_CHECKING:
@@ -32,27 +34,217 @@ NOTIFY_KINDS = ("info", "warning", "error")
 """The kinds of :meth:`Context.notify`."""
 
 
+def _timeout_kwargs(method: str, timeout: float | None) -> dict[str, float]:
+    """The ``timeout`` keyword to pass a frontend (nothing for ``None``, so a frontend written before API 2.4 keeps
+    working), after checking it is a finite number of seconds > 0."""
+    if timeout is None:
+        return {}
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout < float("inf"):
+        raise ValueError(f"{method}: timeout must be a number of seconds > 0, or None")
+    return {"timeout": min(float(timeout), threading.TIMEOUT_MAX)}
+
+
 class UI:
-    """Questions to the user, through whatever frontend is showing minimal at call time."""
+    """Questions to the user, through whatever frontend is showing minimal at call time.
+
+    Every method that waits for an answer takes ``timeout`` (API 2.4): seconds after which the dialog closes and the
+    method returns what a cancel returns (``False`` for :meth:`ask`, else ``None``), so a worker never hangs on a
+    user who walked away. ``None`` (the default) waits for ever. The plain terminal honours it only when stdin is a
+    terminal.
+    """
 
     def __init__(self, app: App) -> None:
         self._app = app
 
-    def ask(self, question: str) -> bool:
-        """Ask a yes/no question; return the answer."""
-        return self._app.frontend.ask(question)
+    def ask(self, question: str, *, timeout: float | None = None) -> bool:
+        """Ask a yes/no question; return the answer (``False`` if ``timeout`` seconds pass first)."""
+        return self._app.frontend.ask(question, **_timeout_kwargs("ask", timeout))
 
-    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
-        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled."""
-        return self._app.frontend.choose(title, options)
+    def choose(self, title: str, options: list[tuple[str, str]], *, timeout: float | None = None) -> str | None:
+        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled or ``timeout`` seconds pass."""
+        return self._app.frontend.choose(title, options, **_timeout_kwargs("choose", timeout))
 
-    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
-        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if cancelled."""
-        return self._app.frontend.choose_many(title, options)
+    def choose_many(
+        self, title: str, options: list[tuple[str, str, bool]], *, timeout: float | None = None
+    ) -> list[str] | None:
+        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if
+        cancelled or ``timeout`` seconds pass."""
+        return self._app.frontend.choose_many(title, options, **_timeout_kwargs("choose_many", timeout))
 
-    def ask_text(self, title: str) -> str | None:
-        """Ask for one line of text; return it stripped, or ``None`` if empty or cancelled."""
-        return self._app.frontend.ask_text(title)
+    def ask_text(self, title: str, *, timeout: float | None = None) -> str | None:
+        """Ask for one line of text; return it stripped, or ``None`` if empty, cancelled or ``timeout`` seconds pass."""
+        return self._app.frontend.ask_text(title, **_timeout_kwargs("ask_text", timeout))
+
+    def screen(self, factory: Callable[[Callable[[Any], None]], Any], *, timeout: float | None = None) -> Any:
+        """Show a modal Textual screen and return what it is dismissed with. API 2.4.
+
+        ``factory(dismiss)`` is called on the UI thread and returns a :class:`textual.screen.ModalScreen`; calling
+        ``dismiss(value)`` (from the screen's handlers, or any thread) closes it and makes ``value`` the result, as
+        does ``screen.dismiss(value)``. It returns ``None`` if the screen is closed without a value, the app quits or
+        ``timeout`` seconds pass (the screen is closed). ``dismiss`` does nothing after the screen closed or while
+        another screen covers it. Call it from a command, tool or event handler running in a worker thread: not from
+        the UI thread (widget callbacks, ``terminal=True`` commands), which cannot wait.
+
+        Raises:
+            RuntimeError: when minimal runs in the plain terminal: there is no screen to show, only the terminal UI has
+                them. What ``factory`` raises propagates.
+            TypeError: if ``factory`` is not callable.
+            ValueError: for a bad ``timeout``.
+        """
+        if not callable(factory):
+            raise TypeError("screen: factory must be callable: factory(dismiss) -> ModalScreen")
+        return self._app.frontend.screen(factory, **_timeout_kwargs("screen", timeout))
+
+    def pick(
+        self,
+        title: str,
+        items: Sequence[tuple[str, ...]],
+        *,
+        preview: Callable[[str], str] | None = None,
+        on_highlight: Callable[[str], Any] | None = None,
+        filter: bool = True,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Pick one item from a list the user filters by typing (fuzzy, case-insensitive); return its value. API 2.4.
+
+        Args:
+            title: Heading of the dialog.
+            items: ``(value, label)`` or ``(value, label, detail)`` tuples of strings: ``label`` is listed (and
+                matched), ``detail`` follows it dimmed (and is matched); ``value`` is what is returned and must be
+                unique.
+            preview: ``preview(value) -> str`` gives the text of a side pane that follows the highlighted row. Called
+                on the UI thread: keep it fast. An exception shows in the pane.
+            on_highlight: ``on_highlight(value)`` is called on the UI thread each time the highlighted row changes
+                (typing moves it too), the row first highlighted when the dialog opens included: preview a theme as
+                the cursor passes it. An exception is reported once and does not close the dialog.
+            filter: ``False`` shows no filter box; the list only moves.
+            timeout: Seconds before the dialog closes as if cancelled.
+
+        Returns:
+            The picked value; ``None`` if cancelled, timed out, or ``items`` is empty (nothing is shown then).
+            The plain terminal shows a numbered list instead (no filter, preview or ``on_highlight``).
+
+        Raises:
+            ValueError: for an item that is not 2 or 3 strings, a repeated value, or a bad ``timeout``.
+        """
+        kwargs = _timeout_kwargs("pick", timeout)
+        rows: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for item in items:
+            if not (isinstance(item, tuple) and len(item) in (2, 3) and all(isinstance(part, str) for part in item)):
+                raise ValueError("pick: items must be (value, label) or (value, label, detail) tuples of strings")
+            if item[0] in seen:
+                raise ValueError(f"pick: value {item[0]!r} is listed twice")
+            seen.add(item[0])
+            rows.append((item[0], item[1], item[2] if len(item) == 3 else ""))
+        if not rows:
+            return None
+        return self._app.frontend.pick(
+            title, rows, preview=preview, on_highlight=on_highlight, filter=filter, **kwargs
+        )
+
+    def overlay(self, content: Any, title: str = "", *, timeout: float | None = None) -> None:
+        """Show read-only text in a scrollable box over the transcript until the user closes it with Esc. API 2.4.
+
+        For help, key lists and diffs. ``content`` is text, or styled lines as ``register_panel`` renders them (a list
+        of lines, each a string, a ``(text, style)`` pair or a list of those; ``$name`` styles follow the theme), or a
+        Textual ``Content`` in the terminal UI. Returns when it is closed or after ``timeout`` seconds. The plain
+        terminal prints the text.
+
+        Raises:
+            ValueError: for invalid styled lines or a bad ``timeout``.
+            TypeError: for another kind of ``content`` (terminal UI).
+        """
+        kwargs = _timeout_kwargs("overlay", timeout)
+        if isinstance(content, (list, tuple)):
+            content = styled_lines(list(content))
+        self._app.frontend.overlay(content, title, **kwargs)
+
+
+class Transcript:
+    """The conversation as the terminal UI draws it (``ctx.transcript``): jump to a message, mark messages, search them.
+
+    API 2.4. Messages are named by their index in :attr:`Context.messages`. Marks live as long as the session in view:
+    another session (``/new``, ``/resume``, ``fork``) clears them and a ``truncate`` drops those it cut. The plain
+    terminal has no transcript: :meth:`scroll_to` returns ``False`` and :meth:`mark` shows nothing, but
+    :meth:`find` searches the messages anyway. Safe to call from any thread.
+    """
+
+    def __init__(self, app: App) -> None:
+        self._app = app
+
+    def _check(self, name: str, index: object) -> int:
+        """``index`` if it is an index into the current messages, else ``ValueError``."""
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self._app.messages):
+            raise ValueError(f"{name}: message_index must be an integer in 0..{len(self._app.messages) - 1}")
+        return index
+
+    def scroll_to(self, message_index: int) -> bool:
+        """Scroll the transcript so that the block showing ``messages[message_index]`` is at the top; follow-the-bottom
+        stops until the user scrolls back down. ``False`` if there is no such block: an index out of range, a message
+        before the window the UI redraws (the last 200 messages) or one that shows nothing."""
+        if isinstance(message_index, bool) or not isinstance(message_index, int):
+            raise ValueError("scroll_to: message_index must be an integer")
+        if not 0 <= message_index < len(self._app.messages):
+            return False
+        return self._app.frontend.transcript_scroll_to(message_index)
+
+    def mark(self, message_index: int, label: str = "") -> None:
+        """Mark ``messages[message_index]``: its block gets a gutter in the theme's accent colour and the CSS class
+        ``-marked`` (stable, for ``register_css``), and ``label`` as its tooltip. Marking again replaces the label.
+
+        Raises:
+            ValueError: for an index outside the messages.
+        """
+        self._app.frontend.transcript_mark(self._check("mark", message_index), str(label))
+
+    def unmark(self, message_index: int | None = None) -> None:
+        """Remove the mark of ``messages[message_index]`` (nothing happens if it has none), or every mark if ``None``."""
+        self._app.frontend.transcript_unmark(message_index)
+
+    def marks(self) -> list[tuple[int, str]]:
+        """The marked messages as ``(index, label)`` pairs, by index."""
+        return self._app.frontend.transcript_marks()
+
+    def find(self, text: str, *, regex: bool = False) -> list[int]:
+        """The indexes of the messages that contain ``text``, in order.
+
+        A message's text is what the transcript shows of it: the text of the user's and the assistant's messages, a
+        tool call's name and input as JSON, a tool result's text; thinking is not searched. ``text`` is matched case
+        insensitively; with ``regex=True`` it is a regular expression (:func:`re.search`, case sensitive unless it
+        says ``(?i)``).
+
+        Raises:
+            ValueError: if ``text`` is empty or not a valid regular expression.
+        """
+        if not text:
+            raise ValueError("find: text is empty")
+        search: Callable[[str], object]
+        if regex:
+            try:
+                search = re.compile(text).search
+            except re.error as e:
+                raise ValueError(f"find: invalid regular expression: {e}") from e
+        else:
+            needle = text.casefold()
+            search = lambda haystack: needle in haystack.casefold()  # noqa: E731
+        return [i for i, message in enumerate(list(self._app.messages)) if search(_searchable(message["content"]))]
+
+
+def _searchable(content: Any) -> str:
+    """The text of a message's ``content`` that :meth:`Transcript.find` searches."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        kind = block.get("type")
+        if kind == "text":
+            parts.append(block.get("text", ""))
+        elif kind == "tool_use":
+            parts.append(f"{block.get('name', '')} {json.dumps(block.get('input', {}), ensure_ascii=False)}")
+        elif kind == "tool_result":
+            parts.append(result_text(block.get("content", "")))
+    return "\n".join(parts)
 
 
 class Context:
@@ -60,12 +252,14 @@ class Context:
 
     Attributes:
         ui: Questions to the user (:class:`UI`).
+        transcript: The conversation as the UI shows it (:class:`Transcript`; API 2.4).
     """
 
     def __init__(self, app: App, run: AgentRun | None = None) -> None:
         self._app = app
         self._run = run
         self.ui = UI(app)
+        self.transcript = Transcript(app)
 
     @property
     def agent_id(self) -> str:

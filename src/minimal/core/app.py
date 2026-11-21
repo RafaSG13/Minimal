@@ -14,6 +14,7 @@ import collections
 import copy
 import json
 import re
+import select
 import sys
 import threading
 from datetime import datetime, timezone
@@ -234,6 +235,25 @@ def _visible(text: str) -> str:
     return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
 
 
+def _read_line(prompt: str, timeout: float | None = None) -> str:
+    """``input(prompt)``; with a ``timeout`` and a terminal on stdin, raises ``EOFError`` (a cancel) if no line arrives
+    in that many seconds. Without a terminal, or where stdin cannot be waited on, the timeout is ignored."""
+    if timeout is None or not sys.stdin.isatty():
+        return input(prompt)
+    print(prompt, end="", flush=True)
+    try:
+        ready = select.select([sys.stdin], [], [], timeout)[0]
+    except (OSError, ValueError):  # Windows cannot select on a console: wait without a limit
+        ready = [sys.stdin]
+    if not ready:
+        print()
+        raise EOFError
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError
+    return line.rstrip("\n")
+
+
 def _failure_status(error: BaseException) -> str:
     """The ``agent_end`` status of a loop that ended with ``error``."""
     if isinstance(error, TurnInterrupted):
@@ -275,17 +295,56 @@ class Frontend(Protocol):
     def turn_end(self, error: str | None) -> None:
         """The turn finished; ``error`` is set if it failed."""
 
-    def ask(self, question: str) -> bool:
-        """Ask a yes/no question; return the answer."""
+    def ask(self, question: str, timeout: float | None = None) -> bool:
+        """Ask a yes/no question; return the answer. After ``timeout`` seconds (``None``: never) the question is
+        dropped and the answer is no. API 2.4."""
 
-    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
-        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled."""
+    def choose(self, title: str, options: list[tuple[str, str]], timeout: float | None = None) -> str | None:
+        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled or ``timeout`` seconds
+        (``None``: never) passed. API 2.4."""
 
-    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
-        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if cancelled."""
+    def choose_many(
+        self, title: str, options: list[tuple[str, str, bool]], timeout: float | None = None
+    ) -> list[str] | None:
+        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if
+        cancelled or ``timeout`` seconds (``None``: never) passed. API 2.4."""
 
-    def ask_text(self, title: str) -> str | None:
-        """Ask for one line of text; return it stripped, or ``None`` if empty or cancelled."""
+    def ask_text(self, title: str, timeout: float | None = None) -> str | None:
+        """Ask for one line of text; return it stripped, or ``None`` if empty, cancelled or ``timeout`` seconds
+        (``None``: never) passed. API 2.4."""
+
+    def screen(self, factory: Callable[[Callable[[Any], None]], Any], timeout: float | None = None) -> Any:
+        """Show the modal screen ``factory(dismiss)`` builds and return the value passed to ``dismiss`` (``None``:
+        cancelled, quit or ``timeout`` seconds passed). A frontend without screens raises ``RuntimeError``. API 2.4."""
+
+    def pick(
+        self,
+        title: str,
+        items: list[tuple[str, str, str]],
+        *,
+        preview: Callable[[str], str] | None = None,
+        on_highlight: Callable[[str], Any] | None = None,
+        filter: bool = True,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Pick one ``(value, label, detail)`` item from a list filtered as the user types; return its value, or
+        ``None`` if cancelled or timed out. ``on_highlight(value)`` and ``preview(value)`` follow the highlighted row.
+        API 2.4."""
+
+    def overlay(self, content: Any, title: str = "", timeout: float | None = None) -> None:
+        """Show read-only text (a ``str`` or styled lines) the user scrolls and closes. API 2.4."""
+
+    def transcript_scroll_to(self, message_index: int) -> bool:
+        """Scroll the transcript to the block of ``messages[message_index]``; ``False`` if it shows none. API 2.4."""
+
+    def transcript_mark(self, message_index: int, label: str) -> None:
+        """Mark the transcript block of ``messages[message_index]`` with ``label``. API 2.4."""
+
+    def transcript_unmark(self, message_index: int | None) -> None:
+        """Drop that message's mark, or every mark for ``None``. API 2.4."""
+
+    def transcript_marks(self) -> list[tuple[int, str]]:
+        """The marked messages as ``(index, label)``, by index. API 2.4."""
 
     def reloaded(self) -> None:
         """Extensions were reloaded (widgets may have changed)."""
@@ -355,8 +414,9 @@ class ConsoleFrontend:
         else:
             print(f"\nError: {_visible(error)}", file=sys.stderr)
 
-    def ask(self, question: str) -> bool:
-        """Accepts ``y``/``yes``; EOF means no, and so does having no terminal to ask in."""
+    def ask(self, question: str, timeout: float | None = None) -> bool:
+        """Accepts ``y``/``yes``; EOF means no, and so does having no terminal to ask in. After ``timeout`` seconds
+        without an answer the question is dropped as no (only when stdin is a terminal)."""
         question = _visible(question)
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print(
@@ -365,31 +425,35 @@ class ConsoleFrontend:
             )
             return False
         try:
-            answer = input(f"\n{question} [y/N] ")
+            answer = _read_line(f"\n{question} [y/N] ", timeout)
         except EOFError:
             return False
         return re.fullmatch(r"y|yes", answer.strip(), re.IGNORECASE) is not None
 
-    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
-        """Numbered list; empty, invalid input or EOF cancels."""
+    def choose(self, title: str, options: list[tuple[str, str]], timeout: float | None = None) -> str | None:
+        """Numbered list; empty, invalid input, EOF or ``timeout`` seconds without an answer (only when stdin is a
+        terminal) cancels."""
         print(f"\n{title}")
         for i, (_, label) in enumerate(options, 1):
             print(f"  {i:>2}. {label}")
         try:
-            answer = input("Number (empty cancels): ").strip()
+            answer = _read_line("Number (empty cancels): ", timeout).strip()
         except EOFError:
             return None
         if not answer.isdigit() or not 1 <= int(answer) <= len(options):
             return None
         return options[int(answer) - 1][0]
 
-    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
-        """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input or EOF cancels."""
+    def choose_many(
+        self, title: str, options: list[tuple[str, str, bool]], timeout: float | None = None
+    ) -> list[str] | None:
+        """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input, EOF or ``timeout``
+        seconds without an answer (only when stdin is a terminal) cancels."""
         print(f"\n{title}")
         for i, (_, label, checked) in enumerate(options, 1):
             print(f"  {i:>2}. [{'x' if checked else ' '}] {label}")
         try:
-            answer = input("Numbers to tick (Enter keeps the ticks shown, 0 for none): ").strip()
+            answer = _read_line("Numbers to tick (Enter keeps the ticks shown, 0 for none): ", timeout).strip()
         except EOFError:
             return None
         if not answer:
@@ -402,13 +466,59 @@ class ConsoleFrontend:
         picked = {int(t) - 1 for t in tokens}
         return [value for i, (value, _, _) in enumerate(options) if i in picked]
 
-    def ask_text(self, title: str) -> str | None:
-        """One ``input()`` line; EOF cancels."""
+    def ask_text(self, title: str, timeout: float | None = None) -> str | None:
+        """One line; EOF or ``timeout`` seconds without one (only when stdin is a terminal) cancels."""
         try:
-            answer = input(f"{title}: ").strip()
+            answer = _read_line(f"{title}: ", timeout).strip()
         except EOFError:
             return None
         return answer or None
+
+    def screen(self, factory: Callable[[Callable[[Any], None]], Any], timeout: float | None = None) -> Any:
+        """A custom screen needs the terminal UI.
+
+        Raises:
+            RuntimeError: always.
+        """
+        raise RuntimeError(
+            "ctx.ui.screen needs the terminal UI, called from a worker thread "
+            "(not the plain terminal, a terminal=True command or a widget callback)"
+        )
+
+    def pick(
+        self,
+        title: str,
+        items: list[tuple[str, str, str]],
+        *,
+        preview: Callable[[str], str] | None = None,
+        on_highlight: Callable[[str], Any] | None = None,
+        filter: bool = True,
+        timeout: float | None = None,
+    ) -> str | None:
+        """The numbered list of :meth:`choose` (label, then detail); there is no filter, preview or highlight."""
+        options = [(value, f"{label}  {detail}" if detail else label) for value, label, detail in items]
+        return self.choose(title, options, timeout)
+
+    def overlay(self, content: Any, title: str = "", timeout: float | None = None) -> None:
+        """Print ``title`` and the text on stdout."""
+        text = content if isinstance(content, str) else getattr(content, "plain", None)
+        if text is None:
+            text = "\n".join("".join(piece for piece, _ in line) for line in content)
+        print(f"\n{title}\n" if title else "", text, sep="")
+
+    def transcript_scroll_to(self, message_index: int) -> bool:
+        """A console has no transcript to scroll."""
+        return False
+
+    def transcript_mark(self, message_index: int, label: str) -> None:
+        """A console shows no marks."""
+
+    def transcript_unmark(self, message_index: int | None) -> None:
+        """A console shows no marks."""
+
+    def transcript_marks(self) -> list[tuple[int, str]]:
+        """A console keeps no marks."""
+        return []
 
     def reloaded(self) -> None:
         pass

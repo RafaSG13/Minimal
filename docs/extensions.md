@@ -238,6 +238,7 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `context_window`                 | API 2.3. The current model's context size in tokens, or `None` if unknown: the `context_window` setting, else the provider's own table, else minimal's table of the built-in providers' model families (longest name prefix). `context_tokens / context_window` is a gauge |
 | `git()`                          | API 2.3. The working directory's repository as a cached `GitInfo` (`branch`, `dirty`, `ahead`, `behind`, `staged`, `unstaged`, `untracked`, `files`: up to 50 `(status, path)` pairs), or `None` before the first poll ends and outside a repository. One background poller shared with the status line refreshes it every `git.refresh` seconds (default 3) and calls `invalidate()` when it changes; the call itself never runs git |
 | `keybindings()`                  | API 2.3. Every bound key as a `KeyInfo` (`key`, `action`, `description`, `source`: `"built-in"` or the extension id), minimal's own actions as `ui.keys` remapped them first: what a help screen lists |
+| `transcript`                     | API 2.4. A `Transcript`: `scroll_to(message_index)`, `mark(message_index, label="")`, `unmark(message_index=None)`, `marks()` and `find(text, *, regex=False)` over the messages as the terminal UI draws them ([below](#screens-and-the-transcript)) |
 | `sessions(*, all_projects=False)` | Saved session ids, oldest first: those started in this `cwd`, or every project's with `all_projects=True` |
 | `read_session(session_id)`       | The messages of a saved session; `ValueError` if there is none                             |
 | `reload()`                       | Reloads every extension from disk; returns the summary                                     |
@@ -249,14 +250,17 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `use_provider(name, model=None)` | Switches provider (and model, default its default) from the next request on, keeping the conversation; `ValueError` if unknown or without credentials |
 | `queue_user_message(text)`       | Sends `text` as the user's next message once the turn or command in progress ends (at once if nothing is running); `/…` runs a command. It does not steer the turn in progress |
 
-`ctx.ui` asks through whatever is showing minimal (the terminal UI or the plain terminal):
+`ctx.ui` asks through whatever is showing minimal (the terminal UI or the plain terminal). Every method that waits takes the keyword `timeout` (API 2.4): a number of seconds > 0 after which the dialog closes and the method returns what a cancel returns, so a tool or timer never hangs on a user who walked away. `None` (the default) waits for ever and anything else is a `ValueError`. The plain terminal honours it only when stdin is a terminal.
 
 | Method                         | Returns                                                                        |
 | ------------------------------ | ------------------------------------------------------------------------------ |
-| `ask(question)`                | `bool`: a yes/no answer                                                        |
-| `choose(title, options)`       | The value of one `(value, label)` option, or `None` if cancelled               |
-| `choose_many(title, options)`  | The ticked values of `(value, label, checked)` options in order, or `None`     |
-| `ask_text(title)`              | One line of text, stripped, or `None` if empty or cancelled                    |
+| `ask(question, *, timeout=None)` | `bool`: a yes/no answer (`False` on timeout)                                 |
+| `choose(title, options, *, timeout=None)` | The value of one `(value, label)` option, or `None` if cancelled or timed out |
+| `choose_many(title, options, *, timeout=None)` | The ticked values of `(value, label, checked)` options in order, or `None` |
+| `ask_text(title, *, timeout=None)` | One line of text, stripped, or `None` if empty, cancelled or timed out      |
+| `pick(title, items, *, preview=None, on_highlight=None, filter=True, timeout=None)` | API 2.4. The value of the item picked from a list filtered as the user types, or `None` ([details](#screens-and-the-transcript)) |
+| `overlay(content, title="", *, timeout=None)` | API 2.4. Read-only scrollable text until the user presses Esc; returns `None` |
+| `screen(factory, *, timeout=None)` | API 2.4. Your own modal Textual screen; returns what it is dismissed with |
 
 ```python
 @minimal.command(description="summarise this session into a new one")
@@ -266,6 +270,54 @@ def fold(args, ctx):
         old = ctx.new_session([{"role": "user", "content": result_text(reply.content)}])
         print(f"Continued from {old}")
 ```
+
+## Screens and the transcript
+
+API 2.4. These need the terminal UI (the plain terminal prints or falls back as noted).
+
+**`ctx.ui.pick(title, items, *, preview=None, on_highlight=None, filter=True, timeout=None)`** is the building block for "choose among many": a themed, keyboard-driven list the user filters by typing (type, ↑/↓ or PageUp/PageDown, Enter picks, Esc cancels).
+
+- `items` are `(value, label)` or `(value, label, detail)` tuples of strings; `value` is what comes back and must be unique (`ValueError` otherwise). `label` is listed and `detail` follows it dimmed; the filter matches both, fuzzily and without regard to case (`fb` finds `foo_bar`; several words must all match; better matches come first, an empty filter keeps your order). At most 300 rows are listed at once; typing narrows a longer list. With no items nothing is shown and it returns `None`.
+- `on_highlight(value)` runs **on the UI thread** every time the highlighted row changes, the row first highlighted when the list opens included (once per change: typing that leaves the same row on top does not repeat it). Use it to preview, for instance to apply a colour theme while the cursor is on it and restore the old one when the pick returns `None`. An exception is reported once and does not close the list.
+- `preview(value)` returns plain text for a side pane that follows the highlight (UI thread: keep it fast; an exception shows in the pane).
+- `filter=False` shows no filter box (only the list moves).
+- Returns the value, or `None` if the user pressed Esc, the `timeout` passed, minimal quit, or `items` was empty. The plain terminal shows `choose`'s numbered list instead (no filter, preview or highlight callback).
+
+**`ctx.ui.overlay(content, title="", *, timeout=None)`** shows read-only text in a box over the transcript: ↑/↓, PageUp/PageDown, Home/End, `j`/`k` scroll; Esc or `q` closes it. `content` is a string, or styled lines as `register_panel` returns them (`[[("added ", "$diff-added"), ("name", "bold $accent")], "plain line"]`: `$name` styles follow the theme; `ValueError` for an unknown style), or a Textual `Content`. Use it for help, key lists and diffs. The plain terminal prints the text.
+
+**`ctx.ui.screen(factory, *, timeout=None)`** shows a modal Textual screen of your own and returns the value it is dismissed with:
+
+```python
+from textual.screen import ModalScreen
+from textual.widgets import Button
+
+class Confirm(ModalScreen):
+    def __init__(self, dismiss):
+        super().__init__()
+        self.done = dismiss
+
+    def compose(self):
+        yield Button("Apply", id="ok")
+
+    def on_button_pressed(self, event):
+        self.done("applied")              # or self.dismiss("applied")
+
+result = ctx.ui.screen(lambda dismiss: Confirm(dismiss))   # "applied", or None
+```
+
+`factory(dismiss)` is called on the UI thread and returns a `ModalScreen`. `dismiss(value=None)` closes it from the screen's handlers or from any thread, as `screen.dismiss(value)` does; it does nothing once the screen is closed or while another screen covers it. The result is `None` if the screen closes without a value, minimal quits, or the `timeout` passes (it is closed then, once it is the top screen). Call it from a tool, command or handler that runs in a worker thread, never from the UI thread itself (widget callbacks and `terminal=True` commands cannot wait for a screen they must draw): there it raises `RuntimeError`, as it does in the plain terminal. What `factory` raises reaches the caller. Style it with the theme's CSS variables (`$surface`, `$panel`, `$accent`, `$modal-overlay`, …).
+
+**`ctx.transcript`** (`minimal.api.Transcript`) works on the messages as the terminal UI draws them, named by their index in `ctx.messages` (safe from any thread):
+
+| Member | What it does |
+| --- | --- |
+| `find(text, *, regex=False)` | The indexes of the messages containing `text` (case-insensitive; with `regex=True` a regular expression for `re.search`, case-sensitive unless it says `(?i)`). It searches the text of messages, a tool call's name and input as JSON and a tool result's text, not thinking. Works in the plain terminal too. `ValueError` for empty text or a bad pattern |
+| `scroll_to(message_index)` | Scrolls the transcript so that the block showing that message is at the top, and stops following the bottom until the user scrolls down. `True` if it has a block; `False` for an index out of range, a message older than the 200 the UI redraws, or one that shows nothing (and in the plain terminal). A message of tool calls or tool results maps to its first tool call's block |
+| `mark(message_index, label="")` | Marks the message: its block gets the CSS class `-marked` (stable; the default style is a thick `$accent` left border, restyle it with `register_css`) and `label` as its tooltip; marking again replaces the label. `ValueError` for an index outside the messages. A mark on a message the UI does not draw is kept but shows nothing |
+| `unmark(message_index=None)` | Removes that message's mark (no error if it has none), or every mark with `None` |
+| `marks()` | `[(index, label), ...]` by index |
+
+Marks last while the session is in view: `/new`, `/resume` and `fork` clear them, and `truncate` (`/rewind`) drops the ones it cut. They are not saved. A tool call and its result are one block, so marking both keeps it marked until both are unmarked.
 
 ## Modes
 
@@ -418,6 +470,7 @@ These selectors are stable; anything else (other ids, Textual's inner widgets) c
 | `#composer`, `#prompt`, `#prompt-glyph` | The prompt box, its text area and the glyph before it |
 | `#statusline`, `#working` | The status line and the working indicator |
 | `.user`, `Markdown.assistant`, `.tool` (`.-pending`, `.-success`, `.-error`), `.output`, `.error` | The transcript's blocks: your message, the model's reply, a tool call by state, command output, an error |
+| `.-marked` | API 2.4. A transcript block an extension marked with `ctx.transcript.mark` ([Screens and the transcript](#screens-and-the-transcript)); the default style is a thick `$accent` left border |
 
 The theme's colours are CSS variables (`$accent`, `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, …; `CSS_VARIABLES` lists them), so a stylesheet follows `/theme`. Use `ctx.theme` when Python needs a colour, and listen for `theme_change` to recompute it.
 
@@ -596,6 +649,8 @@ API 2.3 added `complete` to `@minimal.command` and `register_command` (and the `
 API 2.3 added, for customisable interfaces: `minimal.register_keybinding` and the `@minimal.keybinding` decorator (`KeybindingSpec`, `RESERVED_KEYS`, `KEY_ACTIONS` in `minimal.api`), the `order` keyword of `register_widget`, `register_panel` and `register_status`, the areas `left` and `footer` in `WIDGET_AREAS`, and the metadata `__depends__` and `__conflicts__`. An extension using any of them declares `__api__ = "2.3"`.
 
 API 2.3 added, for extensions that look and behave the way the user wants: `ctx.invalidate()` (redraw from any thread), `ctx.theme` (`ThemeInfo`) and the `theme_change` event (`ThemeChangeEvent`), `$name` and `#rrggbb` pieces in styled text, the `title` and `collapsible` keywords of `register_panel` and `register_widget`, `minimal.register_css` (`CssSpec`, `CSS_VARIABLES`) with the stable selectors of [Styling the terminal UI](#styling-the-terminal-ui), the `schema` argument of `declare_settings` (`SettingsSpec`) with `/ext settings`, `ctx.context_window`, `ctx.git()` (`GitInfo`) and `ctx.keybindings()` (`KeyInfo`). An extension using any of them declares `__api__ = "2.3"`.
+
+API 2.4 added, for extensions that show their own interface: `ctx.ui.screen(factory)` (a modal Textual screen), `ctx.ui.pick(...)` (a fuzzy-filtered list with a live highlight callback and a preview pane) and `ctx.ui.overlay(...)` (read-only scrollable text), the `timeout` keyword of every `ctx.ui` question, `ctx.transcript` (`Transcript`: jump to, mark and search messages; the stable `-marked` class) and the `ui.preview_lines` setting. An extension using any of them declares `__api__ = "2.4"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

@@ -55,7 +55,7 @@ from minimal.ui.tui.frontend import TuiFrontend, theme_command
 from minimal.ui.tui.markdown import RenderedFence, TranscriptMarkdown
 from minimal.ui.tui.notify import DEFAULT_AFTER, sequence
 from minimal.ui.tui.palette import SlashCommands, needs_args
-from minimal.ui.tui.widgets import Header, PanelView, Section, ToolBlock, to_content
+from minimal.ui.tui.widgets import PREVIEW_LINES, Header, PanelView, Section, ToolBlock, to_content
 
 REPLAY_LIMIT = 200
 """Most messages of a resumed session drawn in the transcript."""
@@ -152,6 +152,7 @@ class MinimalTui(TextualApp):
     .tool.-error { background: $tool-error-bg; }
     .output { color: $foreground 80%; padding: 0 1; margin-top: 1; }
     .error { color: $error; background: $tool-error-bg; padding: 0 2; margin-top: 1; }
+    .-marked { border-left: thick $accent; }
 
     #working { height: 1; padding: 0 2; margin-top: 1; display: none; }
     #working.-busy { display: block; }
@@ -182,7 +183,10 @@ class MinimalTui(TextualApp):
         self.host = host
         self.sync_themes(theme_name)
         self.ui_thread: int | None = None
-        self.pending_modal: threading.Event | None = None
+        self.pending_modals: set[threading.Event] = set()  # workers waiting for a dialog's answer (quitting wakes them)
+        self.message_widgets: dict[int, Widget] = {}  # message index → the transcript block that shows its text
+        self.tool_widgets: dict[str, ToolBlock] = {}  # tool call id → its block (a tool message maps through it)
+        self.marks: dict[int, str] = {}  # message index → label (ctx.transcript.mark)
         self.assistant: Markdown | None = None
         self.tool_blocks: dict[str, ToolBlock] = {}
         self.output_block: Static | None = None
@@ -260,8 +264,8 @@ class MinimalTui(TextualApp):
 
     def on_unmount(self) -> None:
         self.host.stop_git()
-        if self.pending_modal is not None:  # release a worker waiting for an answer
-            self.pending_modal.set()
+        for waiting in list(self.pending_modals):  # release the workers waiting for an answer
+            waiting.set()
 
     # --- transcript ----------------------------------------------------------
 
@@ -287,31 +291,94 @@ class MinimalTui(TextualApp):
         """
         messages = self.host.messages
         hidden = max(0, len(messages) - REPLAY_LIMIT)
+        self.message_widgets.clear()
+        self.tool_widgets.clear()
+        self.marks = {i: label for i, label in self.marks.items() if i < len(messages)}
+        preview = self.preview_lines()
         widgets: list[Widget] = []
         if hidden:
             widgets.append(Static(f"… {hidden} earlier messages not shown", classes="output"))
         blocks: dict[str, ToolBlock] = {}
-        for message in messages[hidden:]:
+        for index, message in enumerate(messages[hidden:], hidden):
             content = message["content"]
             if isinstance(content, str):
                 body, attached = split_attachments(content)
-                widgets.append(Static(body, markup=False, classes="user"))
+                user = Static(body, markup=False, classes="user")
+                self.message_widgets[index] = user
+                widgets.append(user)
                 if attached:
                     widgets.append(Static(f"attached {', '.join(attached)}", markup=False, classes="output"))
                 continue
             for block in content:
                 kind = block.get("type")
                 if kind == "text" and message["role"] == "assistant":
-                    widgets.append(TranscriptMarkdown(block["text"], classes="assistant"))
+                    text = TranscriptMarkdown(block["text"], classes="assistant")
+                    self.message_widgets.setdefault(index, text)
+                    widgets.append(text)
                 elif kind == "tool_use":
-                    blocks[block["id"]] = ToolBlock(block, self.cwd, self._tool_renderer(block))
+                    blocks[block["id"]] = ToolBlock(block, self.cwd, self._tool_renderer(block), preview)
+                    self.tool_widgets[block["id"]] = blocks[block["id"]]
                     widgets.append(blocks[block["id"]])
                 elif kind == "tool_result" and block["tool_use_id"] in blocks:
                     blocks[block["tool_use_id"]].finish(block)
+        self.sync_marks()
         if not widgets:
             return None
         self.call_after_refresh(self._follow)
         return self.query_one("#transcript", VerticalScroll).mount(*widgets)
+
+    def preview_lines(self) -> int:
+        """Lines of a tool result shown before the fold (``ui.preview_lines``)."""
+        return ui_setting(self.host, "preview_lines", PREVIEW_LINES)
+
+    def widget_for_message(self, index: int) -> Widget | None:
+        """The transcript block that shows ``ctx.messages[index]``: the block of its text, else (a message of tool
+        calls or tool results) the block of its first tool call. ``None`` for a message with no block (before the
+        :data:`REPLAY_LIMIT` window, or one that shows nothing)."""
+        widget = self.message_widgets.get(index)
+        if widget is not None:
+            return widget
+        messages = self.host.messages
+        if not 0 <= index < len(messages) or isinstance(messages[index]["content"], str):
+            return None
+        for block in messages[index]["content"]:
+            tool_id = block.get("id") if block.get("type") == "tool_use" else block.get("tool_use_id")
+            if tool_id in self.tool_widgets:
+                return self.tool_widgets[tool_id]
+        return None
+
+    def sync_marks(self) -> None:
+        """Give the ``-marked`` class to the blocks of the marked messages, and take it from the others."""
+        marked = {id(w) for i in self.marks if (w := self.widget_for_message(i)) is not None}
+        for block in (*self.message_widgets.values(), *self.tool_widgets.values()):
+            block.set_class(id(block) in marked, "-marked")
+            block.tooltip = None
+        for index, label in self.marks.items():
+            if label and (target := self.widget_for_message(index)) is not None:
+                target.tooltip = label
+
+    def mark_message(self, index: int, label: str) -> None:
+        """Mark ``ctx.messages[index]`` (``ctx.transcript.mark``)."""
+        self.marks[index] = label
+        self.sync_marks()
+
+    def unmark_message(self, index: int | None) -> None:
+        """Drop the mark of ``ctx.messages[index]``, or every mark when ``index`` is ``None``."""
+        if index is None:
+            self.marks.clear()
+        else:
+            self.marks.pop(index, None)
+        self.sync_marks()
+
+    def scroll_to_message(self, index: int) -> bool:
+        """Scroll the transcript to the block of ``ctx.messages[index]``; ``False`` if it has none."""
+        widget = self.widget_for_message(index)
+        if widget is None or not widget.is_attached:
+            return False
+        transcript = self.query_one("#transcript", VerticalScroll)
+        transcript.anchor(False)  # stay where the user jumped to while the turn goes on
+        self.call_after_refresh(transcript.scroll_to_widget, widget, animate=False, top=True)
+        return True
 
     def show_error(self, text: str) -> Any:
         return self._add(Static(Content(f"{theme.ERROR} {text}"), classes="error"))
@@ -338,14 +405,16 @@ class MinimalTui(TextualApp):
         # Mount first: Markdown resets its source on mount, which would drop an earlier append.
         if self.assistant is None:
             self.assistant = TranscriptMarkdown("", classes="assistant")
+            self.message_widgets[len(self.host.messages)] = self.assistant  # the reply is appended when it ends
             await self._add(self.assistant)
         await self.assistant.append(chunk)
         self.call_after_refresh(self._follow)
 
     def show_tool_call(self, call: dict) -> Any:
         self.assistant = None
-        block = ToolBlock(call, self.cwd, self._tool_renderer(call))
+        block = ToolBlock(call, self.cwd, self._tool_renderer(call), self.preview_lines())
         self.tool_blocks[call["id"]] = block
+        self.tool_widgets[call["id"]] = block
         mounted = self._add(block)
         self.refresh_live({"kind": "tool_call", "call": call})
         return mounted
@@ -391,6 +460,8 @@ class MinimalTui(TextualApp):
         self.refresh_css(animate=False)
         await self.remount_widgets()
         self._render_status()
+        for block in self.query(ToolBlock):
+            block.set_preview_lines(self.preview_lines())
         for header in self.query(Header):
             await header.recompose()
         for problem in problems:
@@ -855,7 +926,9 @@ class MinimalTui(TextualApp):
                 self.run_command_worker(line)
             return True
         expansion = expand_mentions(line, self.cwd, ui_setting(self.host, "mention_max_chars", DEFAULT_MAX_CHARS))
-        self._add(Static(line, markup=False, classes="user"))
+        user = Static(line, markup=False, classes="user")
+        self.message_widgets[len(self.host.messages)] = user  # the turn appends the message next
+        self._add(user)
         if expansion.attached or expansion.notices:
             notes = [
                 f"attached {path} ({chars} characters{', cut' if cut else ''})"
@@ -885,6 +958,8 @@ class MinimalTui(TextualApp):
         was_turn = self.in_turn
         status = self.host.status()
         if (status.session_id, status.truncations) != self.shown_session:
+            if status.session_id != self.shown_session[0]:
+                self.marks.clear()  # another session: marks of message indexes mean nothing
             transcript = self.query_one("#transcript", VerticalScroll)
             transcript.remove_children()
             transcript.anchor(False)

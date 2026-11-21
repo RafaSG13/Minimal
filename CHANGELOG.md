@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added
+
+- API 2.4 screens: `ctx.ui.screen(factory)` shows your own modal Textual screen (`factory(dismiss)` runs on the UI
+  thread) and returns what it is dismissed with. `ctx.ui.pick(title, items, ...)` is a themed, keyboard-driven list the
+  user filters by typing: `(value, label)` or `(value, label, detail)` items, fuzzy matching, `on_highlight(value)` on
+  every change of the highlighted row for live previews, `preview(value)` for a side pane. `ctx.ui.overlay(content)`
+  shows scrollable read-only text (plain or styled lines), closed with Esc. The plain terminal raises `RuntimeError`
+  for `screen`, prints for `overlay` and shows `choose`'s numbered list for `pick`.
+- `timeout=` (seconds, default `None`) on every `ctx.ui` question: `ask`, `choose`, `choose_many`, `ask_text`, `pick`,
+  `overlay` and `screen`. On expiry the dialog closes and the call returns what a cancel returns (`False` for `ask`,
+  else `None`), so a worker never waits for ever. The plain terminal honours it when stdin is a terminal. Quitting
+  wakes every worker waiting for an answer.
+- `ctx.transcript` (`minimal.api.Transcript`): `scroll_to(message_index)`, `mark(message_index, label="")`,
+  `unmark(message_index=None)`, `marks()` and `find(text, *, regex=False)`, by index into `ctx.messages`. A marked
+  block gets the stable CSS class `-marked` (default: a thick accent left border) and the label as its tooltip; marks
+  follow the session in view. New `Frontend` members back it and the screens (`transcript_scroll_to`,
+  `transcript_mark`, `transcript_unmark`, `transcript_marks`, `screen`, `pick`, `overlay`); `ConsoleFrontend` has
+  harmless defaults.
+- `ui.preview_lines` setting (default 8): how many lines of a tool's output show before the fold, applied on `/reload`.
+
 ## 0.9.0
 
 ### Added

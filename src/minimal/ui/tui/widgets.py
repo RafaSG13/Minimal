@@ -33,7 +33,7 @@ from minimal.providers.base import result_text
 from minimal.ui.tui import theme
 
 PREVIEW_LINES = 8
-"""Most output lines shown under a tool call."""
+"""Most output lines shown under a tool call before the fold, when ``ui.preview_lines`` is not set."""
 
 EXPANDED_LINES = 500
 """Most output lines shown when a tool call is expanded."""
@@ -226,7 +226,8 @@ class ToolBlock(Static):
     """One tool call: a header line and a preview of its body, on a background that shows its state.
 
     The CSS classes ``-pending``, ``-success`` and ``-error`` select the background.
-    A click expands a body longer than :data:`PREVIEW_LINES`, and collapses it again.
+    A click expands a body longer than :attr:`preview_lines` (:data:`PREVIEW_LINES` unless ``ui.preview_lines`` says
+    otherwise), and collapses it again.
     """
 
     def __init__(
@@ -234,8 +235,10 @@ class ToolBlock(Static):
         call: dict,
         cwd: str | None = None,
         render: Callable[[dict | None], list[StyledLine] | None] | None = None,
+        preview_lines: int = PREVIEW_LINES,
     ) -> None:
         super().__init__(classes="tool -pending")
+        self.preview_lines = preview_lines  # body lines shown before the fold
         self.call = call
         self.renderer = render  # an extension's tool renderer: render(result or None) -> lines, or None for the default
         self.icon = Content.styled(theme.RUNNING, "$warning")
@@ -304,24 +307,30 @@ class ToolBlock(Static):
         self.update(self._text())
 
     def on_click(self, event: events.Click) -> None:
-        if self.total > PREVIEW_LINES:
+        if self.total > self.preview_lines:
             self.expanded = not self.expanded
             self.update(self._text())
 
+    def set_preview_lines(self, lines: int) -> None:
+        """Show ``lines`` lines of the body before the fold from now on."""
+        if lines != self.preview_lines:
+            self.preview_lines = lines
+            self.update(self._text())
+
     def _body(self) -> Content | None:
-        """The body as shown: a :data:`PREVIEW_LINES` preview, or all of it when expanded."""
+        """The body as shown: a :attr:`preview_lines` preview, or all of it when expanded."""
         if not self.lines:
             return None
-        hidden = self.total - PREVIEW_LINES
+        hidden = self.total - self.preview_lines
         if hidden <= 0:
             shown = list(self.lines)
         elif not self.expanded:
             if self.tail:
                 note = Content.styled(f"… {hidden} earlier lines · click to expand", "$dim")
-                shown = [note, *self.lines[-PREVIEW_LINES:]]
+                shown = [note, *self.lines[-self.preview_lines :]]
             else:
                 note = Content.styled(f"… {hidden} more lines · click to expand", "$dim")
-                shown = [*self.lines[:PREVIEW_LINES], note]
+                shown = [*self.lines[: self.preview_lines], note]
         else:
             shown = list(self.lines)
             cut = self.total - len(self.lines)
