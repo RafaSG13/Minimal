@@ -106,6 +106,51 @@ class DelegateRunTest(DelegateTest):
         self.assertIn("task must be a non-empty string", content)
         self.assertEqual([a.id for a in app.context.agents()], ["main"])
 
+    def test_cwd_runs_the_delegate_in_a_folder_of_the_project_and_defaults_to_the_projects_own(self):
+        (self.tmp / "sub" / "deep").mkdir(parents=True)
+        app = self.make(
+            [
+                use("delegate", {"task": "t", "cwd": "sub/deep"}),
+                use("where", id="w1"),
+                text_reply("r1"),
+                use("delegate", {"task": "t"}, id="c2"),
+                use("where", id="w2"),
+                text_reply("r2"),
+                text_reply("ok"),
+            ]
+        )
+        app.registry.register_tool("where", lambda input, ctx: ctx.cwd)
+        self.run_turn(app, "go")
+        results = [
+            block["content"]
+            for message in app.provider.requests[2].messages + app.provider.requests[5].messages
+            if isinstance(message["content"], list)
+            for block in message["content"]
+            if block["type"] == "tool_result" and block["tool_use_id"] in ("w1", "w2")
+        ]
+        self.assertEqual(results, [str((self.tmp / "sub" / "deep").resolve()), str(self.tmp)])
+        self.assertEqual(app.context.cwd, str(self.tmp))  # the caller's own folder is untouched
+
+    def test_cwd_must_exist_and_stay_inside_the_project(self):
+        (self.tmp / "sub").mkdir()
+        app = self.make([text_reply("unused")])
+        tool = app.registry.tools["delegate"]
+        for value, message in (
+            ("nowhere", "is not an existing folder of the project"),
+            ("..", "is outside the project"),
+            ("/", "is outside the project"),
+            (3, "cwd must be a folder of the project"),
+        ):
+            with self.subTest(cwd=value):
+                with self.assertRaisesRegex(ValueError, message):
+                    tool.run({"task": "t", "cwd": value}, app.context)
+        self.assertEqual(app.provider.requests, [])  # no agent was started
+
+    def test_it_registers_no_before_request_handler_any_more(self):
+        app = self.make([text_reply("unused")])
+        self.assertFalse(app.registry._handlers.get("before_request"))
+        self.assertIn("cwd", app.registry.tools["delegate"].input_schema["properties"])
+
 
 class DelegateToolsTest(DelegateTest):
     def test_the_allow_list_is_the_only_tools_the_delegate_is_offered(self):

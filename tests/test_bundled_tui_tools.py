@@ -75,6 +75,9 @@ class ToolsTest(BundledExtensionTest):
         for name in ("FAKE_VAR", "FAKE_CHOOSE", "FAKE_SH", "FAKE_EXIT"):
             os.environ.pop(name, None)
         self.frontend = mock.Mock()
+        self.draft = ""  # the prompt box of the mock frontend
+        self.frontend.draft.side_effect = lambda: self.draft
+        self.frontend.set_draft.side_effect = lambda text, append: setattr(self, "draft", self.draft + text if append else text)
 
     def install(self, *names):
         for name in names:
@@ -82,24 +85,34 @@ class ToolsTest(BundledExtensionTest):
             path.write_text(FAKE)
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-    def make(self, settings=None, errors=False):
+    def make(self, settings=None, errors=False, warnings=False, project=None, local=None, trusted=True):
+        """The app with the extension loaded; ``settings`` are the global ones, ``project`` and ``local`` those of the
+        project's two files (the project is trusted unless ``trusted`` is false)."""
         if settings is not None:
             (self.tmp / "settings.json").write_text(json.dumps({"extensions": {"settings": {"tui_tools": settings}}}))
+        for name, layer in (("settings.json", project), ("settings.local.json", local)):
+            if layer is not None:
+                (self.project / ".minimal").mkdir(exist_ok=True)
+                (self.project / ".minimal" / name).write_text(json.dumps({"extensions": {"settings": {"tui_tools": layer}}}))
         app = App(
             registry=Registry(),
             session=Session("t", self.tmp / "t.jsonl"),
             cwd=str(self.project),
             auto_approve=True,
-            trust_project=True,
+            trust_project=trusted,
             frontend=self.frontend,
             extra_extensions=[str(EXTENSION)],
+            register_commands=register_builtin_commands,  # as the CLI does: minimal's own commands exist at register time
         )
         _, problems = app.reload_extensions()
         if not errors:
             self.assertEqual(problems, [])
+        if not warnings:
+            self.assertEqual(app.extension_problems, [])
         app.provider, app.model = RecordingProvider([text_reply("ok")]), "m"
         self.addCleanup(app.stop_git)
         self.problems = problems
+        self.warnings = app.extension_problems
         return app
 
     def run_command(self, app, line):
@@ -125,7 +138,12 @@ class ToolsTest(BundledExtensionTest):
         return runs
 
     def notices(self):
+        """The toasts (``report_with: notify``)."""
         return [call.args for call in self.frontend.notify.call_args_list]
+
+    def reports(self):
+        """The transcript blocks the tools added with ``ctx.show``, as ``(text, kind)``."""
+        return [call.args for call in self.frontend.show.call_args_list]
 
     def init_repo(self):
         for cmd in (["init", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
@@ -188,12 +206,19 @@ class RegistrationTest(ToolsTest):
         for key, spec in namespace["SCHEMA"].items():
             self.assertTrue(spec["description"], key)
 
-    def test_reserved_names_cover_every_command_of_minimal(self):
-        registry = Registry()
-        register_builtin_commands(registry)
+    def test_a_tool_may_not_take_the_name_of_a_command_of_minimal_or_of_the_extension(self):
         namespace = {}
         exec(compile(EXTENSION.read_text(), str(EXTENSION), "exec"), namespace)
-        self.assertLessEqual({*registry.builtin_commands, "theme", "tui"}, namespace["RESERVED"])
+        app = self.make(warnings=True)
+        builtin = app.registry.builtin_commands
+        self.assertIn("help", builtin)
+        # /theme is added by the terminal UI, so builtin_commands() lacks it at the first load: it is reserved explicitly
+        self.assertNotIn("theme", builtin)
+        self.assertEqual(namespace["ALWAYS_RESERVED"], {"theme", "tui"})
+        tools = {name: {"command": ["x"]} for name in (*builtin, "theme", "tui")}
+        app = self.make({"tools": tools}, warnings=True)
+        reserved = [name for name in tools if any(f"tools.{name}: /{name} is a command of minimal itself" in w for w in self.warnings)]
+        self.assertEqual(sorted(reserved), sorted(tools))
 
 
 class LaunchTest(ToolsTest):
@@ -205,7 +230,7 @@ class LaunchTest(ToolsTest):
         self.assertEqual(run["name"], "lazygit")
         self.assertEqual(run["args"], ["-p", str(self.project)])
         self.assertEqual(run["cwd"], os.path.realpath(self.project))
-        self.assertEqual(self.notices(), [])
+        self.assertEqual((self.reports(), self.notices()), ([], []))
 
     def test_arguments_are_split_like_a_shell_and_appended(self):
         self.install("btop")
@@ -218,7 +243,7 @@ class LaunchTest(ToolsTest):
         app = self.make()
         self.run_command(app, '/btop "oops')
         self.assertEqual(self.runs(), [])
-        (text, kind), = self.notices()
+        (text, kind), = self.reports()
         self.assertEqual(kind, "error")
         self.assertIn("close the quote or remove it", text)
 
@@ -262,7 +287,7 @@ class LaunchTest(ToolsTest):
         app = self.make({"tools": {"btop": {"cwd": "nowhere"}}})
         self.run_command(app, "/btop")
         self.assertEqual(self.runs(), [])
-        (text, kind), = self.notices()
+        (text, kind), = self.reports()
         self.assertEqual(kind, "error")
         self.assertIn("fix extensions.settings.tui_tools.tools.btop.cwd", text)
 
@@ -271,14 +296,14 @@ class LaunchTest(ToolsTest):
         app = self.make()
         os.environ["FAKE_EXIT"] = "3"
         self.run_command(app, "/btop")
-        self.assertEqual(self.notices(), [("btop exited with status 3.", "warning")])
+        self.assertEqual(self.reports(), [("btop exited with status 3.", "output")])
 
     def test_a_tool_that_disappeared_after_the_load_says_how_to_install_it(self):
         self.install("btop")
         app = self.make()
         (self.bin / "btop").unlink()
         self.run_command(app, "/btop")
-        (text, kind), = self.notices()
+        (text, kind), = self.reports()
         self.assertEqual(kind, "error")
         self.assertIn("brew install btop; then /reload", text)
 
@@ -291,16 +316,33 @@ class LaunchTest(ToolsTest):
         self.assertIn("Unknown tool 'nope'", self.run_command(app, "/tui nope"))
         self.assertIsNone(app.take_queued())
 
-    def test_a_key_queues_the_command_and_a_bad_key_is_a_load_error(self):
+    def test_a_key_is_a_terminal_key_that_runs_the_program_itself_and_a_bad_key_is_a_warning(self):
         self.install("lazygit")
         app = self.make({"tools": {"lazygit": {"key": "ctrl+g"}}})
         spec = app.registry.keybindings["ctrl+g"]
         self.assertEqual(spec.id, "tui_tools:lazygit")
+        self.assertTrue(spec.terminal)
         spec.run(app.context)
-        self.assertEqual(app.take_queued(), "/lazygit")
+        self.assertIsNone(app.take_queued())  # no /lazygit queued: the key ran the tool under the suspended UI
+        (run,) = self.runs()
+        self.assertEqual((run["name"], run["args"]), ("lazygit", ["-p", str(self.project)]))
         self.assertRegex(self.run_command(app, "/tui"), r"lazygit\s+ready .*\[ctrl\+g\]")
-        app = self.make({"tools": {"lazygit": {"key": "ctrl+c"}}}, errors=True)
-        self.assertTrue(any("extensions.settings.tui_tools.tools.lazygit.key: " in p for p in self.problems), self.problems)
+        app = self.make({"tools": {"lazygit": {"key": "ctrl+c"}}}, warnings=True)
+        (warning,) = self.warnings
+        self.assertIn("extensions.settings.tui_tools.tools.lazygit.key: ", warning)
+        self.assertIn("/lazygit works without the key", warning)
+        self.assertIn("lazygit", app.registry.commands)  # the tool itself still loads
+        self.assertEqual(app.registry.keybindings, {})
+
+    def test_a_key_reports_through_the_transcript_and_refreshes_git_like_the_command(self):
+        self.install("lazygit")
+        self.init_repo()
+        app = self.make({"tools": {"lazygit": {"key": "ctrl+g"}}})
+        os.environ["FAKE_SH"] = f"touch {self.project / 'new.txt'}"
+        with mock.patch.object(app, "poke_git") as poke:
+            app.registry.keybindings["ctrl+g"].run(app.context)
+        poke.assert_called()
+        self.assertEqual(self.reports(), [("lazygit changed the working tree: 0 -> 1 changed files.", "output")])
 
     def test_no_key_is_bound_by_default(self):
         self.install("lazygit")
@@ -321,15 +363,63 @@ class ChooserTest(ToolsTest):
         self.assertRegex(flag, r"^--chooser-file=.+\.chooser$")
         self.assertEqual(folder, str(self.project))
         self.assertFalse(os.path.exists(flag.split("=", 1)[1]), "the temporary chooser file is removed")
-        expected = ["yazi chose 3 paths: paste or type them in your message", "@a.txt", "@sub/b.py", "/elsewhere/c.txt"]
-        self.assertEqual(self.notices(), [("\n".join(expected), "info")])
+        expected = ["yazi chose 3 paths: added to your message", "@a.txt", "@sub/b.py", "/elsewhere/c.txt"]
+        self.assertEqual(self.reports(), [("\n".join(expected), "output")])
+        self.assertEqual(self.notices(), [])
         self.assertEqual(self.run_command(app, "/tui last").splitlines(), expected)
+        self.assertEqual(self.draft, "@a.txt @sub/b.py /elsewhere/c.txt ")
+
+    def test_a_fake_fzf_flow_ends_in_the_composer_after_what_was_typed(self):
+        self.install("fzf")
+        app = self.make({"tools": {"fzf": {"command": ["fzf", "--chooser-file={chooser}"], "key": "ctrl+f"}}})
+        self.draft = "explain"
+        os.environ["FAKE_SH"] = f'printf "%s\\n" "{self.project}/a.txt" "{self.project}/my file.txt" > "$chooser"'
+        app.registry.keybindings["ctrl+f"].run(app.context)
+        self.assertEqual(self.draft, 'explain @a.txt "my file.txt" ')
+        self.assertIsNone(app.take_queued())
+        self.assertEqual(app.messages, [])  # filled, never sent
+        self.assertIn("fzf chose 2 paths: added to your message", self.reports()[0][0])
+        self.draft = "see "
+        self.run_command(app, "/fzf")
+        self.assertEqual(self.draft, 'see @a.txt "my file.txt" ')  # no extra space after one that is there
+
+    def test_chooser_to_draft_can_be_turned_off_and_the_report_keeps_the_old_wording(self):
+        self.install("yazi")
+        app = self.make({"chooser_to_draft": False})
+        self.choose(str(self.project / "a.txt"))
+        self.run_command(app, "/yazi")
+        self.assertEqual(self.draft, "")
+        self.assertEqual(self.reports(), [("yazi chose 1 path: paste or type them in your message\n@a.txt", "output")])
+
+    def test_without_a_prompt_box_the_report_says_to_paste_them(self):
+        self.install("yazi")
+        app = self.make()
+        self.frontend.set_draft.side_effect = None  # the plain terminal ignores set_draft
+        self.choose(str(self.project / "a.txt"))
+        self.run_command(app, "/yazi")
+        self.assertEqual(self.reports()[0][0].splitlines()[0], "yazi chose 1 path: paste or type them in your message")
+
+    def test_report_with_notify_shows_a_toast_instead_of_a_block(self):
+        self.install("yazi", "btop")
+        app = self.make({"report_with": "notify"})
+        self.choose(str(self.project / "a.txt"))
+        self.run_command(app, "/yazi")
+        os.environ["FAKE_EXIT"] = "3"
+        self.run_command(app, "/btop")
+        self.assertEqual(
+            self.notices(),
+            [("yazi chose 1 path: added to your message\n@a.txt", "info"), ("btop exited with status 3.", "warning")],
+        )
+        self.assertEqual(self.reports(), [])
+        self.assertEqual(self.run_command(app, "/tui last"), "btop exited with status 3.\n")
+        self.make({"report_with": "toast"}, errors=True)
+        self.assertTrue(any("report_with" in p for p in self.problems), self.problems)
 
     def test_choosing_nothing_says_nothing(self):
         self.install("yazi")
         app = self.make()
         self.run_command(app, "/yazi")
-        self.assertEqual(self.notices(), [])
+        self.assertEqual((self.reports(), self.draft), ([], ""))
         self.assertIn("No tool has reported anything yet", self.run_command(app, "/tui last"))
 
     def test_paths_with_spaces_get_no_mention_prefix_and_nothing_is_queued_or_sent(self):
@@ -337,7 +427,7 @@ class ChooserTest(ToolsTest):
         app = self.make()
         os.environ["FAKE_SH"] = f'printf "%s\\n" "{self.project}/my file.txt" > "$chooser"'
         self.run_command(app, "/yazi")
-        ((text, _),) = self.notices()
+        ((text, _),) = self.reports()
         self.assertEqual(text.splitlines()[1], "my file.txt")
         self.assertIsNone(app.take_queued())
         self.assertEqual(app.messages, [])
@@ -347,10 +437,10 @@ class ChooserTest(ToolsTest):
         app = self.make({"chooser_prefix": "see ", "chooser_max": 2})
         self.choose(*(str(self.project / f"f{i}.txt") for i in range(4)))
         self.run_command(app, "/yazi")
-        (text, _), = self.notices()
+        (text, _), = self.reports()
         self.assertEqual(
             text.splitlines(),
-            ["yazi chose 4 paths: paste or type them in your message", "see f0.txt", "see f1.txt", "... and 2 more (/tui last lists all)"],
+            ["yazi chose 4 paths: added to your message", "see f0.txt", "see f1.txt", "... and 2 more (/tui last lists all)"],
         )
         self.assertEqual(self.run_command(app, "/tui last").splitlines()[1:], [f"see f{i}.txt" for i in range(4)])
 
@@ -359,7 +449,7 @@ class ChooserTest(ToolsTest):
         app = self.make({"tools": {"pick": {"command": ["pick", "--chooser-file={chooser}"]}}})
         self.choose(str(self.project / "a.txt"))
         self.run_command(app, "/pick")
-        self.assertIn("@a.txt", self.notices()[0][0])
+        self.assertIn("@a.txt", self.reports()[0][0])
 
 
 class GitToolTest(ToolsTest):
@@ -369,7 +459,7 @@ class GitToolTest(ToolsTest):
         app = self.make()
         os.environ["FAKE_SH"] = f"touch {self.project / 'new.txt'}"
         self.run_command(app, "/lazygit")
-        self.assertEqual(self.notices(), [("lazygit changed the working tree: 0 -> 1 changed files.", "info")])
+        self.assertEqual(self.reports(), [("lazygit changed the working tree: 0 -> 1 changed files.", "output")])
         self.frontend.invalidate.assert_called()  # the view refreshes
 
     def test_a_branch_switch_is_named(self):
@@ -378,7 +468,7 @@ class GitToolTest(ToolsTest):
         app = self.make()
         os.environ["FAKE_SH"] = f"git -C {self.project} checkout -q -b topic"
         self.run_command(app, "/lazygit")
-        self.assertEqual(self.notices(), [("lazygit changed the working tree: branch main -> topic.", "info")])
+        self.assertEqual(self.reports(), [("lazygit changed the working tree: branch main -> topic.", "output")])
 
     def test_nothing_is_said_when_nothing_changed_or_outside_a_repository(self):
         self.install("lazygit", "btop")
@@ -388,7 +478,7 @@ class GitToolTest(ToolsTest):
         self.run_command(app, "/lazygit")  # unchanged
         os.environ["FAKE_SH"] = f"touch {self.project / 'x.txt'}"
         self.run_command(app, "/btop")  # not a git tool
-        self.assertEqual(self.notices(), [])
+        self.assertEqual(self.reports(), [])
 
     def test_change_note_can_be_turned_off(self):
         self.install("lazygit")
@@ -396,7 +486,7 @@ class GitToolTest(ToolsTest):
         app = self.make({"change_note": False})
         os.environ["FAKE_SH"] = f"touch {self.project / 'new.txt'}"
         self.run_command(app, "/lazygit")
-        self.assertEqual(self.notices(), [])
+        self.assertEqual(self.reports(), [])
 
     def test_any_configured_tool_can_be_a_git_tool(self):
         self.install("fake-tui")
@@ -404,35 +494,82 @@ class GitToolTest(ToolsTest):
         app = self.make({"tools": {"fake": {"command": ["fake-tui"], "git": True}}})
         os.environ["FAKE_SH"] = f"touch {self.project / 'new.txt'}"
         self.run_command(app, "/fake")
-        self.assertIn("fake changed the working tree", self.notices()[0][0])
+        self.assertIn("fake changed the working tree", self.reports()[0][0])
+
+
+class DeepMergeTest(ToolsTest):
+    GLOBAL = {"tools": {"one": {"command": ["one"], "description": "first", "env": {"A": "1"}}, "lazygit": {"key": "ctrl+g"}}}
+
+    def test_a_project_adds_or_changes_one_tool_without_replacing_the_global_ones(self):
+        self.install("one", "two", "lazygit")
+        app = self.make(
+            self.GLOBAL,
+            project={"tools": {"two": {"command": ["two"]}, "lazygit": {"command": ["lazygit", "--debug"]}, "one": {"description": "mine"}}},
+            local={"tools": {"two": {"description": "personal"}}},
+        )
+        self.assertEqual(sorted(app.registry.commands), ["lazygit", "one", "tui", "two"])
+        self.assertIn("mine", app.registry.commands["one"].description)  # the project's field...
+        self.run_command(app, "/one")
+        self.assertEqual(self.runs()[-1]["name"], "one")  # ...next to the global command
+        self.assertIn("personal", app.registry.commands["two"].description)  # local over project
+        self.run_command(app, "/lazygit")
+        self.assertEqual(self.runs()[-1]["args"], ["--debug"])
+        self.assertIn("ctrl+g", app.registry.keybindings)  # the global key survives the project's command
+        self.assertEqual(app.context.settings.get("extensions.settings.tui_tools.tools.one.env"), {"A": "1"})
+
+    def test_the_layers_merge_nested_objects_and_a_higher_layer_replaces_lists_and_scalars(self):
+        self.install("one")
+        app = self.make(
+            self.GLOBAL, project={"tools": {"one": {"command": ["one", "--p"], "env": {"B": "2"}}}}
+        )
+        self.assertEqual(
+            app.context.settings.get("extensions.settings.tui_tools.tools.one"),
+            {"command": ["one", "--p"], "description": "first", "env": {"A": "1", "B": "2"}},
+        )
+        self.run_command(app, "/one")
+        self.assertEqual(self.runs()[0]["args"], ["--p"])
+
+    def test_an_untrusted_project_adds_nothing(self):
+        self.install("one", "two")
+        app = self.make(self.GLOBAL, project={"tools": {"two": {"command": ["two"]}}}, trusted=False)
+        self.assertEqual(sorted(app.registry.commands), ["one", "tui"])
+
+    def test_the_setting_declares_the_deep_merge(self):
+        app = self.make()
+        spec = app.registry.declared_settings["tui_tools"]
+        self.assertEqual(spec.schema["tools"]["merge"], "deep")
 
 
 class BadSettingsTest(ToolsTest):
-    def assert_error(self, settings, *needles):
-        self.make(settings, errors=True)
-        text = "\n".join(self.problems)
+    def assert_warning(self, settings, *needles):
+        """Loads: the problem is a warning of the extension, not a failed load."""
+        app = self.make(settings, warnings=True)
+        text = "\n".join(self.warnings)
         for needle in needles:
             self.assertIn(needle, text)
+        self.assertIn("tui", app.registry.commands)
+        return app
 
     def test_tool_names_are_validated_like_command_names(self):
-        self.assert_error({"tools": {"Bad Name": {"command": ["x"]}}}, "'Bad Name' is not a tool name", "lowercase")
+        self.assert_warning({"tools": {"Bad Name": {"command": ["x"]}}}, "'Bad Name' is not a tool name", "lowercase")
 
     def test_a_name_that_would_replace_a_builtin_command_is_refused(self):
-        self.assert_error(
+        self.assert_warning(
             {"tools": {"help": {"command": ["x"]}}},
             "extensions.settings.tui_tools.tools.help: /help is a command of minimal itself; give the tool another name",
         )
-        self.assert_error({"tools": {"tui": {"command": ["x"]}}}, "/tui is a command of minimal itself")
+        self.assert_warning({"tools": {"tui": {"command": ["x"]}}}, "/tui is a command of minimal itself")
+        self.assert_warning({"tools": {"theme": {"command": ["x"]}}}, "/theme is a command of minimal itself")
 
     def test_a_new_tool_needs_a_command(self):
-        self.assert_error({"tools": {"mine": {"description": "d"}}}, "tools.mine.command is required", '["mine"]')
+        self.assert_warning({"tools": {"mine": {"description": "d"}}}, "tools.mine.command is required", '["mine"]')
 
     def test_fields_are_type_checked_with_the_fix(self):
-        self.assert_error(
+        self.assert_warning(
             {"tools": {"mine": {"command": "mine", "env": {"A": 1}, "enabled": "yes", "colour": 1}}},
             "unknown field 'colour' (known: command, description, cwd, env, enabled, install, git, key)",
         )
-        self.assert_error(
+        self.assert_warning(
             {"tools": {"mine": {"command": "mine", "env": {"A": 1}, "enabled": "yes"}}},
             "tools.mine.command must be a non-empty list of non-empty strings",
             "tools.mine.env must be an object of text values",
@@ -440,17 +577,35 @@ class BadSettingsTest(ToolsTest):
         )
 
     def test_an_entry_must_be_an_object(self):
-        self.assert_error({"tools": {"mine": ["mine"]}}, "tools.mine must be an object")
+        self.assert_warning({"tools": {"mine": ["mine"]}}, "tools.mine must be an object")
 
     def test_top_level_settings_are_validated_by_minimal(self):
-        self.assert_error({"chooser_max": 0}, "extensions.settings.tui_tools.chooser_max")
-        self.assert_error({"change_note": "yes"}, "tui_tools: extensions.settings.tui_tools.change_note must be bool")
+        self.make({"chooser_max": 0}, errors=True)
+        self.assertIn("extensions.settings.tui_tools.chooser_max", "\n".join(self.problems))
+        self.make({"change_note": "yes"}, errors=True)
+        self.assertIn("tui_tools: extensions.settings.tui_tools.change_note must be bool", "\n".join(self.problems))
 
-    def test_a_bad_setting_loads_nothing_but_does_not_crash(self):
-        self.install("lazygit")
-        app = self.make({"tools": {"help": {"command": ["x"]}}}, errors=True)
-        self.assertNotIn("lazygit", app.registry.commands)
-        self.assertIn("Unknown command: /lazygit", self.run_command(app, "/lazygit"))
+    def test_a_bad_entry_is_skipped_with_a_warning_and_the_other_tools_load(self):
+        self.install("lazygit", "btop", "good")
+        app = self.make(
+            {
+                "tools": {
+                    "help": {"command": ["x"]},
+                    "mine": {"description": "no command"},
+                    "btop": {"enabled": "yes"},  # a built-in with a bad field keeps its own definition
+                    "good": {"command": ["good"], "description": "fine"},
+                }
+            },
+            warnings=True,
+        )
+        self.assertEqual(len(self.warnings), 3, self.warnings)
+        self.assertTrue(all(w.startswith("tui_tools: ") and w.endswith("skipped)") for w in self.warnings), self.warnings)
+        self.assertEqual(sorted(app.registry.commands), ["btop", "good", "lazygit", "tui"])
+        self.assertIn("resource monitor", app.registry.commands["btop"].description)
+        self.run_command(app, "/lazygit")
+        self.assertEqual(self.runs()[0]["name"], "lazygit")
+        self.assertIn("Warning: tui_tools: ", app.reload_summary())  # shown on every reload, no "Failed:"
+        self.assertNotIn("Failed", app.reload_summary())
 
 
 class TuiTest(ToolsTest, unittest.IsolatedAsyncioTestCase):
@@ -468,7 +623,7 @@ class TuiTest(ToolsTest, unittest.IsolatedAsyncioTestCase):
         self.fail("timed out")
 
     async def run_ui(self, body, settings=None):
-        self.install("btop", "lazygit")
+        self.install("btop", "lazygit", "yazi")
         app = self.make(settings)
         suspended = []
 
@@ -482,22 +637,25 @@ class TuiTest(ToolsTest, unittest.IsolatedAsyncioTestCase):
             async with tui.run_test() as pilot:
                 await body(tui, pilot, app, suspended)
 
+    @staticmethod
+    def outputs(tui):
+        return " ".join(str(block.render()) for block in tui.query(".output"))
+
     async def test_the_tool_command_suspends_the_interface_and_tui_does_not(self):
         async def body(tui, pilot, app, suspended):
             await pilot.pause(0.1)
             await self.submit(pilot, "/tui")
             await self.wait_until(pilot, lambda: not tui.busy)
             self.assertEqual((suspended, self.runs()), ([], []))
-            shown = " ".join(str(block.render()) for block in tui.query(".output"))
-            self.assertIn("Terminal tools", shown)
+            self.assertIn("Terminal tools", self.outputs(tui))
             os.environ["FAKE_EXIT"] = "2"
             await self.submit(pilot, "/btop --x")
             await self.wait_until(pilot, lambda: not tui.busy and self.runs())
             self.assertEqual(suspended, [True])
             self.assertEqual(self.runs()[0]["args"], ["--x"])
-            # what a terminal command prints is gone when the interface returns: the report is a notice
-            await pilot.pause(0.1)
-            self.assertIn("btop exited with status 2.", [n.message for n in tui._notifications])
+            # what a terminal command prints is gone when the interface returns: the report is a block that stays
+            await self.wait_until(pilot, lambda: "btop exited with status 2." in self.outputs(tui))
+            self.assertEqual(list(tui._notifications), [])
 
         await self.run_ui(body)
 
@@ -511,14 +669,33 @@ class TuiTest(ToolsTest, unittest.IsolatedAsyncioTestCase):
 
         await self.run_ui(body)
 
-    async def test_the_key_opens_the_tool_through_the_same_suspending_command(self):
+    async def test_the_key_runs_the_tool_directly_under_the_suspended_interface(self):
         async def body(tui, pilot, app, suspended):
             await pilot.pause(0.1)
+            os.environ["FAKE_EXIT"] = "4"
             await pilot.press("ctrl+g")
             await self.wait_until(pilot, lambda: self.runs() and not tui.busy)
             self.assertEqual(suspended, [True])
+            self.assertEqual(self.runs()[0]["args"], ["-p", str(self.project)])
+            await self.wait_until(pilot, lambda: "lazygit exited with status 4." in self.outputs(tui))
+            self.assertIsNone(app.take_queued())
 
         await self.run_ui(body, {"tools": {"lazygit": {"key": "ctrl+g"}}})
+
+    async def test_what_yazi_picked_lands_in_the_prompt_box_after_the_resume(self):
+        async def body(tui, pilot, app, suspended):
+            await pilot.pause(0.1)
+            composer = tui.query_one("#prompt", Composer)
+            composer.set_text("look at")
+            os.environ["FAKE_CHOOSE"] = f"{self.project / 'a.txt'} {self.project / 'sub' / 'b.py'}"
+            await pilot.press("alt+y")
+            await self.wait_until(pilot, lambda: self.runs() and not tui.busy)
+            self.assertEqual(suspended, [True])
+            await self.wait_until(pilot, lambda: "yazi chose 2 paths: added to your message" in self.outputs(tui))
+            self.assertEqual(composer.text, "look at @a.txt @sub/b.py ")
+            self.assertEqual(app.messages, [])
+
+        await self.run_ui(body, {"tools": {"yazi": {"key": "alt+y"}}})
 
 
 if __name__ == "__main__":
