@@ -298,7 +298,9 @@ class TuiTest(CoreTest, unittest.IsolatedAsyncioTestCase):
             late.start()
             late.join(2)  # a worker must not wait for the suspended UI loop
             inside["thread_returned"] = not late.is_alive()
-            inside["drawn"] = self.blocks(tui) + self.blocks(tui, ".error")
+            # asyncio's debug mode reports a slow callback on a loaded runner as a stderr block: not what is under test
+            shown = self.blocks(tui) + self.blocks(tui, ".error")
+            inside["drawn"] = [text for text in shown if not text.startswith("Executing <")]
             return "last"
 
         tui = self.start(lambda r: r.register_keybinding("f5", key, "tty", terminal=True))
