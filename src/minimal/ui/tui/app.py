@@ -406,12 +406,12 @@ class MinimalTui(TextualApp):
     def on_print(self, event: events.Print) -> None:
         """Show printed text (command output, extension messages) as an output block."""
         found = self.query("#transcript")
-        if not found:
+        transcript = found.first(VerticalScroll) if found else None
+        if transcript is None or not transcript.is_attached:
             # Before the interface is composed or while it is torn down (a worker that prints as the app quits): there
             # is no transcript to draw in, and raising here would crash the app, so the text goes to the real streams.
             print(event.text, end="", file=sys.__stderr__ if event.stderr else sys.__stdout__, flush=True)
             return
-        transcript = found.first(VerticalScroll)
         last = transcript.children[-1] if transcript.children else None
         if (
             self.output_block is None
