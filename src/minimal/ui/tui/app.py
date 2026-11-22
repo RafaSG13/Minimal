@@ -55,7 +55,7 @@ from minimal.ui.tui.frontend import TuiFrontend, theme_command
 from minimal.ui.tui.markdown import RenderedFence, TranscriptMarkdown
 from minimal.ui.tui.notify import DEFAULT_AFTER, sequence
 from minimal.ui.tui.palette import SlashCommands, needs_args
-from minimal.ui.tui.widgets import Header, PanelView, Section, ToolBlock, to_content
+from minimal.ui.tui.widgets import PREVIEW_LINES, Header, PanelView, Section, ToolBlock, to_content
 
 REPLAY_LIMIT = 200
 """Most messages of a resumed session drawn in the transcript."""
@@ -152,6 +152,7 @@ class MinimalTui(TextualApp):
     .tool.-error { background: $tool-error-bg; }
     .output { color: $foreground 80%; padding: 0 1; margin-top: 1; }
     .error { color: $error; background: $tool-error-bg; padding: 0 2; margin-top: 1; }
+    .-marked { border-left: thick $accent; }
 
     #working { height: 1; padding: 0 2; margin-top: 1; display: none; }
     #working.-busy { display: block; }
@@ -182,7 +183,10 @@ class MinimalTui(TextualApp):
         self.host = host
         self.sync_themes(theme_name)
         self.ui_thread: int | None = None
-        self.pending_modal: threading.Event | None = None
+        self.pending_modals: set[threading.Event] = set()  # workers waiting for a dialog's answer (quitting wakes them)
+        self.message_widgets: dict[int, Widget] = {}  # message index → the transcript block that shows its text
+        self.tool_widgets: dict[str, ToolBlock] = {}  # tool call id → its block (a tool message maps through it)
+        self.marks: dict[int, str] = {}  # message index → label (ctx.transcript.mark)
         self.assistant: Markdown | None = None
         self.tool_blocks: dict[str, ToolBlock] = {}
         self.output_block: Static | None = None
@@ -204,6 +208,10 @@ class MinimalTui(TextualApp):
         self.focus_reported = False  # the terminal reported a focus change at least once: app_focus can be trusted
         self.busy = False  # a turn or command is running: the prompt is locked
         self.ext_keys: list[KeybindingSpec] = []  # the extension keybindings apply_keys bound, by action index
+        self.terminal_active = False  # the interface is suspended for a terminal command or key (run_in_terminal)
+        self.terminal_blocks: list[tuple[str, str]] = []  # what ctx.show sent meanwhile: drawn on resume
+        self.terminal_lock = threading.Lock()
+        self.held_focus: Widget | None = None  # the extension widget that asked to keep the focus (focus_ext_widget)
         self.user_css: tuple[str, str] | None = None  # where the stylesheet of ui.css was added, if one was
         self.ext_css: list[tuple[str, str]] = []  # where the extensions' stylesheets (register_css) were added
 
@@ -250,6 +258,8 @@ class MinimalTui(TextualApp):
             await pending
         for e in self.host.extension_errors:
             self.show_error(f"[extension] could not load {e}")
+        for warning in self.host.extension_problems:
+            self._add(Static(Content.assemble((theme.WARNING, "$warning"), f" [extension] {warning}"), classes="output"))
         for problem in problems:
             self.show_error(f"[ui] {problem}")
         if notice := self.host.untrusted_notice():
@@ -260,8 +270,8 @@ class MinimalTui(TextualApp):
 
     def on_unmount(self) -> None:
         self.host.stop_git()
-        if self.pending_modal is not None:  # release a worker waiting for an answer
-            self.pending_modal.set()
+        for waiting in list(self.pending_modals):  # release the workers waiting for an answer
+            waiting.set()
 
     # --- transcript ----------------------------------------------------------
 
@@ -287,34 +297,111 @@ class MinimalTui(TextualApp):
         """
         messages = self.host.messages
         hidden = max(0, len(messages) - REPLAY_LIMIT)
+        self.message_widgets.clear()
+        self.tool_widgets.clear()
+        self.marks = {i: label for i, label in self.marks.items() if i < len(messages)}
+        preview = self.preview_lines()
         widgets: list[Widget] = []
         if hidden:
             widgets.append(Static(f"… {hidden} earlier messages not shown", classes="output"))
         blocks: dict[str, ToolBlock] = {}
-        for message in messages[hidden:]:
+        for index, message in enumerate(messages[hidden:], hidden):
             content = message["content"]
             if isinstance(content, str):
                 body, attached = split_attachments(content)
-                widgets.append(Static(body, markup=False, classes="user"))
+                user = Static(body, markup=False, classes="user")
+                self.message_widgets[index] = user
+                widgets.append(user)
                 if attached:
                     widgets.append(Static(f"attached {', '.join(attached)}", markup=False, classes="output"))
                 continue
             for block in content:
                 kind = block.get("type")
                 if kind == "text" and message["role"] == "assistant":
-                    widgets.append(TranscriptMarkdown(block["text"], classes="assistant"))
+                    text = TranscriptMarkdown(block["text"], classes="assistant")
+                    self.message_widgets.setdefault(index, text)
+                    widgets.append(text)
                 elif kind == "tool_use":
-                    blocks[block["id"]] = ToolBlock(block, self.cwd, self._tool_renderer(block))
+                    blocks[block["id"]] = ToolBlock(block, self.cwd, self._tool_renderer(block), preview)
+                    self.tool_widgets[block["id"]] = blocks[block["id"]]
                     widgets.append(blocks[block["id"]])
                 elif kind == "tool_result" and block["tool_use_id"] in blocks:
                     blocks[block["tool_use_id"]].finish(block)
+        self.sync_marks()
         if not widgets:
             return None
         self.call_after_refresh(self._follow)
         return self.query_one("#transcript", VerticalScroll).mount(*widgets)
 
+    def preview_lines(self) -> int:
+        """Lines of a tool result shown before the fold (``ui.preview_lines``)."""
+        return ui_setting(self.host, "preview_lines", PREVIEW_LINES)
+
+    def widget_for_message(self, index: int) -> Widget | None:
+        """The transcript block that shows ``ctx.messages[index]``: the block of its text, else (a message of tool
+        calls or tool results) the block of its first tool call. ``None`` for a message with no block (before the
+        :data:`REPLAY_LIMIT` window, or one that shows nothing)."""
+        widget = self.message_widgets.get(index)
+        if widget is not None:
+            return widget
+        messages = self.host.messages
+        if not 0 <= index < len(messages) or isinstance(messages[index]["content"], str):
+            return None
+        for block in messages[index]["content"]:
+            tool_id = block.get("id") if block.get("type") == "tool_use" else block.get("tool_use_id")
+            if tool_id in self.tool_widgets:
+                return self.tool_widgets[tool_id]
+        return None
+
+    def sync_marks(self) -> None:
+        """Give the ``-marked`` class to the blocks of the marked messages, and take it from the others."""
+        marked = {id(w) for i in self.marks if (w := self.widget_for_message(i)) is not None}
+        for block in (*self.message_widgets.values(), *self.tool_widgets.values()):
+            block.set_class(id(block) in marked, "-marked")
+            block.tooltip = None
+        for index, label in self.marks.items():
+            if label and (target := self.widget_for_message(index)) is not None:
+                target.tooltip = label
+
+    def mark_message(self, index: int, label: str) -> None:
+        """Mark ``ctx.messages[index]`` (``ctx.transcript.mark``)."""
+        self.marks[index] = label
+        self.sync_marks()
+
+    def unmark_message(self, index: int | None) -> None:
+        """Drop the mark of ``ctx.messages[index]``, or every mark when ``index`` is ``None``."""
+        if index is None:
+            self.marks.clear()
+        else:
+            self.marks.pop(index, None)
+        self.sync_marks()
+
+    def scroll_to_message(self, index: int) -> bool:
+        """Scroll the transcript to the block of ``ctx.messages[index]``; ``False`` if it has none."""
+        widget = self.widget_for_message(index)
+        if widget is None or not widget.is_attached:
+            return False
+        transcript = self.query_one("#transcript", VerticalScroll)
+        transcript.anchor(False)  # stay where the user jumped to while the turn goes on
+        self.call_after_refresh(transcript.scroll_to_widget, widget, animate=False, top=True)
+        return True
+
     def show_error(self, text: str) -> Any:
         return self._add(Static(Content(f"{theme.ERROR} {text}"), classes="error"))
+
+    def add_block(self, text: str, kind: str = "output") -> Any:
+        """Append a block of ``text`` to the transcript, drawn as command output (``kind`` ``"output"``) or as an
+        error (``"error"``); what ``ctx.show`` sends. Returns the mount awaitable."""
+        self.assistant = None  # the model's next text starts a block below this one
+        return self._add(Static(text.rstrip("\n"), markup=False, classes="error" if kind == "error" else "output"))
+
+    def defer_block(self, text: str, kind: str) -> bool:
+        """Hold ``text`` until the interface is back if it is suspended for a terminal command or key
+        (:meth:`run_in_terminal`); returns whether it did. Safe from any thread: if not, the caller draws it."""
+        with self.terminal_lock:
+            if self.terminal_active:
+                self.terminal_blocks.append((text, kind))
+            return self.terminal_active
 
     def on_print(self, event: events.Print) -> None:
         """Show printed text (command output, extension messages) as an output block."""
@@ -338,14 +425,16 @@ class MinimalTui(TextualApp):
         # Mount first: Markdown resets its source on mount, which would drop an earlier append.
         if self.assistant is None:
             self.assistant = TranscriptMarkdown("", classes="assistant")
+            self.message_widgets[len(self.host.messages)] = self.assistant  # the reply is appended when it ends
             await self._add(self.assistant)
         await self.assistant.append(chunk)
         self.call_after_refresh(self._follow)
 
     def show_tool_call(self, call: dict) -> Any:
         self.assistant = None
-        block = ToolBlock(call, self.cwd, self._tool_renderer(call))
+        block = ToolBlock(call, self.cwd, self._tool_renderer(call), self.preview_lines())
         self.tool_blocks[call["id"]] = block
+        self.tool_widgets[call["id"]] = block
         mounted = self._add(block)
         self.refresh_live({"kind": "tool_call", "call": call})
         return mounted
@@ -391,6 +480,8 @@ class MinimalTui(TextualApp):
         self.refresh_css(animate=False)
         await self.remount_widgets()
         self._render_status()
+        for block in self.query(ToolBlock):
+            block.set_preview_lines(self.preview_lines())
         for header in self.query(Header):
             await header.recompose()
         for problem in problems:
@@ -507,6 +598,7 @@ class MinimalTui(TextualApp):
     async def remount_widgets(self) -> None:
         """Replace every extension widget and panel with fresh ones, placed as :meth:`Host.layout` says."""
         layout = self.host.layout()
+        self.held_focus = None  # the widgets are made again
         for area in config.UI_AREAS:
             await self.query_one(f"#{area}").remove_children()
         self.ext_widgets = []
@@ -524,6 +616,8 @@ class MinimalTui(TextualApp):
                         widget = shown = PanelView(
                             placed.spec, self.host.ctx, self.show_error, placed.title, placed.collapsed
                         )
+                    if placed.height is not None:
+                        widget.styles.height = placed.height
                     await container.mount(shown)
                     self.ext_widgets.append((placed.name, widget))
                 except Exception as e:
@@ -601,13 +695,22 @@ class MinimalTui(TextualApp):
 
     def action_ext_key(self, index: int) -> None:
         """Run the extension keybinding ``index`` (of :attr:`ext_keys`) like a slash command: the prompt is locked and
-        the function runs on a worker, so it may ask the user questions."""
+        the function runs on a worker, so it may ask the user questions. A ``terminal`` binding runs on this thread
+        with the interface suspended, like a ``terminal`` command."""
         if index >= len(self.ext_keys):
             return
+        spec = self.ext_keys[index]
         self.in_turn = False
         self.set_busy(True)
         self.refresh_live({"kind": "start", "turn": False})
-        self.run_key_worker(self.ext_keys[index])
+        if spec.terminal:
+            self.run_terminal_key(spec)
+        else:
+            self.run_key_worker(spec)
+
+    @staticmethod
+    def _key_error(spec: KeybindingSpec, error: Exception) -> str:
+        return f"[extension] key {spec.key} ({spec.id}): {error}"
 
     @work(thread=True, exclusive=True, group="agent")
     def run_key_worker(self, spec: KeybindingSpec) -> None:
@@ -617,8 +720,85 @@ class MinimalTui(TextualApp):
             self.call_from_thread(self.exit)
             return
         except Exception as e:
-            self.call_from_thread(self.show_error, f"[extension] key {spec.key} ({spec.id}): {e}")
+            self.call_from_thread(self.show_error, self._key_error(spec, e))
         self.call_from_thread(self.after_action)
+
+    def run_terminal_key(self, spec: KeybindingSpec) -> None:
+        """Run a ``terminal`` keybinding with the interface suspended; a str it returns is shown afterwards, and so is
+        an error it raises (what it printed is gone)."""
+        failure: list[Exception] = []
+
+        def run() -> None:
+            try:
+                result = spec.run(self.host.ctx)
+                if isinstance(result, str) and result.strip():
+                    self.host.ctx.show(result)
+            except ExitRepl:
+                raise
+            except Exception as e:
+                failure.append(e)
+
+        try:
+            self.run_in_terminal(run)
+        except ExitRepl:
+            self.exit()
+            return
+        if failure:
+            self.show_error(self._key_error(spec, failure[0]))
+        self.after_action()
+
+    def run_in_terminal(self, fn: Callable[[], Any]) -> Any:
+        """Call ``fn()`` on this (the UI) thread with the interface suspended, so it can use the real terminal.
+
+        What ``ctx.show`` sends meanwhile is drawn in the transcript once the interface is back, in order, before
+        anything ``fn``'s caller does next. Returns what ``fn`` returns; lets what it raises through.
+        """
+        with self.terminal_lock:
+            self.terminal_active = True
+        try:
+            with self.suspend(), _outside_event_loop():
+                return fn()
+        finally:
+            with self.terminal_lock:
+                self.terminal_active = False
+                blocks, self.terminal_blocks = self.terminal_blocks, []
+            for text, kind in blocks:
+                self.add_block(text, kind)
+
+    # --- focus ---------------------------------------------------------------
+
+    def composer(self) -> Composer:
+        """The prompt box, wherever a dialog may be on top."""
+        return self.screen_stack[0].query_one("#prompt", Composer)
+
+    def focus_ext_widget(self, name: str, hold: bool = False) -> bool:
+        """Give the focus to the extension widget called ``name``, or to its first focusable part; with ``hold``,
+        :meth:`after_action` leaves it there. Returns whether it took the focus (``False``: not shown, nothing in it
+        can take focus, or a dialog is open)."""
+        widget = next((w for n, w in self.ext_widgets if n == name), None)
+        if widget is None or not widget.is_attached or isinstance(self.screen, ModalScreen):
+            return False
+        target = widget if widget.focusable else next((w for w in widget.query("*") if w.focusable), None)
+        if target is None:
+            return False
+        self.screen.set_focus(target)
+        self.held_focus = widget if hold else None
+        return True
+
+    def focus_composer(self) -> None:
+        """Give the focus to the prompt box and end any hold (:meth:`focus_ext_widget`)."""
+        self.held_focus = None
+        self.screen_stack[0].set_focus(self.composer())
+
+    def focus_is_held(self) -> bool:
+        """Whether a widget asked to keep the focus and still has it. A hold ends here, when its widget was removed or
+        the focus left it."""
+        held = self.held_focus
+        focused = self.focused
+        if held is not None and held.is_attached and focused is not None and held in focused.ancestors_with_self:
+            return True
+        self.held_focus = None
+        return False
 
     # --- status line and working indicator -----------------------------------
 
@@ -779,7 +959,12 @@ class MinimalTui(TextualApp):
         self.query_one("#working", Static).update(Content.assemble(*parts))
 
     def action_interrupt(self) -> None:
-        """Ask the turn in progress to stop (see :class:`~minimal.extensions.registry.TurnInterrupted`)."""
+        """Ask the turn in progress to stop (see :class:`~minimal.extensions.registry.TurnInterrupted`). While a widget
+        holds the focus (``ctx.focus_widget(name, hold=True)``) the key that reaches here only takes the focus back to
+        the prompt: press it again to interrupt."""
+        if self.focus_is_held():
+            self.focus_composer()
+            return
         if self.in_turn and not self.host.interrupting:
             self.host.interrupt()
             self.refresh_working()
@@ -845,8 +1030,7 @@ class MinimalTui(TextualApp):
             cmd = self.host.command(line[1:].partition(" ")[0])
             if cmd is not None and cmd.terminal:
                 try:
-                    with self.suspend(), _outside_event_loop():
-                        self.host.run_command(line)
+                    self.run_in_terminal(lambda: self.host.run_command(line))
                 except ExitRepl:
                     self.exit()
                     return True
@@ -855,7 +1039,9 @@ class MinimalTui(TextualApp):
                 self.run_command_worker(line)
             return True
         expansion = expand_mentions(line, self.cwd, ui_setting(self.host, "mention_max_chars", DEFAULT_MAX_CHARS))
-        self._add(Static(line, markup=False, classes="user"))
+        user = Static(line, markup=False, classes="user")
+        self.message_widgets[len(self.host.messages)] = user  # the turn appends the message next
+        self._add(user)
         if expansion.attached or expansion.notices:
             notes = [
                 f"attached {path} ({chars} characters{', cut' if cut else ''})"
@@ -885,6 +1071,8 @@ class MinimalTui(TextualApp):
         was_turn = self.in_turn
         status = self.host.status()
         if (status.session_id, status.truncations) != self.shown_session:
+            if status.session_id != self.shown_session[0]:
+                self.marks.clear()  # another session: marks of message indexes mean nothing
             transcript = self.query_one("#transcript", VerticalScroll)
             transcript.remove_children()
             transcript.anchor(False)
@@ -898,7 +1086,8 @@ class MinimalTui(TextualApp):
         self.refresh_widgets()
         self.in_turn = False
         self.set_busy(False)
-        self.query_one("#prompt", Composer).focus()
+        if not self.focus_is_held():
+            self.query_one("#prompt", Composer).focus()
         if was_turn:
             self.notify_turn_end()
         self.submit_queued()

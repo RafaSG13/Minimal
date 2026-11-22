@@ -27,7 +27,7 @@ from __future__ import annotations
 import types
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from minimal import config
 from minimal.extensions.metadata import Metadata
@@ -46,6 +46,9 @@ from minimal.extensions.registry import (
     setting_matches,
 )
 from minimal.providers.base import Provider, ProviderSpec, Reply, Usage
+
+if TYPE_CHECKING:
+    from minimal.core.context import Context
 
 
 class ToolCallEvent(TypedDict):
@@ -130,7 +133,8 @@ class BeforeRequestEvent(TypedDict):
 
 
 class AfterResponseEvent(TypedDict):
-    """Payload of ``after_response``: a reply was appended to the history."""
+    """Payload of ``after_response``: a reply was appended to the history (or, ``source`` ``"complete"``, was returned
+    by ``ctx.complete``)."""
 
     ctx: Any
     reply: Reply
@@ -138,6 +142,13 @@ class AfterResponseEvent(TypedDict):
     nested: bool
     agent_id: str
     parent_id: str | None
+    model: str
+    """The model that answered (API 2.4)."""
+    provider: str
+    """The name of the provider that answered (API 2.4); with ``model``, the key of ``ctx.usage.by_model``."""
+    source: str
+    """``"loop"`` for a reply of an agent loop, ``"complete"`` for one of ``ctx.complete`` / ``ctx.complete_text``, which
+    is not in any history (API 2.4)."""
 
 
 class ShutdownEvent(TypedDict):
@@ -215,6 +226,17 @@ class ThemeChangeEvent(TypedDict):
     """Whether it is a dark theme."""
 
 
+class NotifyEvent(TypedDict):
+    """Payload of ``notify``: a notice is about to be shown (``ctx.notify``, and minimal's own). API 2.4."""
+
+    ctx: Any
+    text: str
+    kind: str
+    """``"info"``, ``"warning"`` or ``"error"``."""
+    source: str
+    """``"extension"`` for ``ctx.notify``, ``"core"`` for a notice of minimal itself."""
+
+
 def _first_line(doc: str | None) -> str:
     return doc.strip().splitlines()[0] if doc and doc.strip() else ""
 
@@ -247,10 +269,47 @@ class Extension:
         self._id, self._path, self._scope, self._metadata = id, path, scope, metadata
         self._cwd = cwd
         self._registry = registry
+        self._all_settings = settings
         self._user_settings = settings.extension_settings(id)
         self._errors = errors
         self._settings: Mapping[str, Any] = types.MappingProxyType({})
         self._declared = False
+        self._registered = False
+
+    def _finish_register(self) -> None:
+        """Called by the loader when ``register`` returned: :attr:`ctx` is available from now on."""
+        self._registered = True
+
+    @property
+    def ctx(self) -> Context | None:
+        """The app's :class:`~minimal.core.context.Context`, for code that runs outside any tool, command, event or
+        widget call: a timer or watcher thread started in ``register``, a subscription, a ``Panel`` callback. API 2.4.
+
+        ``None`` while ``register`` runs (the extensions are still loading: a thread that starts there should read
+        ``minimal.ctx`` when it fires, not at start) and always under ``minimal ext check`` and in any registry that no app
+        owns. After ``register`` returned it is the same live ``ctx`` as commands get (``agent_id`` ``"main"``), also on
+        the extension object a ``/reload`` creates. An old object's thread, if :meth:`on_dispose` did not stop it, would
+        keep reaching the app through it. It is safe from any thread, but calling ``ctx.run_command`` or
+        ``ctx.settings.update`` there acts on the app live; see their notes.
+        """
+        return self._registry.context if self._registered else None
+
+    def report_problem(self, text: str) -> None:
+        """Record a non-fatal problem of this extension: it still loads. API 2.4.
+
+        For settings or an environment the extension can work around (two settings that contradict each other, a missing
+        optional binary, a value it clamped). The reload summary and the terminal UI show it as a warning
+        (``Warning: <id>: <text>``), ``/ext list`` lists it and ``minimal ext check`` prints a ``WARN`` line for it
+        without failing the exit status. Unlike an exception from ``register`` it does not mark the extension as failed
+        (``reload_extensions`` does not raise for it), and unlike a setting rejected by ``declare_settings`` it is yours
+        to word.
+
+        Raises:
+            ValueError: if ``text`` is empty.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("report_problem: text must be a non-empty string")
+        self._registry.problems.append(f"{self._id}: {' '.join(text.split())}")
 
     @property
     def id(self) -> str:
@@ -284,6 +343,16 @@ class Extension:
         """Every registered tool by name (read-only, live): call ``tools["bash"].run(input, ctx)`` to reuse one."""
         return types.MappingProxyType(self._registry.tools)
 
+    def builtin_commands(self) -> frozenset[str]:
+        """The names (without ``/``) of minimal's own slash commands at this moment: what an extension must not
+        shadow by accident, or must hand over to with ``ctx.run_command(line, builtin=True)``. API 2.4.
+
+        The built-ins are registered before any extension loads, so the answer is complete at ``register`` time,
+        except for the commands only the terminal UI adds (``/theme``): they are there from the first ``/reload`` on.
+        Extension commands are not included; ``ctx.commands()`` lists all at run time.
+        """
+        return frozenset(self._registry.builtin_commands)
+
     def data_dir(self, scope: str = "project") -> Path:
         """A private folder (mode 0700) for this extension's files, outside the repository; created if missing.
 
@@ -313,13 +382,14 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
-        read_only: bool = False,
+        read_only: bool | Callable[[dict, Any], bool] = False,
     ) -> None:
         """Add a tool the model can call as ``run(input, ctx)``; see :meth:`Registry.register_tool`.
 
         ``subject_key`` names the ``input`` field that permission rules ``name(pattern)`` match.
         ``read_only`` (API 2.3) says the tool changes nothing and is thread-safe, so calls to it may run concurrently
-        with each other (see :attr:`~minimal.extensions.registry.Tool.read_only`).
+        with each other (see :attr:`~minimal.extensions.registry.Tool.read_only`). API 2.4: it may be a callable
+        ``read_only(input, ctx) -> bool`` deciding per call, like ``confirm``.
         """
         self._registry.register_tool(name, run, description, input_schema, confirm, subject_key, read_only)
 
@@ -390,11 +460,14 @@ class Extension:
         *,
         show: bool = False,
         name: str = "",
+        terminal: bool = False,
     ) -> None:
         """Bind the global key ``key`` (``ctrl+o``, ``alt+x``, ``f5``) to ``run(ctx)``; see :meth:`Registry.register_keybinding`.
 
         ``run`` runs on a worker thread like a slash command, so it may ask the user questions and use ``ctx``;
-        a key is ignored while a turn, a command or a dialog is running. Keys the UI needs
+        with ``terminal=True`` (API 2.4) it runs instead with the interface suspended, on the UI thread, like a
+        ``terminal`` command: for a full-screen program or one that reads the keyboard. A str it returns is shown in
+        the transcript afterwards. A key is ignored while a turn, a command or a dialog is running. Keys the UI needs
         (:data:`~minimal.extensions.registry.RESERVED_KEYS`) are refused. The user can give the binding another
         key with ``ui.keys``, under ``"<extension id>:<name or description>"``. If another extension already bound
         the key, this one replaces it and the reload reports it. API 2.3.
@@ -403,7 +476,7 @@ class Extension:
             ValueError: if ``key`` is not a valid, unreserved key or ``run`` is not callable.
         """
         replaced = self._registry.register_keybinding(
-            key, run, description, show=show, name=name, ext=self._id
+            key, run, description, show=show, name=name, ext=self._id, terminal=terminal
         )
         if replaced is not None:
             who = f"{replaced.ext}'s " if replaced.ext and replaced.ext != self._id else "its own earlier "
@@ -489,7 +562,7 @@ class Extension:
         """Subscribe ``handler(event)`` to ``event``: one of :data:`~minimal.extensions.registry.EVENTS`
         (``tool_call``, ``tool_result``, ``turn_end``, ``session_start``, ``session_switch``,
         ``turn_start``, ``before_request``, ``after_response``, ``shutdown``, ``provider_error``,
-        ``agent_start``, ``agent_end``, ``mode_change``, ``theme_change``).
+        ``agent_start``, ``agent_end``, ``mode_change``, ``theme_change``, ``notify``).
 
         Without ``handler``, returns a decorator that subscribes the decorated function.
 
@@ -528,7 +601,7 @@ class Extension:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
-        read_only: bool = False,
+        read_only: bool | Callable[[dict, Any], bool] = False,
     ) -> Callable[[ToolRun], ToolRun]:
         """Decorator registering ``fn(input, ctx)`` as a tool: the name defaults to the function's,
         the description to the first line of its docstring. ``read_only`` (API 2.3): see :meth:`register_tool`."""
@@ -565,13 +638,15 @@ class Extension:
         return decorate
 
     def keybinding(
-        self, key: str, *, description: str = "", show: bool = False, name: str = ""
+        self, key: str, *, description: str = "", show: bool = False, name: str = "", terminal: bool = False
     ) -> Callable[[Callable[[Any], Any]], Callable[[Any], Any]]:
         """Decorator binding the global key ``key`` to ``fn(ctx)``: the description defaults to the first line of its
-        docstring; see :meth:`register_keybinding`. API 2.3."""
+        docstring; see :meth:`register_keybinding`. API 2.3; ``terminal`` API 2.4."""
 
         def decorate(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
-            self.register_keybinding(key, fn, description or _first_line(fn.__doc__), show=show, name=name)
+            self.register_keybinding(
+                key, fn, description or _first_line(fn.__doc__), show=show, name=name, terminal=terminal
+            )
             return fn
 
         return decorate
@@ -591,6 +666,13 @@ class Extension:
         range is a collected load error naming ``extensions.settings.<id>.<key>``, and the default is used. The
         descriptions, enums and ranges are shown by ``/ext settings``, which also edits the values.
 
+        ``"merge"`` (API 2.4) in an entry of a setting whose default is a ``dict``: ``"replace"`` (the default) lets the highest
+        settings layer that sets the key replace the lower layers' value, as for every setting; ``"deep"`` merges the
+        objects of the global, project and local layers key by key (nested objects too; anything else, lists included,
+        is replaced by the higher layer), so a project can add one entry to a user's table. The trust rules
+        for a project's ``extensions.settings`` apply as before. To refuse a combination of settings that is valid one by one,
+        check it after this call and :meth:`report_problem` (the extension keeps loading) or raise (it fails).
+
         Raises:
             ValueError: if called twice, or ``schema`` is malformed: it names a key that is not in ``defaults``, an
                 entry is not an object of those fields, or a default does not satisfy its own entry
@@ -601,8 +683,10 @@ class Extension:
         schema = {key: dict(entry) if isinstance(entry, Mapping) else entry for key, entry in (schema or {}).items()}
         check_schema(defaults, schema)
         self._declared = True
+        deep = {key for key, entry in schema.items() if entry.get("merge") == "deep"}
+        user = self._all_settings.extension_settings(self._id, deep) if deep else self._user_settings
         values = dict(defaults)
-        for key, value in self._user_settings.items():
+        for key, value in user.items():
             if key not in defaults:
                 self._errors.append(f"{self._id}: unknown setting '{key}' (declared: {', '.join(defaults)})")
             elif key in schema:

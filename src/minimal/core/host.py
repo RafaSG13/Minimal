@@ -124,6 +124,11 @@ class Host:
         """Failures of the last reload (extensions that did not load, settings errors)."""
         return list(self._app.extension_errors)
 
+    @property
+    def extension_problems(self) -> list[str]:
+        """Non-fatal problems extensions reported with ``report_problem`` at the last reload (API 2.4)."""
+        return list(self._app.extension_problems)
+
     def untrusted_notice(self) -> str | None:
         """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""
         return self._app.untrusted_notice()
@@ -192,7 +197,9 @@ class Host:
         """Global keys extensions bound (``register_keybinding``), by key. API 2.3.
 
         Bind what :meth:`key_map` returns instead: it applies the user's ``ui.keys``. Run one as ``spec.run(ctx)`` on
-        a worker thread, as for a slash command.
+        a worker thread, as for a slash command; if ``spec.terminal`` is set (API 2.4), run it instead on the UI
+        thread with the interface suspended, like a ``terminal`` command (:meth:`command`), and show a str it
+        returns with ``ctx.show``.
         """
         return types.MappingProxyType(self._app.registry.keybindings)
 

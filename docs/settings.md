@@ -32,7 +32,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `permissions.allow`   | list of rules                | all          | concatenated; project/local only once trusted                        |
 | `permissions.deny`    | list of rules                | all          | concatenated                                                         |
 | `extensions.disabled` | list of extension ids        | all          | union; project/local only once trusted                               |
-| `extensions.settings` | object: extension id → object | all         | per id, each layer's object updates the lower ones; project/local only once trusted |
+| `extensions.settings` | object: extension id → object | all         | per id, each layer's object updates the lower ones (a key the extension declared with `"merge": "deep"` is merged key by key too); project/local only once trusted |
 | `ui.composer_max_lines` | positive integer           | all          | highest layer wins; default `8`                                      |
 | `ui.history_size`     | integer ≥ 0                  | all          | highest layer wins; default `500`                                    |
 | `ui.mention_max_chars` | positive integer            | all          | highest layer wins; default `20000`                                  |
@@ -42,13 +42,14 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
 | `ui.sidebar_width`    | integer, 20 to 80            | all          | highest layer wins; default 36                                       |
 | `context_window`      | positive integer             | all          | highest layer wins; the model's context size in tokens (`ctx.context_window`), over what minimal knows; default: unset |
 | `git.refresh`         | number > 0 (seconds)         | all          | highest layer wins; seconds between the shared git polls behind `ctx.git()` and the status line; default `3` |
-| `ui.widgets`          | object: widget or panel name → `{"area", "order", "enabled", "title", "collapsed"}` | all | per name, field by field, higher layers update lower ones |
+| `ui.widgets`          | object: widget or panel name → `{"area", "order", "enabled", "title", "collapsed", "height"}` | all | per name, field by field, higher layers update lower ones |
 | `ui.status`           | object: segment name → `{"side", "order", "enabled"}` | all | per name, field by field, higher layers update lower ones   |
 | `ui.keys`             | object: action or keybinding id → key | all | per id, higher layers update lower ones                              |
 | `ui.prompt_glyph`     | string, 1 to 3 characters    | all          | highest layer wins; default the theme's `❯`                          |
 | `ui.placeholder`      | string                       | all          | highest layer wins; default `Message, or / for commands`             |
 | `ui.css`              | string: path of a Textual CSS file, relative to `~/.minimal` (`~` allowed) | global only | —                                  |
 | `ui.density`          | `normal` or `compact`        | all          | highest layer wins; default `normal`                                 |
+| `ui.preview_lines`    | positive integer             | all          | highest layer wins; default `8`                                      |
 
 - **`prompt.files`** are read relative to the working directory and added to the system prompt as `Project instructions (<name>)`. Missing files are skipped. Files set by the project or local layer must stay inside the project; others are ignored.
 - **`max_tokens`** is the output-token limit of each model request. `{"max_tokens": 16000}` applies to every model; `{"max_tokens": {"anthropic": 16000, "openai/gpt-5.5": 32000}}` picks by `provider/model` first, then by provider, and leaves the rest at their default.
@@ -62,6 +63,7 @@ Nested objects group the keys: `prompt.append` is `{"prompt": {"append": …}}`.
   - `ui.history_size` (default `500`): entries kept in the project's prompt history, `~/.minimal/data/projects/<key>/history.json` (mode 0600; `<key>` is the hash an extension's [`data_dir`](extensions.md#layout-and-where-to-save) uses). `0` keeps none. Consecutive duplicates are saved once.
   - `ui.mention_max_chars` (default `20000`): characters of each `@file` mention appended to the message; the rest is cut with a note.
   - `ui.notify` (`"off"` by default, `"bell"` or `"osc9"`) and `ui.notify_after` (seconds, default `10`): when a turn that took longer than `notify_after` ends and the terminal is in the background, ring the bell or send the OSC 9 desktop notification (iTerm2, WezTerm, Kitty, Ghostty and others). A terminal that never reports focus changes counts as in the background, so it is notified every time.
+  - `ui.preview_lines` (default `8`): how many lines of a tool call's output show under it before the fold (`… N more lines · click to expand`; for `bash` the last lines, with `… N earlier lines`). An output of at most that many lines shows whole; a click expands the rest (up to 500 lines). `/reload` applies it, to the blocks already in the transcript too.
 
 A file that is not valid JSON is left out entirely. An unknown key, a value of the wrong type, an invalid permission rule, or a global-only key in a project file is dropped. Each problem is reported by `/reload` and `/settings` with the file's path, and the rest still applies.
 
@@ -88,6 +90,7 @@ The terminal UI is shaped without code by the `ui` group. Every key applies on `
 - **`ui.sidebar`** puts the `sidebar` area on the `right` (default) or the `left` of the transcript, or hides it: widgets and panels placed in it are not even created. The `left` area (a second column, always on the left) and `ui.sidebar_width` (both columns) are independent of it. `Ctrl+B` (`toggle_sidebar`) collapses and restores both columns.
 - **`ui.widgets`** overrides where an extension put a widget or a panel, by the name it registered (`/ui` lists them): `area` is one of `top`, `bottom`, `sidebar`, `left`, `footer`; `order` is an integer (lower first, default `0`; ties go to registration order); `enabled: false` hides it, and it is not created. Any field left out keeps the extension's value. A name that is not installed is reported.
   A widget or panel may also have `"title"` (its heading line: text, `""` for none) and `"collapsed"` (`true` starts a collapsible one collapsed): `{"session": {"title": "SESSION", "collapsed": true}}`.
+  `"height"` (integer from 1 to 100) gives the widget or panel that many rows in any area, over the height its code set; leave it out to keep that: `{"term": {"height": 12}}`. `/ui` shows it as `height 12`.
 - **`ui.status`** does the same for status-line segments: `side` is `left` or `right`. minimal's own segments are named `model`, `path`, `git`, `mode` (left, orders -40, -30, -20, -10) and `context`, `extensions`, `session` (right, orders 100, 105, 110), so `{"ui": {"status": {"session": {"enabled": false}}}}` removes the session id. An extension segment with one of these names replaces the built-in one.
 - **`ui.keys`** rebinds keys: `interrupt` (default `escape`), `toggle_sidebar` (`ctrl+b`) and `cycle_mode` (`shift+tab`) are minimal's actions; an extension's keybinding is `<extension id>:<name or description>` (`/ui` lists the ids). The value is a key in Textual's spelling (`ctrl+t`, `alt+s`, `f2`, `ctrl+shift+left`), or `""` to unbind. Keys the UI needs for typing and navigation are refused (`escape`, `ctrl+c`, `ctrl+p`, `ctrl+q`, `enter`, `tab`, arrows, the prompt's editing keys, …; `docs/extensions.md` lists them), a key bound twice is refused for the one asking, and a bare letter is refused. Problems are shown as `[ui] ...` errors on reload and by `/ui`; the binding keeps its default key.
 - **`ui.prompt_glyph`** and **`ui.placeholder`** replace the prompt's `❯` and its hint text.
@@ -166,7 +169,7 @@ prints each file with its scope (or `(not found)`), then one line per effective 
 /ui collapse <name>   /ui expand <name>   collapse a collapsible widget or panel to its heading, or open it
 ```
 
-`/ui` prints the sidebar and density, then every area with its widgets and panels in order, the two sides of the status line with their segments in order (each marked `[extension]` or `[built-in]`, and `user: area order` for what your settings changed), what is hidden, the keys with the actions they run, and the problems found in the `ui.*` settings. The other forms save to `~/.minimal/settings.json` (only the keys they change, atomically, mode 0600) and reload, so the change shows at once. An unknown name lists the valid ones. `reset` without a name clears `ui.sidebar`, `ui.density`, `ui.widgets` and `ui.status`, not `ui.keys`, `ui.css`, the glyph or the placeholder. If a project or local file sets the same `ui` key it beats the global one, and `/ui` says so.
+`/ui` prints the sidebar and density, then every area with its widgets and panels in order, the two sides of the status line with their segments in order (each marked `[extension]` or `[built-in]`, and `user: area order` for what your settings changed), what is hidden, the keys with the actions they run, and the problems found in the `ui.*` settings. The other forms save to `~/.minimal/settings.json` (only the keys they change, atomically, mode 0600) and reload, through the same `ctx.settings.update` an extension uses ([Settings access](extensions.md#settings-access)), so the change shows at once. An unknown name lists the valid ones. `reset` without a name clears `ui.sidebar`, `ui.density`, `ui.widgets` and `ui.status`, not `ui.keys`, `ui.css`, the glyph or the placeholder. If a project or local file sets the same `ui` key it beats the global one, and `/ui` says so.
 
 ## Examples
 

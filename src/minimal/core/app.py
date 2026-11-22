@@ -13,7 +13,9 @@ from __future__ import annotations
 import collections
 import copy
 import json
+import os
 import re
+import select
 import sys
 import threading
 from datetime import datetime, timezone
@@ -25,9 +27,10 @@ import minimal.extensions.facade
 import minimal.extensions.loader
 from minimal import config
 from minimal.core.agent import MaxTurnsExceeded, run_agent
-from minimal.core.agents import AgentResult, Agents, AgentRun, CancelEvent, UsageMeter
+from minimal.core.agents import MAIN_AGENT, AgentResult, Agents, AgentRun, CancelEvent, ProgressSlots, UsageMeter
 from minimal.core.context import Context
 from minimal.core.git import GitInfo, GitPoller
+from minimal.core.mentions import DEFAULT_MAX_CHARS, expand_mentions
 from minimal.core.permissions import Permissions, suggest_rule
 from minimal.core.session import Session, check_cut, new_id, open_session
 from minimal.extensions.loader import (
@@ -36,6 +39,7 @@ from minimal.extensions.loader import (
     load_extensions,
     project_extensions_dir,
     read_project_snapshot,
+    reload_summary,
 )
 from minimal.extensions import palette
 from minimal.extensions.registry import (
@@ -234,6 +238,25 @@ def _visible(text: str) -> str:
     return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
 
 
+def _read_line(prompt: str, timeout: float | None = None) -> str:
+    """``input(prompt)``; with a ``timeout`` and a terminal on stdin, raises ``EOFError`` (a cancel) if no line arrives
+    in that many seconds. Without a terminal, or where stdin cannot be waited on, the timeout is ignored."""
+    if timeout is None or not sys.stdin.isatty():
+        return input(prompt)
+    print(prompt, end="", flush=True)
+    try:
+        ready = select.select([sys.stdin], [], [], timeout)[0]
+    except (OSError, ValueError):  # Windows cannot select on a console: wait without a limit
+        ready = [sys.stdin]
+    if not ready:
+        print()
+        raise EOFError
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError
+    return line.rstrip("\n")
+
+
 def _failure_status(error: BaseException) -> str:
     """The ``agent_end`` status of a loop that ended with ``error``."""
     if isinstance(error, TurnInterrupted):
@@ -275,17 +298,56 @@ class Frontend(Protocol):
     def turn_end(self, error: str | None) -> None:
         """The turn finished; ``error`` is set if it failed."""
 
-    def ask(self, question: str) -> bool:
-        """Ask a yes/no question; return the answer."""
+    def ask(self, question: str, timeout: float | None = None) -> bool:
+        """Ask a yes/no question; return the answer. After ``timeout`` seconds (``None``: never) the question is
+        dropped and the answer is no. API 2.4."""
 
-    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
-        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled."""
+    def choose(self, title: str, options: list[tuple[str, str]], timeout: float | None = None) -> str | None:
+        """Pick one ``(value, label)`` option; return its value, or ``None`` if cancelled or ``timeout`` seconds
+        (``None``: never) passed. API 2.4."""
 
-    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
-        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if cancelled."""
+    def choose_many(
+        self, title: str, options: list[tuple[str, str, bool]], timeout: float | None = None
+    ) -> list[str] | None:
+        """Tick any ``(value, label, checked)`` options; return the ticked values in option order, or ``None`` if
+        cancelled or ``timeout`` seconds (``None``: never) passed. API 2.4."""
 
-    def ask_text(self, title: str) -> str | None:
-        """Ask for one line of text; return it stripped, or ``None`` if empty or cancelled."""
+    def ask_text(self, title: str, timeout: float | None = None) -> str | None:
+        """Ask for one line of text; return it stripped, or ``None`` if empty, cancelled or ``timeout`` seconds
+        (``None``: never) passed. API 2.4."""
+
+    def screen(self, factory: Callable[[Callable[[Any], None]], Any], timeout: float | None = None) -> Any:
+        """Show the modal screen ``factory(dismiss)`` builds and return the value passed to ``dismiss`` (``None``:
+        cancelled, quit or ``timeout`` seconds passed). A frontend without screens raises ``RuntimeError``. API 2.4."""
+
+    def pick(
+        self,
+        title: str,
+        items: list[tuple[str, str, str]],
+        *,
+        preview: Callable[[str], str] | None = None,
+        on_highlight: Callable[[str], Any] | None = None,
+        filter: bool = True,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Pick one ``(value, label, detail)`` item from a list filtered as the user types; return its value, or
+        ``None`` if cancelled or timed out. ``on_highlight(value)`` and ``preview(value)`` follow the highlighted row.
+        API 2.4."""
+
+    def overlay(self, content: Any, title: str = "", timeout: float | None = None) -> None:
+        """Show read-only text (a ``str`` or styled lines) the user scrolls and closes. API 2.4."""
+
+    def transcript_scroll_to(self, message_index: int) -> bool:
+        """Scroll the transcript to the block of ``messages[message_index]``; ``False`` if it shows none. API 2.4."""
+
+    def transcript_mark(self, message_index: int, label: str) -> None:
+        """Mark the transcript block of ``messages[message_index]`` with ``label``. API 2.4."""
+
+    def transcript_unmark(self, message_index: int | None) -> None:
+        """Drop that message's mark, or every mark for ``None``. API 2.4."""
+
+    def transcript_marks(self) -> list[tuple[int, str]]:
+        """The marked messages as ``(index, label)``, by index. API 2.4."""
 
     def reloaded(self) -> None:
         """Extensions were reloaded (widgets may have changed)."""
@@ -309,9 +371,17 @@ class Frontend(Protocol):
     def theme_name(self) -> str | None:
         """The name of the colour theme the frontend shows (``ctx.theme``); ``None`` if it has none. API 2.3."""
 
+    def set_theme(self, name: str) -> bool:
+        """Switch to the colour theme ``name`` (``ctx.set_theme``); return whether the frontend has it and switched.
+        API 2.4. The frontend announces the change (:meth:`App.theme_changed`) like any other switch."""
+
     def progress(self, text: str | None) -> None:
         """Transient progress text of the tool or command running (:meth:`~minimal.core.context.Context.progress`):
-        show it next to the working indicator; ``None`` clears it. May be called from any thread, often."""
+        show it next to the working indicator; ``None`` clears it. May be called from any thread, often.
+
+        Several tool calls may report at once (API 2.4): the app keeps one slot per call and passes the text of the one
+        that changed last, followed by ``" (+n more)"`` while ``n`` others are live, so a frontend only ever shows one
+        string. ``None`` means no slot is live."""
 
     def permission(self, question: str, rule: str | None, saved_in: str | None) -> str:
         """Ask whether a tool call may run; return ``"once"``, ``"session"``, ``"always"`` or ``"deny"``.
@@ -320,6 +390,26 @@ class Frontend(Protocol):
         answer only ``"once"`` or ``"deny"``); ``saved_in`` is the file ``"always"`` would write it to (``None``:
         ``"always"`` is not offered).
         """
+
+    def draft(self) -> str:
+        """The text in the prompt box, not yet sent (``ctx.ui.get_draft()``); ``""`` if the frontend has none. May be
+        called from any thread. API 2.4."""
+
+    def set_draft(self, text: str, append: bool) -> None:
+        """Put ``text`` in the prompt box, replacing what is there, or after it with ``append``; the cursor goes to the
+        end. A frontend without a prompt box ignores it. May be called from any thread. API 2.4."""
+
+    def show(self, text: str, kind: str) -> None:
+        """Add ``text`` to the conversation as a block of ``kind`` (``"output"`` or ``"error"``); a frontend that has
+        suspended itself for a terminal command shows it once it is back. May be called from any thread. API 2.4."""
+
+    def focus_widget(self, name: str, hold: bool) -> bool:
+        """Give the keyboard focus to the widget shown for extension widget ``name`` (or its first focusable part);
+        with ``hold`` the frontend does not move the focus back to the prompt box when a turn or command ends, until
+        the widget goes away or the focus leaves it. Returns whether the widget took it. API 2.4."""
+
+    def focus_composer(self) -> None:
+        """Give the keyboard focus to the prompt box and drop any hold of :meth:`focus_widget`. API 2.4."""
 
 
 class ExitRepl(Exception):
@@ -355,8 +445,9 @@ class ConsoleFrontend:
         else:
             print(f"\nError: {_visible(error)}", file=sys.stderr)
 
-    def ask(self, question: str) -> bool:
-        """Accepts ``y``/``yes``; EOF means no, and so does having no terminal to ask in."""
+    def ask(self, question: str, timeout: float | None = None) -> bool:
+        """Accepts ``y``/``yes``; EOF means no, and so does having no terminal to ask in. After ``timeout`` seconds
+        without an answer the question is dropped as no (only when stdin is a terminal)."""
         question = _visible(question)
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print(
@@ -365,31 +456,35 @@ class ConsoleFrontend:
             )
             return False
         try:
-            answer = input(f"\n{question} [y/N] ")
+            answer = _read_line(f"\n{question} [y/N] ", timeout)
         except EOFError:
             return False
         return re.fullmatch(r"y|yes", answer.strip(), re.IGNORECASE) is not None
 
-    def choose(self, title: str, options: list[tuple[str, str]]) -> str | None:
-        """Numbered list; empty, invalid input or EOF cancels."""
+    def choose(self, title: str, options: list[tuple[str, str]], timeout: float | None = None) -> str | None:
+        """Numbered list; empty, invalid input, EOF or ``timeout`` seconds without an answer (only when stdin is a
+        terminal) cancels."""
         print(f"\n{title}")
         for i, (_, label) in enumerate(options, 1):
             print(f"  {i:>2}. {label}")
         try:
-            answer = input("Number (empty cancels): ").strip()
+            answer = _read_line("Number (empty cancels): ", timeout).strip()
         except EOFError:
             return None
         if not answer.isdigit() or not 1 <= int(answer) <= len(options):
             return None
         return options[int(answer) - 1][0]
 
-    def choose_many(self, title: str, options: list[tuple[str, str, bool]]) -> list[str] | None:
-        """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input or EOF cancels."""
+    def choose_many(
+        self, title: str, options: list[tuple[str, str, bool]], timeout: float | None = None
+    ) -> list[str] | None:
+        """Numbered checklist: Enter keeps the shown ticks, ``0`` ticks none; invalid input, EOF or ``timeout``
+        seconds without an answer (only when stdin is a terminal) cancels."""
         print(f"\n{title}")
         for i, (_, label, checked) in enumerate(options, 1):
             print(f"  {i:>2}. [{'x' if checked else ' '}] {label}")
         try:
-            answer = input("Numbers to tick (Enter keeps the ticks shown, 0 for none): ").strip()
+            answer = _read_line("Numbers to tick (Enter keeps the ticks shown, 0 for none): ", timeout).strip()
         except EOFError:
             return None
         if not answer:
@@ -402,13 +497,59 @@ class ConsoleFrontend:
         picked = {int(t) - 1 for t in tokens}
         return [value for i, (value, _, _) in enumerate(options) if i in picked]
 
-    def ask_text(self, title: str) -> str | None:
-        """One ``input()`` line; EOF cancels."""
+    def ask_text(self, title: str, timeout: float | None = None) -> str | None:
+        """One line; EOF or ``timeout`` seconds without one (only when stdin is a terminal) cancels."""
         try:
-            answer = input(f"{title}: ").strip()
+            answer = _read_line(f"{title}: ", timeout).strip()
         except EOFError:
             return None
         return answer or None
+
+    def screen(self, factory: Callable[[Callable[[Any], None]], Any], timeout: float | None = None) -> Any:
+        """A custom screen needs the terminal UI.
+
+        Raises:
+            RuntimeError: always.
+        """
+        raise RuntimeError(
+            "ctx.ui.screen needs the terminal UI, called from a worker thread "
+            "(not the plain terminal, a terminal=True command or a widget callback)"
+        )
+
+    def pick(
+        self,
+        title: str,
+        items: list[tuple[str, str, str]],
+        *,
+        preview: Callable[[str], str] | None = None,
+        on_highlight: Callable[[str], Any] | None = None,
+        filter: bool = True,
+        timeout: float | None = None,
+    ) -> str | None:
+        """The numbered list of :meth:`choose` (label, then detail); there is no filter, preview or highlight."""
+        options = [(value, f"{label}  {detail}" if detail else label) for value, label, detail in items]
+        return self.choose(title, options, timeout)
+
+    def overlay(self, content: Any, title: str = "", timeout: float | None = None) -> None:
+        """Print ``title`` and the text on stdout."""
+        text = content if isinstance(content, str) else getattr(content, "plain", None)
+        if text is None:
+            text = "\n".join("".join(piece for piece, _ in line) for line in content)
+        print(f"\n{title}\n" if title else "", text, sep="")
+
+    def transcript_scroll_to(self, message_index: int) -> bool:
+        """A console has no transcript to scroll."""
+        return False
+
+    def transcript_mark(self, message_index: int, label: str) -> None:
+        """A console shows no marks."""
+
+    def transcript_unmark(self, message_index: int | None) -> None:
+        """A console shows no marks."""
+
+    def transcript_marks(self) -> list[tuple[int, str]]:
+        """A console keeps no marks."""
+        return []
 
     def reloaded(self) -> None:
         pass
@@ -437,6 +578,28 @@ class ConsoleFrontend:
     def theme_name(self) -> str | None:
         """A console has no theme of its own."""
         return None
+
+    def draft(self) -> str:
+        """A console has no prompt box to read."""
+        return ""
+
+    def set_draft(self, text: str, append: bool) -> None:
+        """A console has no prompt box to fill."""
+
+    def show(self, text: str, kind: str) -> None:
+        """On stdout, or on stderr for ``error``."""
+        print(_visible(text), file=sys.stderr if kind == "error" else sys.stdout, flush=True)
+
+    def focus_widget(self, name: str, hold: bool) -> bool:
+        """A console shows no widgets."""
+        return False
+
+    def focus_composer(self) -> None:
+        """A console has no focus to move."""
+
+    def set_theme(self, name: str) -> bool:
+        """A console has no themes: ``False``."""
+        return False
 
     def progress(self, text: str | None) -> None:
         """A dimmed line on stderr (only when it is a terminal) each time the text changes; ``None`` only forgets it."""
@@ -477,6 +640,7 @@ class App:
         cancelled: Set to interrupt the turn in progress, and with it every agent running under it.
         agents: The session's agent records (``ctx.agents()``, per-agent cancel flags).
         usage: The tokens and requests this process has spent (``ctx.usage``).
+        progress_slots: The ``ctx.progress`` notes of the tool calls running now (:class:`~minimal.core.agents.ProgressSlots`).
         truncations: How many times a session's history was cut (:meth:`truncate_session`); a frontend that
             shows the history redraws it when this or the session's id changes.
         mode: The current mode's name, or ``None`` for no mode (:meth:`set_mode`).
@@ -506,6 +670,7 @@ class App:
         self.model = ""
         self.extensions: list[Path] = []
         self.extension_errors: list[str] = []
+        self.extension_problems: list[str] = []
         self.untrusted: ProjectSnapshot | None = None
         self.cancelled = CancelEvent()
         self.agents = Agents(self.cancelled)
@@ -516,8 +681,13 @@ class App:
         self.setting_errors: list[str] = []
         self.queued: collections.deque[str] = collections.deque()
         self.context = Context(self)
+        self.registry.context = self.context
+        self._commands_running = 0
+        self._commands_lock = threading.Lock()
         self.permissions = Permissions(self.settings)
         self.usage = UsageMeter()
+        self.progress_slots = ProgressSlots(lambda text: self.frontend.progress(text))
+        self._notifying = threading.local()
         self.truncations = 0
         self._register_commands = register_commands
         self._git: GitPoller | None = None
@@ -598,10 +768,16 @@ class App:
             errors.append(read_error)
         errors.extend(setting_errors)
         self.extensions, self.extension_errors = loaded, errors
+        self.extension_problems = list(self.registry.problems)
         self.untrusted = snapshot if snapshot is not None and not trusted else None
         self.frontend.reloaded()
         self._validate_mode()
         return loaded, errors
+
+    def reload_summary(self) -> str:
+        """:meth:`reload_extensions`, described for the user or the model (:func:`~minimal.extensions.loader.reload_summary`)."""
+        loaded, errors = self.reload_extensions()
+        return reload_summary(loaded, errors, self.untrusted_notice(), self.extension_problems)
 
     def untrusted_notice(self) -> str | None:
         """What the last reload skipped as untrusted, pointing to ``/trust``; ``None`` if nothing."""
@@ -698,6 +874,17 @@ class App:
             found.insert(0, self.model)
         return found, problem
 
+    def notify(self, text: str, kind: str, source: str) -> None:
+        """Fire ``notify`` and show the notice (:meth:`Frontend.notify`). ``source`` is ``"extension"`` for
+        ``ctx.notify`` and ``"core"`` for minimal's own notices. A ``notify`` handler that notifies again only shows it."""
+        if not getattr(self._notifying, "active", False):
+            self._notifying.active = True
+            try:
+                self.registry.emit("notify", {"ctx": self.context, "text": text, "kind": kind, "source": source})
+            finally:
+                self._notifying.active = False
+        self.frontend.notify(text, kind)
+
     def commands(self) -> dict[str, Command]:
         """Every slash command by name: the built-ins, then extension commands (which replace a built-in of the same name)."""
         return {**self.registry.builtin_commands, **self.registry.commands}
@@ -712,8 +899,11 @@ class App:
         """Parse and run a ``/name args`` line; ``builtin`` runs the built-in even if an extension replaced it.
 
         Every command gets the :class:`~minimal.core.context.Context`.
-        The interrupt flag is cleared first: it may be left over from an interrupted turn. Unknown
-        commands and errors raised by a command are reported, not raised.
+        The interrupt flag is cleared first when nothing is running (no turn, no other command): it may be left over
+        from an interrupted turn. A call made while a turn or command runs, e.g. by an extension's timer thread through
+        ``ctx.run_command``, leaves it alone, so it cannot swallow the user's Esc. Unknown commands and errors raised by
+        a command are reported, not raised. What a ``terminal`` command returns, if it is a non-blank str, is shown with
+        :meth:`Frontend.show`: its prints are lost when the interface comes back.
 
         Raises:
             ExitRepl: when the command asks to quit.
@@ -723,13 +913,23 @@ class App:
         if cmd is None:
             print(f"Unknown command: /{name}")
             return
-        self.cancelled.clear()
+        with self._commands_lock:
+            idle = self._commands_running == 0 and not self.agents.main_running()
+            self._commands_running += 1
+        if idle:
+            self.cancelled.clear()
         try:
-            cmd.run(args.strip(), self.context)
+            result = cmd.run(args.strip(), self.context)
+            if cmd.terminal and isinstance(result, str) and result.strip():
+                self.frontend.show(result, "output")
         except ExitRepl:
             raise
         except Exception as e:
             print(f"Error in /{name}: {e}", file=sys.stderr)
+        finally:
+            with self._commands_lock:
+                self._commands_running -= 1
+            self.progress_slots.set(MAIN_AGENT, None)
 
     @property
     def messages(self) -> list[dict]:
@@ -760,6 +960,23 @@ class App:
         name = self.frontend.theme_name() or self.settings.theme or palette.DEFAULT
         spec = self.registry.themes.get(name) if name != palette.DEFAULT else None
         return palette.theme_info(spec or palette.BUILTIN)
+
+    def set_theme(self, name: str, *, save: bool = False) -> bool:
+        """Switch the frontend to colour theme ``name`` (``ctx.set_theme``); ``False``, with nothing changed, if it has no such theme.
+
+        ``save`` also stores it as the ``theme`` setting in ``~/.minimal/settings.json``.
+
+        Raises:
+            ValueError: if ``save`` is set and the settings file cannot be written.
+        """
+        if not self.frontend.set_theme(name):
+            return False
+        if save:
+            try:
+                config.update_global({"theme": name})
+            except OSError as e:
+                raise ValueError(f"theme {name!r} is set but not saved: {e}") from None
+        return True
 
     def theme_changed(self) -> None:
         """Fire ``theme_change`` for the theme the frontend shows now."""
@@ -801,19 +1018,20 @@ class App:
         if poller is not None:
             poller.stop()
 
-    def confirm(self, call: dict) -> bool:
+    def confirm(self, call: dict, cwd: str | None = None) -> bool:
         """Ask the user, through the frontend, whether a tool call may run.
 
         Besides allowing it once, the user may allow what a rule (:func:`~minimal.core.permissions.suggest_rule`)
         covers for the rest of the session (:meth:`Permissions.allow_session`), or save that rule in the project's
-        ``settings.local.json`` (:meth:`save_allow_rule`) and tell the transcript which one.
+        ``settings.local.json`` (:meth:`save_allow_rule`) and tell the transcript which one. ``cwd`` is the working
+        directory of the agent that makes the call (default: the app's): the rule offered is relative to it.
         """
         if self.auto_approve:
             return True
         name, inp = call["name"], call["input"]
         detail = inp.get("command") if name == "bash" else (inp.get("path") or json.dumps(inp))
         tool = self.registry.tools.get(name)
-        rule = suggest_rule(tool, inp, self.cwd) if tool is not None else None
+        rule = suggest_rule(tool, inp, cwd or self.cwd) if tool is not None else None
         file = config.project_settings_files(self.cwd)["local"] if rule is not None and self._rule_will_apply() else None
         answer = self.frontend.permission(f"Allow {name}: {detail}?", rule, str(file) if file is not None else None)
         if answer not in ("once", "session", "always"):
@@ -903,32 +1121,37 @@ class App:
             self.truncations += 1
         return dropped
 
-    def permit(self, tool: Tool, input: dict) -> bool:
-        """Whether the permission rules let ``tool`` run with ``input`` without asking.
+    def permit(self, tool: Tool, input: dict, cwd: str | None = None) -> bool:
+        """Whether the permission rules let ``tool`` run with ``input`` without asking (in ``cwd``, default the app's).
 
         Raises:
             PermissionDenied: if a deny rule matches (even with ``-y``).
         """
-        return self.permissions.check(tool, input, self.cwd)
+        return self.permissions.check(tool, input, cwd or self.cwd)
 
-    def base_system_prompt(self) -> str:
-        """The system prompt without the current mode's note (:func:`build_system_prompt`)."""
-        return build_system_prompt(self.registry, self.cwd, self.settings, self.context)
+    def base_system_prompt(self, cwd: str | None = None) -> str:
+        """The system prompt without the current mode's note (:func:`build_system_prompt`), for working directory
+        ``cwd`` (default the app's)."""
+        return build_system_prompt(self.registry, cwd or self.cwd, self.settings, self.context)
 
-    def system_prompt(self) -> str:
+    def system_prompt(self, cwd: str | None = None) -> str:
         """The system prompt of the next turn: :meth:`base_system_prompt`, then the current mode's note."""
-        return _join(self.base_system_prompt(), self.mode_note())
+        return _join(self.base_system_prompt(cwd), self.mode_note())
 
-    def request_options(self, provider_name: str | None = None, model: str | None = None) -> dict:
+    def request_options(
+        self, provider_name: str | None = None, model: str | None = None, reasoning_effort: str | None = None
+    ) -> dict:
         """Provider request options of the next request: ``max_tokens`` from the settings
         (:meth:`~minimal.config.Settings.max_tokens_for`) for the current provider and model, or for the given
-        ones, and :attr:`reasoning_effort` when set; empty for the provider's defaults."""
+        ones, and :attr:`reasoning_effort` (or ``reasoning_effort``, which beats it) when set; empty for the
+        provider's defaults."""
         options: dict[str, Any] = {}
         n = self.settings.max_tokens_for(provider_name or self.provider_name, model or self.model)
         if n is not None:
             options["max_tokens"] = n
-        if self.reasoning_effort is not None:
-            options["reasoning_effort"] = self.reasoning_effort
+        effort = reasoning_effort or self.reasoning_effort
+        if effort is not None:
+            options["reasoning_effort"] = effort
         return options
 
     @property
@@ -937,14 +1160,19 @@ class App:
         :meth:`set_reasoning_effort` set, else the ``reasoning_effort`` setting; ``None`` for the provider's default."""
         return self.settings.reasoning_effort if self._effort_override is None else self._effort_override[0]
 
+    @staticmethod
+    def check_reasoning_effort(value: str | None, what: str = "reasoning effort") -> None:
+        """Raise ``ValueError`` unless ``value`` is ``None`` or one of :data:`~minimal.config.REASONING_EFFORTS`."""
+        if value is not None and value not in config.REASONING_EFFORTS:
+            raise ValueError(f"{what} must be one of {', '.join(config.REASONING_EFFORTS)} (or None), not {value!r}")
+
     def set_reasoning_effort(self, value: str | None) -> None:
         """Use ``value`` from the next request on, over the setting (``None``: the provider's default).
 
         Raises:
             ValueError: if ``value`` is not ``None`` or one of :data:`~minimal.config.REASONING_EFFORTS`.
         """
-        if value is not None and value not in config.REASONING_EFFORTS:
-            raise ValueError(f"reasoning effort must be one of {', '.join(config.REASONING_EFFORTS)} (or None), not {value!r}")
+        self.check_reasoning_effort(value)
         self._effort_override = (value,)
 
     # --- modes ---------------------------------------------------------------
@@ -1010,7 +1238,7 @@ class App:
         mode = self.mode
         if mode is not None and mode not in self.registry.modes:
             self._swap_mode(lambda old: None)
-            self.frontend.notify(f"Mode {mode!r} is no longer registered: no mode now.", "warning")
+            self.notify(f"Mode {mode!r} is no longer registered: no mode now.", "warning", "core")
 
     def fallback_provider(self, name: str, model: str | None) -> tuple[Provider, str]:
         """Switch to provider ``name`` (:meth:`use_provider`) after a failed request; return the new provider and model.
@@ -1077,6 +1305,7 @@ class App:
             try:
                 self.session.save()
             finally:
+                self.progress_slots.clear()
                 self._emit_agent_end(self.context, run, status, error if status != "interrupted" else None, answer)
         self.frontend.turn_end(error)
 
@@ -1093,12 +1322,19 @@ class App:
         model: str | None = None,
         provider: str | None = None,
         max_turns: int | None = None,
+        cwd: str | None = None,
+        reasoning_effort: str | None = None,
+        mentions: bool = False,
     ) -> tuple[AgentResult, BaseException | None]:
         """Run ``prompt`` as a nested agent under agent ``parent_id``: what ``ctx.run_agent`` and ``ctx.run_agent_result`` do.
 
         Its tools are the registered ones minus ``exclude_tools`` (or only ``tools``), minus what the current mode
         blocks (asked live, so a mode can never be bypassed by ``tools``). With ``provider`` or ``model`` it talks to
         that provider/model for this agent only: the app's own do not change.
+
+        ``cwd`` (a folder, relative to the parent agent's working directory) and ``reasoning_effort`` are this agent's
+        own and are inherited by the agents it starts: its ``ctx.cwd``, system prompt, permission checks and (with
+        ``mentions``) the ``@file`` mentions of its prompt follow ``cwd``, and its requests ask for that effort.
 
         Returns:
             ``(result, error)``: the :class:`~minimal.core.agents.AgentResult`, and the exception that ended the
@@ -1123,6 +1359,19 @@ class App:
                 )
         if max_turns is not None and (isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1):
             raise ValueError("run_agent: max_turns must be an integer >= 1")
+        self.check_reasoning_effort(reasoning_effort, "run_agent: reasoning_effort")
+        parent = self.agents.get(parent_id)
+        base = (parent.cwd if parent is not None else None) or self.cwd
+        if cwd is None:
+            run_cwd = parent.cwd if parent is not None else None
+        else:
+            if not isinstance(cwd, (str, os.PathLike)) or not str(cwd):
+                raise ValueError("run_agent: cwd must be a folder path")
+            run_cwd = os.path.normpath(os.path.join(base, os.path.expanduser(cwd)))
+            if not os.path.isdir(run_cwd):
+                raise ValueError(f"run_agent: cwd {str(cwd)!r} is not a folder (looked for {run_cwd})")
+        effort = reasoning_effort or (parent.reasoning_effort if parent is not None else None)
+        where = run_cwd or self.cwd
         assert self.provider is not None  # startup (cli) picks a provider before any extension runs
         if provider is None and model is None:
             llm, llm_name, llm_model, switch = self.provider, self.provider_name, self.model, self.fallback_provider
@@ -1131,7 +1380,7 @@ class App:
         else:
             llm, llm_model = self.create_provider(provider, model)
             llm_name, switch = provider, self.create_provider
-        system_text = _join(self.base_system_prompt() if system is None else system, system_note)
+        system_text = _join(self.base_system_prompt(where) if system is None else system, system_note)
 
         def gate(tool: str) -> str | None:
             if allow is not None and tool not in allow:
@@ -1139,10 +1388,20 @@ class App:
             return self.mode_block_reason(tool)
 
         run = self.agents.begin(
-            name=name or "agent", parent_id=parent_id, prompt=prompt, model=llm_model, provider=llm_name
+            name=name or "agent",
+            parent_id=parent_id,
+            prompt=prompt,
+            model=llm_model,
+            provider=llm_name,
+            cwd=run_cwd,
+            reasoning_effort=effort,
         )
         ctx = Context(self, run)
-        messages: list[dict] = [{"role": "user", "content": prompt}]
+        first = prompt
+        if mentions:
+            limit = self.settings.scalar("ui.mention_max_chars")[0]
+            first = expand_mentions(prompt, where, DEFAULT_MAX_CHARS if limit is None else limit).text
+        messages: list[dict] = [{"role": "user", "content": first}]
         status, error, reply = "interrupted", None, None
         failure: BaseException | None = None
         try:
@@ -1158,15 +1417,15 @@ class App:
                 on_tool=self._on_tool(run),
                 on_tool_result=self.frontend.tool_result,
                 on_reply=self._on_reply(run),
-                confirm=self.confirm,
+                confirm=lambda call: self.confirm(call, where),
                 cancelled=run.cancel,
-                permit=self.permit,
+                permit=lambda tool, input: self.permit(tool, input, where),
                 exclude_tools=exclude,
                 gate=gate,
                 nested=True,
                 max_turns=self.settings.max_turns if max_turns is None else max_turns,
                 max_parallel=self.settings.max_parallel,
-                options=self.request_options(llm_name, llm_model),
+                options=self.request_options(llm_name, llm_model, effort),
                 switch_provider=switch,
                 agent_id=run.id,
                 parent_id=run.parent_id,
@@ -1179,6 +1438,7 @@ class App:
             status, error = _failure_status(e), str(e) or type(e).__name__
         finally:
             text = result_text(reply.content) if reply is not None else _last_text(messages)
+            self.progress_slots.clear(run.id)
             usage = self._emit_agent_end(ctx, run, status, error, text)
         result = AgentResult(run.id, text, usage, status, error, messages)
         return result, failure
@@ -1192,12 +1452,12 @@ class App:
 
         return on_tool
 
-    def _on_reply(self, run: AgentRun) -> Callable[[Any], None]:
+    def _on_reply(self, run: AgentRun) -> Callable[[Any, str, str], None]:
         """The loop's ``on_reply`` for ``run``: add the reply's usage to the agent's and to the process totals."""
 
-        def on_reply(reply: Any) -> None:
+        def on_reply(reply: Any, provider: str, model: str) -> None:
             self.agents.replied(run, reply.usage)
-            self.usage.add(reply.usage)
+            self.usage.add(reply.usage, model, provider)
 
         return on_reply
 

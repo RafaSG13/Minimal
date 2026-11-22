@@ -39,8 +39,12 @@ agent a tool starts with ``ctx.run_agent``) has an ``agent_id`` (``"main"`` for 
         for that request only: the history does not change; ``{"options": dict}``
         is merged into the request options (``max_tokens``, ``temperature``).
         Handlers must not mutate what they receive; they return copies.
-    ``after_response`` ``{ctx, reply, usage, nested, agent_id, parent_id}``
-        Fired after each reply is appended to the history. Results are ignored.
+    ``after_response`` ``{ctx, reply, usage, nested, agent_id, parent_id, model, provider, source}``
+        Fired after each reply is appended to the history. Results are ignored. ``model`` and ``provider`` (API 2.4) are
+        the model and provider's name that answered (after any ``provider_error`` switch). ``source`` (API 2.4) is
+        ``"loop"`` for a reply of an agent loop, or ``"complete"`` for one of ``ctx.complete`` /
+        ``ctx.complete_text``, which is not added to any history: a handler that reads the history should skip it, one
+        that adds up ``usage`` (a cost budget) wants both.
     ``shutdown``     ``{ctx}``
         Fired when minimal exits.
     ``provider_error`` ``{ctx, error, attempt, provider, model, nested, agent_id, parent_id}``
@@ -64,6 +68,10 @@ agent a tool starts with ``ctx.run_agent``) has an ``agent_id`` (``"main"`` for 
         Fired after the terminal UI's colour theme changed (``/theme``, the ``Ctrl+P`` theme picker, or a reload that
         switched it); ``name`` and ``dark`` are the new theme's (``ctx.theme`` has its colours). Not fired for the theme
         the UI starts with. A frontend without themes never fires it. API 2.3. Results are ignored.
+    ``notify``       ``{ctx, text, kind, source}``
+        Fired before a notice is shown (``ctx.notify``, and minimal's own notices): ``kind`` is ``"info"``,
+        ``"warning"`` or ``"error"``, ``source`` is ``"extension"`` for ``ctx.notify`` or ``"core"`` for minimal's.
+        A handler that notifies again only shows that notice. API 2.4. Results are ignored.
 """
 
 from __future__ import annotations
@@ -73,10 +81,13 @@ import sys
 import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from minimal import config
 from minimal.providers.base import Provider, ProviderSpec
+
+if TYPE_CHECKING:
+    from minimal.core.context import Context
 
 ToolRun = Callable[[dict, Any], Any]
 """Tool implementation: ``run(input, ctx) -> str``. Raise to report an error. It may return a list of ``text`` and
@@ -115,6 +126,7 @@ EVENTS = (
     "agent_end",
     "mode_change",
     "theme_change",
+    "notify",
 )
 """Events an extension can subscribe to with ``on``."""
 
@@ -295,7 +307,9 @@ class Tool:
         read_only: The tool changes nothing and is safe to run next to other calls (API 2.3). When one model reply calls
             several tools, a run of consecutive calls to ``read_only`` tools runs concurrently (at most ``tools.max_parallel``
             at once, default 4); any other call runs alone, in order. ``run`` must then be thread-safe. Not to be
-            confused with a mode's ``read_only``, which blocks tools that ask for confirmation.
+            confused with a mode's ``read_only``, which blocks tools that ask for confirmation. API 2.4: may also be
+            ``read_only(input, ctx) -> bool``, asked once per call when the reply's calls are scheduled (a ``gh`` tool
+            that only reads for ``pr view``); a call whose evaluation raises counts as not read-only.
     """
 
     name: str
@@ -304,7 +318,7 @@ class Tool:
     run: ToolRun
     confirm: bool | Callable[[dict, Any], bool] = False
     subject_key: str | None = None
-    read_only: bool = False
+    read_only: bool | Callable[[dict, Any], bool] = False
 
 
 @dataclass
@@ -475,6 +489,8 @@ class KeybindingSpec:
         show: List the key in Textual's ``Footer`` widget (an extension widget may use one).
         name: What ``ui.keys`` calls it (default: the description).
         ext: The id of the extension that registered it.
+        terminal: Needs the real terminal: the terminal UI suspends itself and runs ``run`` on its own thread, as for
+            a ``terminal`` command, instead of on a worker thread. API 2.4.
     """
 
     key: str
@@ -483,6 +499,7 @@ class KeybindingSpec:
     show: bool = False
     name: str = ""
     ext: str = ""
+    terminal: bool = False
 
     @property
     def label(self) -> str:
@@ -533,8 +550,12 @@ class CssSpec:
         return f"{self.ext}:{self.name}" if self.ext else self.name
 
 
-SETTING_SCHEMA_KEYS = ("description", "enum", "min", "max")
-"""The keys of one entry of ``declare_settings``'s ``schema`` (API 2.3)."""
+SETTING_SCHEMA_KEYS = ("description", "enum", "min", "max", "merge")
+"""The keys of one entry of ``declare_settings``'s ``schema`` (API 2.3; ``merge`` API 2.4)."""
+
+SETTING_MERGES = ("replace", "deep")
+"""Values of a schema entry's ``merge``: ``replace`` (the default) lets the highest settings layer's value win; ``deep``
+merges object values of every layer key by key (API 2.4)."""
 
 
 def setting_matches(default: object, value: object) -> bool:
@@ -584,6 +605,11 @@ def check_schema(defaults: Mapping[str, Any], schema: Mapping[str, Any]) -> None
                 raise ValueError(f"{what}: enum must be a non-empty list")
             if not all(setting_matches(default, option) for option in options):
                 raise ValueError(f"{what}: every enum value must be {type(default).__name__}, like the default")
+        if "merge" in entry:
+            if entry["merge"] not in SETTING_MERGES:
+                raise ValueError(f"{what}: merge must be one of {', '.join(SETTING_MERGES)}")
+            if entry["merge"] == "deep" and not isinstance(default, dict):
+                raise ValueError(f"{what}: merge 'deep' needs an object setting; '{key}' is {type(default).__name__}")
         numeric = isinstance(default, (int, float)) and not isinstance(default, bool)
         for bound in ("min", "max"):
             if bound in entry:
@@ -605,7 +631,7 @@ class SettingsSpec:
     Attributes:
         ext: The extension's id.
         defaults: Every setting and its default.
-        schema: Each documented setting's ``description``, ``enum``, ``min`` and ``max`` (only the keys it gave).
+        schema: Each documented setting's ``description``, ``enum``, ``min``, ``max`` and ``merge`` (only the keys it gave).
         values: The effective values: the defaults with the user's valid values over them.
     """
 
@@ -784,6 +810,10 @@ class Registry:
         keybindings: Global keys extensions bound, by key (API 2.3).
         css: Stylesheets extensions added for the terminal UI, by ``<extension id>:<name>`` (API 2.3).
         declared_settings: What each extension declared with ``declare_settings``, by extension id (API 2.3).
+        problems: Non-fatal problems extensions reported with ``Extension.report_problem`` during the last load, as
+            ``"<extension id>: <text>"`` (API 2.4).
+        context: The app's ``ctx`` that ``Extension.ctx`` hands out once ``register`` has returned; ``None`` when no app
+            owns the registry (``minimal ext check``), and kept across :meth:`reset` (API 2.4).
     """
 
     def __init__(self) -> None:
@@ -803,6 +833,8 @@ class Registry:
         self.keybindings: dict[str, KeybindingSpec] = {}
         self.css: dict[str, CssSpec] = {}
         self.declared_settings: dict[str, SettingsSpec] = {}
+        self.problems: list[str] = []
+        self.context: Context | None = None
         self._placed: dict[tuple[str, str], int] = {}
         self._disposers: list[Callable[[], Any]] = []
 
@@ -828,6 +860,7 @@ class Registry:
         self.keybindings.clear()
         self.css.clear()
         self.declared_settings.clear()
+        self.problems.clear()
         self._placed.clear()
         self._handlers.clear()
         self._disposers.clear()
@@ -844,17 +877,17 @@ class Registry:
         input_schema: dict | None = None,
         confirm: bool | Callable[[dict, Any], bool] = False,
         subject_key: str | None = None,
-        read_only: bool = False,
+        read_only: bool | Callable[[dict, Any], bool] = False,
     ) -> None:
         """Build and register a tool. ``input_schema`` defaults to an empty object.
 
         Raises:
-            ValueError: if ``name`` is empty or ``run`` is not callable, or ``read_only`` is not a bool.
+            ValueError: if ``name`` is empty or ``run`` is not callable, or ``read_only`` is neither a bool nor a callable.
         """
         if not name or not callable(run):
             raise ValueError("register_tool: name and run are required")
-        if not isinstance(read_only, bool):
-            raise ValueError("register_tool: read_only must be a bool")
+        if not isinstance(read_only, bool) and not callable(read_only):
+            raise ValueError("register_tool: read_only must be a bool or a callable (input, ctx) -> bool")
         schema = input_schema or {"type": "object", "properties": {}}
         self.add_tool(Tool(name, description, schema, run, confirm, subject_key, read_only))
 
@@ -1068,6 +1101,7 @@ class Registry:
         show: bool = False,
         name: str = "",
         ext: str = "",
+        terminal: bool = False,
     ) -> KeybindingSpec | None:
         """Bind the global key ``key`` to ``run(ctx)``, replacing (and returning) any binding of that key.
 
@@ -1075,7 +1109,8 @@ class Registry:
         ``ctrl+shift+left``. Keys the terminal UI needs itself are refused (:data:`RESERVED_KEYS`), and so
         is a bare letter, which would steal typing: use ``ctrl+``, ``alt+`` or a function key. ``name`` (else
         ``description``) is what ``ui.keys`` calls the binding to give it another key. ``ext`` is the id of the
-        registering extension (the facade sets it).
+        registering extension (the facade sets it). With ``terminal`` the terminal UI suspends itself and runs ``run``
+        on the UI thread, in the real terminal, like a ``terminal`` command (API 2.4).
 
         Returns:
             The binding that ``key`` replaced, if any.
@@ -1091,7 +1126,7 @@ class Registry:
         key = normalize_key(key, "register_keybinding")
         if key in RESERVED_KEYS:
             raise ValueError(f"register_keybinding: {key} is reserved for minimal; choose another key")
-        spec = KeybindingSpec(key, run, description, bool(show), name, ext)
+        spec = KeybindingSpec(key, run, description, bool(show), name, ext, bool(terminal))
         clash = next((s for k, s in self.keybindings.items() if k != key and s.id == spec.id), None)
         if clash is not None:
             raise ValueError(

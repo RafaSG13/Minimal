@@ -1,6 +1,81 @@
 # Changelog
 
-## Unreleased
+## 0.10.0
+
+### Added
+
+- `register_keybinding(..., terminal=True)` and `@minimal.keybinding(key, terminal=True)`: the key suspends the terminal
+  UI and runs on the UI thread in the real terminal, like a `terminal` command, for `fzf`, `$EDITOR`, `lazygit` and
+  other programs that need the keyboard (`KeybindingSpec.terminal`). A key is still ignored while a turn or command
+  runs; an error it raises is shown after the resume.
+- `ctx.ui.get_draft()` and `ctx.ui.set_draft(text, *, append=False)` read and fill the prompt box (undoable, cursor at
+  the end, no completion popup, safe from any thread and from a `terminal` command or key); `Frontend.draft` and
+  `Frontend.set_draft`, a no-op in the plain terminal.
+- `ctx.show(text, kind="output")` adds a transcript block (`output` or `error`) that stays, from any thread; while the
+  UI is suspended for a `terminal` command or key it is drawn once the UI is back. A `terminal` command or key may also
+  return a str, which is shown the same way (`Frontend.show`).
+- `Extension.builtin_commands()` gives the names of minimal's own commands at `register` time, and
+  `ctx.git_refresh()` asks the shared git poller to look again now.
+- `ctx.focus_widget(name, *, hold=False)` and `ctx.focus_composer()` move the keyboard focus (`Frontend.focus_widget`,
+  `Frontend.focus_composer`). A widget focused with `hold=True` keeps the focus when a turn or command ends, until it
+  is removed, the focus leaves it, `escape` reaches the app or `focus_composer()` is called.
+- `ui.widgets.<name>.height` (1 to 100 rows) sizes any extension widget or panel in any area; `/ui` shows it.
+
+### Added
+
+- `minimal.ctx` (API 2.4): the app's `Context` once `register` has returned, so timer and watcher threads of an extension
+  can act without waiting for a widget or command, also after `/reload`; `None` while `register` runs and under
+  `minimal ext check`. `ctx.run_command` no longer clears the user's interrupt flag while a turn or another command
+  runs (it still does when idle); `ctx.queue_user_message("/cmd")` runs a command after the turn.
+- `ctx.settings` (API 2.4): `get(key, default)` reads the merged effective value of any dotted settings key,
+  `layers(key)` says which files set it, and `update(changes, *, scope="global"|"project"|"local", apply=True)` /
+  `unset(key, *, scope)` validate and write keys atomically and reload once. Project and local scopes refuse the
+  global-only keys, and the trust-gated keys while the project is untrusted. `/ui` and `/ext settings` now use the same
+  writer (`config.update_settings`), which also validates the values they write.
+- `ctx.set_theme(name, *, save=False)` switches the terminal UI's colour theme like `/theme <name>` (firing
+  `theme_change`), returns `False` for an unknown theme or in the plain terminal, and can save it as the `theme`
+  setting. Frontends implement `set_theme(name) -> bool`.
+- `minimal.api.normalize_key` (and `ContextSettings`, `SETTING_MERGES`) are exported for extensions that validate
+  user-chosen keys.
+- `declare_settings` schema entries take `"merge": "deep"` for `dict` settings: the global, project and local layers
+  are merged key by key instead of the highest replacing the others.
+- `minimal.report_problem(text)` records a non-fatal problem of an extension: the reload summary and the terminal UI show
+  it as a warning, `/ext list` prints it and `minimal ext check` prints a `WARN` line that does not fail the exit status.
+
+### Added
+
+- API 2.4 screens: `ctx.ui.screen(factory)` shows your own modal Textual screen (`factory(dismiss)` runs on the UI
+  thread) and returns what it is dismissed with. `ctx.ui.pick(title, items, ...)` is a themed, keyboard-driven list the
+  user filters by typing: `(value, label)` or `(value, label, detail)` items, fuzzy matching, `on_highlight(value)` on
+  every change of the highlighted row for live previews, `preview(value)` for a side pane. `ctx.ui.overlay(content)`
+  shows scrollable read-only text (plain or styled lines), closed with Esc. The plain terminal raises `RuntimeError`
+  for `screen`, prints for `overlay` and shows `choose`'s numbered list for `pick`.
+- `timeout=` (seconds, default `None`) on every `ctx.ui` question: `ask`, `choose`, `choose_many`, `ask_text`, `pick`,
+  `overlay` and `screen`. On expiry the dialog closes and the call returns what a cancel returns (`False` for `ask`,
+  else `None`), so a worker never waits for ever. The plain terminal honours it when stdin is a terminal. Quitting
+  wakes every worker waiting for an answer.
+- `ctx.transcript` (`minimal.api.Transcript`): `scroll_to(message_index)`, `mark(message_index, label="")`,
+  `unmark(message_index=None)`, `marks()` and `find(text, *, regex=False)`, by index into `ctx.messages`. A marked
+  block gets the stable CSS class `-marked` (default: a thick accent left border) and the label as its tooltip; marks
+  follow the session in view. New `Frontend` members back it and the screens (`transcript_scroll_to`,
+  `transcript_mark`, `transcript_unmark`, `transcript_marks`, `screen`, `pick`, `overlay`); `ConsoleFrontend` has
+  harmless defaults.
+- `ui.preview_lines` setting (default 8): how many lines of a tool's output show before the fold, applied on `/reload`.
+
+### Added
+
+- `ctx.run_agent` / `run_agent_result` take `cwd=` (the agent's `ctx.cwd`, built-in tools, `bash`, "outside the
+  workspace" checks, system prompt and permission rules follow that folder; parallel agents may use different ones),
+  `reasoning_effort=` (for that agent only) and `mentions=` (expand `@file` in its prompt). `ctx.complete` and
+  `complete_text` take `reasoning_effort=`, and `complete_text` also `messages=` and `options=`.
+- Usage by model: `UsageTotals.by_model` (keyed `provider/model`), `model`, `provider` and `source` on `after_response`,
+  which `ctx.complete` now fires too (`source` `"complete"`).
+- `ctx.session_info(id=None)` and `ctx.sessions_info(limit=None, all_projects=False)` (`SessionInfo`): title, parent,
+  cwd, preview, mtime, message count, creation time and lock state without loading a transcript.
+- `ctx.progress(text, key=None)` keeps one slot per tool call: parallel tools and agents no longer overwrite each other;
+  the terminal UI shows the latest and `(+n more)`.
+- `notify` event (`NotifyEvent`: `text`, `kind`, `source`), fired by `ctx.notify` and minimal's own notices.
+- `Tool.read_only` (and `register_tool`/`@minimal.tool`) may be a function `(input, ctx) -> bool` decided per call.
 
 ## 0.9.0
 

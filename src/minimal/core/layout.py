@@ -55,7 +55,7 @@ class Placed:
         order: Its position among the others of its place, lower first.
         enabled: ``False`` if the user hid it (or ``ui.sidebar`` is ``hidden`` and it is in the sidebar).
         source: ``"extension"`` or ``"built-in"``.
-        overridden: Which of ``area``/``side``, ``order``, ``enabled``, ``title`` and ``collapsed`` the user's settings changed.
+        overridden: Which of ``area``/``side``, ``order``, ``enabled``, ``title``, ``collapsed`` and ``height`` the user's settings changed.
         spec: The extension's spec; ``None`` for a built-in segment.
         note: Why it is not shown, besides the user hiding it.
         seq: Registration sequence, breaking ties of ``order``.
@@ -63,6 +63,7 @@ class Placed:
             ``""`` for none. Always ``None`` for a status segment.
         collapsible: Whether a click or Enter on the heading collapses it (the extension's ``collapsible``).
         collapsed: Whether it starts collapsed to its heading (the user's ``collapsed``).
+        height: Rows the user gave it (``ui.widgets`` ``height``); ``None`` keeps the widget's own height. API 2.4.
     """
 
     kind: str
@@ -78,6 +79,7 @@ class Placed:
     title: str | None = None
     collapsible: bool = False
     collapsed: bool = False
+    height: int | None = None
 
 
 @dataclass(frozen=True)
@@ -126,9 +128,10 @@ def resolve(registry: Registry, settings: config.Settings) -> Layout:
             placements.append(
                 Placed(
                     kind, name, area, over.get("order", spec.order), enabled, "extension",
-                    tuple(f for f in ("area", "order", "enabled", "title", "collapsed") if f in over), spec, note,
+                    tuple(f for f in ("area", "order", "enabled", "title", "collapsed", "height") if f in over), spec, note,
                     registry.placement_index(kind, name),
                     over["title"] if "title" in over else spec.title, spec.collapsible, over.get("collapsed", False),
+                    over.get("height"),
                 )
             )  # fmt: skip
     for name, (side, order, _) in BUILTIN_SEGMENTS.items():

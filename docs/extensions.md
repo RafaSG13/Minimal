@@ -1,6 +1,6 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes and sections, modes, widgets, status-line segments, colour themes and a header logo, and run agents of its own. This guide covers minimal API 2.3 ([API versions](#api-versions)).
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes and sections, modes, widgets, status-line segments, colour themes and a header logo, and run agents of its own. This guide covers minimal API 2.4 ([API versions](#api-versions)).
 
 ```python
 """Greets the user."""
@@ -44,7 +44,7 @@ If both `name.py` and `name/` exist, only `name.py` loads and the reload reports
 
 Directly in an extensions folder, `themes/`, `tools/` and `widgets/` are always category folders, never packages. Helpers are imported only from the files read at load time: a module added to the folder afterwards is not found until the next reload (and, in a project, the next `/trust`). The marketplace refuses a package with a symlink to a folder or to a file outside it.
 
-**Ids.** An extension's id is its name (`compact`), or `category/name` inside `themes/`, `tools/` or `widgets/` (`tools/subagent`). The id is the key of its settings (`extensions.settings.<id>`) and what `extensions.disabled` lists (see [settings](settings.md)).
+**Ids.** An extension's id is its name (`compact`), or `category/name` inside `themes/`, `tools/` or `widgets/` (`legacy_menu`). The id is the key of its settings (`extensions.settings.<id>`) and what `extensions.disabled` lists (see [settings](settings.md)).
 
 ## Metadata
 
@@ -58,7 +58,7 @@ Metadata is read from the source without running it (for a package, from `__init
 | `__dependencies__` | `["termaid>=0.3"]`: optional list of third-party packages it needs (name, extras, version comparisons; no URLs or options). `/ext` and `ext_install` offer to install the missing ones into minimal's Python after installing the extension |
 | `__tags__`     | `["git", "ui"]`: optional list of lowercase keywords (`[a-z0-9_-]+`) that `/ext search` and `ext_search` match besides the name and description; shown after the description |
 | `__depends__`  | `["modes"]`: optional list of extension ids ([ids](#layout-and-where-to-save)) that must be loaded before this one. It is loaded after them; if one is missing, failed or skipped, this one is skipped with `needs 'modes': install it with /ext`. API 2.3 |
-| `__conflicts__` | `["tools/subagent"]`: optional list of extension ids it cannot be loaded with. Whichever of the two loads first stays; the other is skipped with `conflicts with 'tools/subagent', which is already loaded`. API 2.3 |
+| `__conflicts__` | `["legacy_menu"]`: optional list of extension ids it cannot be loaded with. Whichever of the two loads first stays; the other is skipped with `conflicts with 'legacy_menu', which is already loaded`. API 2.3 |
 
 `__depends__` and `__conflicts__` are ids, not package names (those are `__dependencies__`), and are read without running the extension: `minimal ext check` fails a malformed list, an extension that lists itself, and an id in both. Loading goes in the usual order (bundled, global, project, `--ext`; alphabetical in a folder), except that an extension comes after the ones it depends on; a dependency cycle skips its members. `/ext list` shows each extension's `needs` and `conflicts with`.
 
@@ -74,6 +74,9 @@ An extension without `__api__` is not loaded (`declares no __api__; add __api__ 
 | `tools`                | Every registered tool by name (read-only, live): `minimal.tools["bash"].run(input, ctx)` reuses one |
 | `settings`             | What `declare_settings` returned; empty before it is called                                         |
 | `project_trusted`      | `bool`, read-only: the user trusted the current project ([Project trust](#project-trust)). Already right while `register` runs |
+| `builtin_commands()`   | API 2.4. `frozenset` of the names (no `/`) of minimal's own slash commands. They are registered before any extension loads, so it is complete inside `register`: use it to avoid shadowing one by accident, or to decide to hand over with `ctx.run_command(line, builtin=True)`. Extension commands are not in it. The terminal UI's own `/theme` is added when the UI starts, so it is in the set only from the first `/reload` on |
+| `ctx`                  | API 2.4. The app's `Context` once `register` has returned, for code outside any call: a timer or watcher thread, a subscription. `None` while `register` runs and under `minimal ext check` ([Using `ctx` outside a call](#using-ctx-outside-a-call)) |
+| `report_problem(text)` | API 2.4. Records a non-fatal problem: the extension still loads and the reload summary shows `Warning: <id>: <text>` ([Settings](#settings)). `ValueError` for empty text |
 
 ### Tools
 
@@ -90,7 +93,7 @@ minimal.register_tool("hello", lambda input, ctx: "text", description="...", inp
 - `@minimal.tool(name=None, *, description="", input_schema=None, confirm=False, subject_key=None, read_only=False)`: the name defaults to the function's, the description to the first line of its docstring. Returns the function unchanged.
 - `register_tool(name, run, description="", input_schema=None, confirm=False, subject_key=None, read_only=False)`: the same without a decorator.
 - `run(input, ctx)` returns the text the model sees. An exception becomes an `is_error` result, so the model can correct itself. It may also return a non-empty list of `{"type": "text", "text": ...}` and `image_block(data, media_type)` blocks (API 2.3): the model then sees the picture too (the built-in `read` does this for PNG, JPEG, GIF and WebP files up to 3.75 MB). `tool_result` handlers and panels see the text, with `[image: image/png, 1234 bytes]` in place of each picture, and rewriting the output replaces the pictures too.
-- `read_only=True` (API 2.3) says the tool changes nothing and `run` is thread-safe. When one model reply calls several tools, a run of consecutive calls to `read_only` tools runs concurrently, on worker threads, at most `tools.max_parallel` (default 4) at a time; every other call runs alone, after the ones before it finished. Calls are still announced, vetted (`tool_call` handlers, permissions, confirmation) and answered one by one in the order of the reply, on the thread that runs the turn, and the results always go back in that order: only `run` itself overlaps. Built-in `read`, `grep` and `glob` are `read_only`. Not to be confused with a [mode's](#modes) `read_only`, which blocks tools that ask for confirmation. Interrupting a batch stops waiting for it: calls not started never run, and every call still gets its result.
+- `read_only=True` (API 2.3) says the tool changes nothing and `run` is thread-safe. When one model reply calls several tools, a run of consecutive calls to `read_only` tools runs concurrently, on worker threads, at most `tools.max_parallel` (default 4) at a time; every other call runs alone, after the ones before it finished. Calls are still announced, vetted (`tool_call` handlers, permissions, confirmation) and answered one by one in the order of the reply, on the thread that runs the turn, and the results always go back in that order: only `run` itself overlaps. Built-in `read`, `grep` and `glob` are `read_only`. API 2.4: `read_only` may also be a function `read_only(input, ctx) -> bool`, like `confirm`, asked once per call when the reply's calls are scheduled (a `gh` tool that only reads for `pr view` and writes for `pr merge`); a call whose function raises counts as not read-only, and a plain `bool` works as before. Not to be confused with a [mode's](#modes) `read_only`, which blocks tools that ask for confirmation. Interrupting a batch stops waiting for it: calls not started never run, and every call still gets its result.
 - `confirm` is `True` to ask the user before every call, or `confirm(input, ctx) -> bool` to decide per call. `-y` skips the question.
 - `subject_key` names the `input` field that [permission rules](settings.md#permissions) `name(pattern)` match. With `subject_key="url"`, the rule `fetch(https://example.com/*)` in `permissions.allow` runs matching calls without asking, and in `permissions.deny` blocks them. Without it, only the bare rule `fetch` applies to the tool. Built-in tools use `command` (`bash`) and `path` (`read`, `write`, `edit`, `grep`, `glob`).
 
@@ -110,6 +113,7 @@ def greet(args, ctx):
 
 - `@minimal.command(name=None, *, description="", terminal=False, complete=None)` / `register_command(name, run, description="", terminal=False, complete=None)` add `/name`, run as `run(args, ctx)` with the text after the name. What it prints appears in the transcript. `terminal=True` runs it with the UI suspended, in the real terminal.
 - `complete(args, ctx)` (API 2.3) returns candidate completions for the argument text typed after `/name `: `args` is everything after the single space that follows the name, and each returned string **replaces the whole argument text** (`/greet a` → `["alice", "alan"]`; for several words, return the earlier words again). Filter by `args` yourself and keep it fast: it runs on the UI thread after each keystroke. The terminal UI lists the candidates in the composer's popup, `Tab` puts them in the text one after the other, and `Enter` sends the text as it is. A function that raises or does not return a list of strings is reported once (until the next reload) and offers nothing. The built-in `/theme`, `/mode`, `/resume`, `/provider`, `/login`, `/logout` and `/ext` complete the same way.
+- A `terminal` command (API 2.4) may **return a str**: it is shown in the transcript when the interface comes back, because what a `terminal` command prints goes to the real terminal and is gone on resume. Blank text and other return values are ignored; a command that is not `terminal` returns nothing the UI reads (print, or use `ctx.show`). `ctx.show(text)` inside it is held and drawn at the same moment.
 
 ### Events
 
@@ -133,13 +137,14 @@ minimal.on("turn_end", lambda event: None)
 | `session_switch` | `ctx`, `old_id`, `new_id`                        | ignored                                                                |
 | `turn_start`     | `ctx`, `text`                                    | `{"text": str}` rewrites the user's message (the last non-empty one wins) |
 | `before_request` | `ctx`, `messages`, `system`, `tools`, `options`, `nested`, `agent_id`, `parent_id` | `{"messages": list, "system": str, "tools": list}`, any subset: sent instead, for this request only; `{"options": dict}` adds request options |
-| `after_response` | `ctx`, `reply`, `usage`, `nested`, `agent_id`, `parent_id` | ignored                                                                |
+| `after_response` | `ctx`, `reply`, `usage`, `nested`, `agent_id`, `parent_id`, `model`, `provider`, `source` | ignored                                                                |
 | `shutdown`       | `ctx`                                            | ignored                                                                |
 | `provider_error` | `ctx`, `error`, `attempt`, `provider`, `model`, `nested`, `agent_id`, `parent_id` | `{"retry_after": seconds}` retries after a wait; `{"provider": name, "model": name}` retries with another provider (the first such answer wins) |
 | `agent_start`    | `ctx`, `agent_id`, `parent_id`, `name`, `prompt`  | ignored                                                                |
 | `agent_end`      | `ctx`, `agent_id`, `parent_id`, `name`, `status`, `text`, `usage`, `error` | ignored                                           |
 | `mode_change`    | `ctx`, `old`, `new`                              | ignored                                                                |
 | `theme_change`   | `ctx`, `name`, `dark`                            | ignored; the terminal UI's colour theme changed (`/theme`, `Ctrl+P`, reload): API 2.3 |
+| `notify`         | `ctx`, `text`, `kind`, `source`                  | ignored; a notice is about to be shown: API 2.4                        |
 
 - `tool_result` sees the tool's whole output: `bash` output is not clipped until after the handlers run (up to 1 MB captured), so a handler can compress it.
 - `turn_end` fires when a loop ends with a reply without tool calls. `nested` is `True` for a loop run inside a tool (`ctx.run_agent`, such as the subagent), whose `messages` are its own history, not `ctx.messages`. Skip nested loops for session-level work: `if event["nested"]: return`.
@@ -147,7 +152,8 @@ minimal.on("turn_end", lambda event: None)
 - `session_switch` fires when `/new`, `/resume`, `/fork`, `ctx.new_session` or `ctx.fork` replace the session, after the old one is saved.
 - `turn_start` fires when the user sends a message, before it is added to the history.
 - `before_request` fires before every model request of a loop (`nested` as in `turn_end`). What a handler returns is sent instead for that request only: the history is not changed. `options` are the request options for the provider (`max_tokens`, `temperature`, `reasoning_effort`; empty for its defaults), and a returned `options` dict is merged into them. Combined by key, the last handler wins; a value of the wrong type is ignored with a warning. Do not mutate what you receive: return copies.
-- `after_response` fires after each reply is added to the history; `usage` is the reply's `Usage`, or `None`.
+- `after_response` fires after each reply is added to the history; `usage` is the reply's `Usage`, or `None`. API 2.4 added `model` and `provider` (what answered, after any `provider_error` switch; `f"{provider}/{model}"` is the key of `ctx.usage.by_model`) and `source`: `"loop"` for a reply of an agent loop, `"complete"` for one of `ctx.complete` / `ctx.complete_text`, which is **not** in any history (so a handler that reads `ctx.messages` or counts replies of the conversation skips `source == "complete"`, while one adding up `usage` for a cost budget wants every event). For a `complete` made by an agent's tool, `nested` is `True`.
+- `notify` (API 2.4) fires before a notice is shown: `ctx.notify(text, kind)` (`source` `"extension"`) and minimal's own notices such as a mode that is no longer registered (`source` `"core"`); `kind` is `"info"`, `"warning"` or `"error"`. Keep a history of notices with it. A handler that calls `ctx.notify` only shows that notice (it does not fire `notify` again), and a handler that raises is reported and skipped, as for every event. The terminal UI's own toasts (e.g. a failed prompt-history save) do not fire it.
 - `shutdown` fires when minimal exits.
 - `agent_start` and `agent_end` bracket every agent loop: the user's turn (`name` `"main"`, `prompt` the user's message) and each `ctx.run_agent` ([Agents](#agents)). `agent_end` fires however the loop ended, after its `turn_end` (if it had one) and before the caller gets the result; `status` is `done`, `interrupted`, `error` or `max_turns`, `text` the last reply's text, `usage` the `Usage` summed over the loop's replies and `error` the message of a failure, else `None`.
 - `mode_change` fires when the current mode changes (`ctx.set_mode`, `/mode`, `Shift+Tab`, a reload that lost the mode); `old` and `new` are mode names or `None` for no mode ([Modes](#modes)). It runs on the thread that changed the mode: for `Shift+Tab` and `/mode` a worker thread (like a command), so a handler may use `ctx.ui`; the status line is redrawn after the handlers ran, whichever thread changed the mode.
@@ -198,6 +204,8 @@ def register(minimal):
 - An unknown key or a value of the wrong type is ignored, keeping the default, and reported by `/reload` (and by `reload_extensions`), e.g. `lenses: unknown setting 'min' (declared: min_chars, head, tail)` or `lenses: setting 'head' must be int`.
 - Call it once; a second call raises `ValueError`.
 - `declare_settings(defaults, schema=None)` (API 2.3) also takes `schema`: for any key of `defaults`, `{"description": str, "enum": [...], "min": n, "max": n}` (every field optional; `min`/`max` for numbers, `enum` a non-empty list of values of the default's type). A value outside it is a load error naming `extensions.settings.<id>.<key>` and the default stays. A schema that names an unknown key, has an unknown field or is not satisfied by its own default raises `ValueError` (so `minimal ext check` reports it).
+- `"merge"` (API 2.4) in a schema entry of a setting whose default is a `dict`: `"replace"` (the default) lets the highest layer that sets the key replace the lower layers' value; `"deep"` merges the objects of the global, project and local layers key by key (nested objects too; lists and scalars are replaced by the higher layer), so a project can add or change one entry of a user's table: `declare_settings({"tools": {}}, {"tools": {"merge": "deep"}})`. A non-`dict` default with `"merge": "deep"` raises `ValueError`. The trust rules of a project's `extensions.settings` apply as before; `ctx.settings.get("extensions.settings.<id>.<key>")` reads the same merged value.
+- `minimal.report_problem(text)` (API 2.4) is for what is not worth failing over: two settings that are fine alone but contradict each other, a missing optional binary, a value you clamped. Call it after `declare_settings` when a cross-field check fails and carry on with a fallback. The reload summary (`/reload`, `ctx.reload()`) lists it as `Warning: <id>: <text>` after the `Failed:` lines, the terminal UI shows it, `/ext list` prints it, and `minimal ext check` prints `WARN <name>: <text>` without failing the exit status. `reload_extensions` does not raise for it (only `Failed:` lines make the model's tool raise); raise from `register` instead to fail the extension.
 - The user does not have to edit JSON: `/ext settings` lists every loaded extension's settings with their value, default and description, `/ext settings <id>` details one, `/ext settings <id> <key> <value>` validates and writes it to the global settings file and reloads, and `/ext settings <id> <key> reset` removes it. Put a `description` on every key, it is what the user reads there.
 
 ## `ctx`: the `Context`
@@ -206,12 +214,12 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 
 | Member                           | What it is                                                                                 |
 | -------------------------------- | ------------------------------------------------------------------------------------------ |
-| `cwd`                            | Working directory of tools and of the system prompt                                        |
+| `cwd`                            | Working directory of tools and of the system prompt. For the `ctx` of an agent started with `run_agent(cwd=...)` (and the agents it starts) that folder (API 2.4) |
 | `messages`                       | The current session's messages in the canonical format (live)                              |
 | `session_id`                     | The current session's id                                                                   |
 | `provider_name`, `model`         | Current provider and model                                                                 |
 | `max_turns`                      | Most model requests one user turn may make (the `agent.max_turns` setting, default 50) and the default of `run_agent`'s `max_turns` (API 2.3) |
-| `reasoning_effort`, `set_reasoning_effort(value)` | How much the model is asked to think: `"low"`, `"medium"`, `"high"` or `None` (the provider's default). It starts as the `reasoning_effort` setting; `set_reasoning_effort` changes it for the session (`ValueError` for another value; `None` clears it) (API 2.3) |
+| `reasoning_effort`, `set_reasoning_effort(value)` | How much the model is asked to think: `"low"`, `"medium"`, `"high"` or `None` (the provider's default). It starts as the `reasoning_effort` setting; `set_reasoning_effort` changes it for the session (`ValueError` for another value; `None` clears it) (API 2.3). For the `ctx` of an agent started with `run_agent(reasoning_effort=...)` that value (API 2.4) |
 | `context_tokens`                 | Context size after the last reply that reported usage, or `None`                           |
 | `tools`                          | Every registered tool by name (read-only, live)                                            |
 | `agent_id`, `parent_id`          | The agent this `ctx` belongs to: `"main"` and `None` for the user's turn, commands and widgets; for the `ctx` a tool or handler of a `run_agent` agent gets, that agent's id and its parent's ([Agents](#agents)) |
@@ -220,9 +228,9 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `check_cancelled()`              | Raise `TurnInterrupted` if `cancelled`                                                      |
 | `ui`                             | Questions to the user (below)                                                              |
 | `system_prompt()`                | The system prompt the next turn would send                                                 |
-| `complete(messages, *, system=None, tools=True, options=None, model=None)` | One model request with the current provider and model; returns a `Reply`. No tools are run; `tools=True` offers them anyway to keep the prompt cache warm. `options` (`max_tokens`, `temperature`, `reasoning_effort`) go over the ones a turn uses; `model` (API 2.3) uses another model of the current provider. A failed request goes to the `provider_error` handlers, which may retry it, and it counts in `usage`. Interruptible |
-| `complete_text(prompt, *, system=None, model=None, max_tokens=1024)` | API 2.3. Asks one question and returns the answer as text: one request with `prompt` as the only message, no tools and no system prompt unless `system` is given (pass `ctx.system_prompt()` for the session's); not added to the history. For titles, summaries and classifications. `ValueError` for an empty prompt or a bad `max_tokens`. Interruptible, retried and counted like `complete` |
-| `run_agent(prompt, *, system_note="", exclude_tools=(), name=None, system=None, tools=None, model=None, provider=None, max_turns=None)` | Runs `prompt` as its own agent loop with an empty history and the same tools (minus `exclude_tools`), confirmations and permissions; returns the text of its last reply and raises what went wrong. `system_note` is appended to the system prompt; its `turn_end` has `nested` set. The other keywords: [Agents](#agents) |
+| `complete(messages, *, system=None, tools=True, options=None, model=None, reasoning_effort=None)` | One model request with the current provider and model; returns a `Reply`. No tools are run; `tools=True` offers them anyway to keep the prompt cache warm. `options` (`max_tokens`, `temperature`, `reasoning_effort`) go over the ones a turn uses; `model` (API 2.3) uses another model of the current provider. A failed request goes to the `provider_error` handlers, which may retry it, and it counts in `usage`. Interruptible |
+| `complete_text(prompt, *, system=None, model=None, max_tokens=1024, messages=None, options=None, reasoning_effort=None)` | API 2.3. Asks one question and returns the answer as text: one request with `prompt` as the only message, no tools and no system prompt unless `system` is given (pass `ctx.system_prompt()` for the session's); not added to the history. For titles, summaries and classifications. `ValueError` for an empty prompt or a bad `max_tokens`. Interruptible, retried and counted like `complete` |
+| `run_agent(prompt, *, system_note="", exclude_tools=(), name=None, system=None, tools=None, model=None, provider=None, max_turns=None, cwd=None, reasoning_effort=None, mentions=False)` | Runs `prompt` as its own agent loop with an empty history and the same tools (minus `exclude_tools`), confirmations and permissions; returns the text of its last reply and raises what went wrong. `system_note` is appended to the system prompt; its `turn_end` has `nested` set. The other keywords: [Agents](#agents) |
 | `run_agent_result(prompt, **same)` | The same, but returns an `AgentResult` (`agent_id`, `text`, `usage`, `status`, `error`, `messages`) and reports a failure in it instead of raising ([Agents](#agents)) |
 | `agents()`                       | A snapshot list of `AgentInfo` of the agents of this session, running and finished ([Agents](#agents)) |
 | `cancel_agent(agent_id)`         | Interrupts that agent and the agents it started, not the one that started it; `False` if it is not running |
@@ -231,32 +239,46 @@ Tools, commands, event payloads, widgets and status segments receive a `Context`
 | `new_session(messages)`          | Saves the current session and continues in a new one holding `messages` (its header names the old one as `parent`, which `/sessions` shows); returns the old id. `ValueError` if the new session cannot be locked |
 | `fork(at_index=None)`            | API 2.3. Continues in a new session that starts as a copy of `messages[:at_index]` (all of them by default); the current session stays saved as it is, the new header names it as `parent`, `session_switch` fires and the terminal UI redraws the transcript. Returns the new id. `ValueError` while a turn is running, for an index outside `0..len(messages)`, or when the cut would leave an assistant `tool_use` without the `tool_result` message after it (cut before the call or after its results) |
 | `truncate(at_index)`             | API 2.3. Drops `messages[at_index:]` from the current session, in place, and rewrites the session file atomically; returns how many messages it dropped. Same `ValueError`s as `fork`; it does not fire `session_switch` (same session, so `fork` first to keep the dropped part). Together they make rewind and undo extensions |
-| `usage`                          | API 2.3. `UsageTotals` of everything this minimal process has spent: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` and `requests`, counting the user's turns, the agents they start and `complete`/`complete_text`. A snapshot. Per process: a new or resumed session does not reset it and `minimal -c` starts again from zero. `/usage` prints it |
-| `progress(text)`                 | API 2.3. A one-line progress note (first line, at most 120 characters) shown next to the working indicator while a tool or command runs; `None` (or blank text) clears it, and the terminal UI clears it when the turn or command ends. Call it as often as you like, from any thread. The plain terminal prints each change on stderr when it is a terminal |
+| `usage`                          | API 2.3. `UsageTotals` of everything this minimal process has spent: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` and `requests`, counting the user's turns, the agents they start and `complete`/`complete_text`. A snapshot. Per process: a new or resumed session does not reset it and `minimal -c` starts again from zero. API 2.4: `usage.by_model` maps `"provider/model"` to a `UsageTotals` of that model alone (they sum to the totals), counting `complete` too; minimal has no prices, so a cost is `sum(price[m].input * t.input_tokens + price[m].output * t.output_tokens + ... for m, t in usage.by_model.items())` with your own table. `/usage` prints it |
+| `progress(text, *, key=None)`    | API 2.3. A one-line progress note (first line, at most 120 characters) shown next to the working indicator while a tool or command runs; `None` (or blank text) clears it, and the terminal UI clears it when the turn or command ends. Call it as often as you like, from any thread. The plain terminal prints each change on stderr when it is a terminal. API 2.4: every tool call has its own slot (so parallel `read_only` calls and agents do not overwrite each other), cleared when the call ends; `progress(None)` clears the caller's own; the frontend shows the slot set last, then `(+n more)` while `n` others are live. `key` names another slot (a background job's), which stays until `progress(None, key=...)` or the turn or command ends. `TypeError` for a `key` that is not a string |
 | `invalidate()`                   | API 2.3. Asks the UI to redraw panels, status segments and widgets (`render` and `refresh_state` run again). Cheap, coalesced and safe from any thread: call it from a poller or subscription when its data changed, instead of a panel `interval`. A frontend without panels does nothing |
 | `theme`                          | API 2.3. The terminal UI's current colour theme as a `ThemeInfo`: `name`, `dark` and `colors`, every colour of `THEME_COLORS` plus `background`, `foreground` and `accent` as `#rrggbb` (read-only). Read it again after `theme_change` |
 | `context_window`                 | API 2.3. The current model's context size in tokens, or `None` if unknown: the `context_window` setting, else the provider's own table, else minimal's table of the built-in providers' model families (longest name prefix). `context_tokens / context_window` is a gauge |
 | `git()`                          | API 2.3. The working directory's repository as a cached `GitInfo` (`branch`, `dirty`, `ahead`, `behind`, `staged`, `unstaged`, `untracked`, `files`: up to 50 `(status, path)` pairs), or `None` before the first poll ends and outside a repository. One background poller shared with the status line refreshes it every `git.refresh` seconds (default 3) and calls `invalidate()` when it changes; the call itself never runs git |
+| `git_refresh()`                  | API 2.4. Asks the poller behind `git()` to look again now: call it after something other than a turn or command changed the repository (a `terminal` command or key, a timer). Cheap, returns at once, does nothing until `git()` started the poller; minimal already does it after every turn and command |
 | `keybindings()`                  | API 2.3. Every bound key as a `KeyInfo` (`key`, `action`, `description`, `source`: `"built-in"` or the extension id), minimal's own actions as `ui.keys` remapped them first: what a help screen lists |
+| `transcript`                     | API 2.4. A `Transcript`: `scroll_to(message_index)`, `mark(message_index, label="")`, `unmark(message_index=None)`, `marks()` and `find(text, *, regex=False)` over the messages as the terminal UI draws them ([below](#screens-and-the-transcript)) |
 | `sessions(*, all_projects=False)` | Saved session ids, oldest first: those started in this `cwd`, or every project's with `all_projects=True` |
+| `session_info(session_id=None)`  | API 2.4. A `SessionInfo` (`id`, `title`, `parent`, `cwd`, `preview` of the first user message (200 characters at most), `mtime`, `n_messages`, `created`, `locked`) of a saved session, default the current one, without loading its messages: the header, the first user message and a count of lines are read. The current session is read live (unsaved messages count). A damaged file (no header, lines that are not JSON) gives what could be read; `ValueError` for an invalid or unknown id. `created` is read from the id (`None` if it is not a timestamp); `locked` says some minimal process holds it open |
+| `sessions_info(limit=None, *, all_projects=False)` | API 2.4. `session_info` of the saved sessions, most recently written first, at most `limit`: the files are ordered by modification time and read only until enough matched |
 | `read_session(session_id)`       | The messages of a saved session; `ValueError` if there is none                             |
 | `reload()`                       | Reloads every extension from disk; returns the summary                                     |
 | `commands()`                     | Every slash command name (without `/`) and its description: built-in and extension commands, an extension's replacing a built-in of the same name |
-| `run_command(line, *, builtin=False)` | Runs `"/name args"` as if the user typed it; its output is printed and errors are reported, not raised. `builtin=True` runs the built-in even when an extension replaced it, so a replacement can hand over to the original |
+| `run_command(line, *, builtin=False)` | Runs `"/name args"` as if the user typed it; its output is printed and errors are reported, not raised. `builtin=True` runs the built-in even when an extension replaced it, so a replacement can hand over to the original. API 2.4: the user's interrupt (`cancelled`) is cleared only when no turn or other command is running, so a timer thread calling it cannot swallow Esc; to run a command after the turn in progress use `queue_user_message("/name args")` |
+| `settings`                       | API 2.4. Read and write the settings: `get`, `layers`, `update`, `unset` ([Settings access](#settings-access)) |
+| `set_theme(name, *, save=False)` | API 2.4. Switches the terminal UI to a colour theme, as `/theme <name>` does; returns `True` if it did. `theme_change` fires as for any switch. An unknown name, or the plain terminal (no themes), returns `False` silently. `save=True` also stores it as the `theme` setting in `~/.minimal/settings.json` (`ValueError` if that cannot be written; the theme is switched anyway) |
 | `models()`, `set_model(name)`    | The current provider's models (queried from its API, falling back to its default) and switching to one |
 | `widget(name)`                   | The widget the terminal UI shows for `register_widget(name, ...)`, or `None` (the UI is not up, or it failed to mount) |
-| `notify(text, kind="info")`      | A short notice: a toast in the terminal UI, a line on stderr otherwise. `kind` is `"info"`, `"warning"` or `"error"` |
+| `notify(text, kind="info")`      | A short notice: a toast in the terminal UI, a line on stderr otherwise. `kind` is `"info"`, `"warning"` or `"error"`. API 2.4: fires the `notify` event first |
+| `show(text, kind="output")`      | API 2.4. Adds `text` to the transcript as a block that stays, `kind` being `"output"` (drawn like command output) or `"error"` (like an error block); `ValueError` for another kind or a non-str, blank text is ignored. Unlike `notify` (a toast) and `print` (lost when a `terminal` command or key resumes the interface) it persists, and while the interface is suspended for a `terminal` command or key it is held and drawn once the interface is back, in order. Safe from any thread. The plain terminal prints it (`error` on stderr) |
+| `focus_widget(name, *, hold=False)` | API 2.4. Gives the keyboard focus to the widget of `register_widget(name, ...)`, or to its first focusable part, and returns whether it took it (`False`: not shown, nothing in it can take focus, a dialog is open, or no terminal UI). Safe from any thread. After each turn or command the UI moves the focus back to the prompt; with `hold=True` it does not, for a widget that wants the keyboard (an embedded terminal, a file browser). The hold ends by itself when the widget is removed (reload, the user hid it), when the focus leaves it (the user clicked elsewhere), when `escape` reaches the app (a widget that handles `escape` itself keeps the focus; the app then only takes the focus back, a second `escape` interrupts), and on `focus_composer()` |
+| `focus_composer()`               | API 2.4. Gives the focus to the prompt box and ends a `hold`. Safe from any thread |
 | `use_provider(name, model=None)` | Switches provider (and model, default its default) from the next request on, keeping the conversation; `ValueError` if unknown or without credentials |
 | `queue_user_message(text)`       | Sends `text` as the user's next message once the turn or command in progress ends (at once if nothing is running); `/…` runs a command. It does not steer the turn in progress |
 
-`ctx.ui` asks through whatever is showing minimal (the terminal UI or the plain terminal):
+`ctx.ui` asks through whatever is showing minimal (the terminal UI or the plain terminal). Every method that waits takes the keyword `timeout` (API 2.4): a number of seconds > 0 after which the dialog closes and the method returns what a cancel returns, so a tool or timer never hangs on a user who walked away. `None` (the default) waits for ever and anything else is a `ValueError`. The plain terminal honours it only when stdin is a terminal.
 
 | Method                         | Returns                                                                        |
 | ------------------------------ | ------------------------------------------------------------------------------ |
-| `ask(question)`                | `bool`: a yes/no answer                                                        |
-| `choose(title, options)`       | The value of one `(value, label)` option, or `None` if cancelled               |
-| `choose_many(title, options)`  | The ticked values of `(value, label, checked)` options in order, or `None`     |
-| `ask_text(title)`              | One line of text, stripped, or `None` if empty or cancelled                    |
+| `ask(question, *, timeout=None)` | `bool`: a yes/no answer (`False` on timeout)                                 |
+| `choose(title, options, *, timeout=None)` | The value of one `(value, label)` option, or `None` if cancelled or timed out |
+| `choose_many(title, options, *, timeout=None)` | The ticked values of `(value, label, checked)` options in order, or `None` |
+| `ask_text(title, *, timeout=None)` | One line of text, stripped, or `None` if empty, cancelled or timed out      |
+| `pick(title, items, *, preview=None, on_highlight=None, filter=True, timeout=None)` | API 2.4. The value of the item picked from a list filtered as the user types, or `None` ([details](#screens-and-the-transcript)) |
+| `overlay(content, title="", *, timeout=None)` | API 2.4. Read-only scrollable text until the user presses Esc; returns `None` |
+| `screen(factory, *, timeout=None)` | API 2.4. Your own modal Textual screen; returns what it is dismissed with |
+| `get_draft()`                  | API 2.4. The text in the prompt box that the user has not sent (`""` if empty, or without a terminal UI). Safe from any thread |
+| `set_draft(text, *, append=False)` | API 2.4. Puts `text` in the prompt box, replacing the draft or, with `append=True`, after it; the cursor goes to the end. Nothing is sent, no completion popup opens, the user can undo it, and a walk through the prompt history ends (the arrows no longer replace the draft). Ignored without a terminal UI. Safe from any thread, and from a `terminal` command or key, where it is applied at once. `ValueError` if `text` is not a str |
 
 ```python
 @minimal.command(description="summarise this session into a new one")
@@ -266,6 +288,94 @@ def fold(args, ctx):
         old = ctx.new_session([{"role": "user", "content": result_text(reply.content)}])
         print(f"Continued from {old}")
 ```
+
+## Using `ctx` outside a call
+
+Tools, commands, events and widgets are handed a `ctx`. Code that runs on its own (a `loop` or `watch` timer thread, an OS-theme poller, a subscription) has none, so (API 2.4) `minimal.ctx` is the same live `Context` commands get (`agent_id` `"main"`), from the moment `register` returns:
+
+```python
+def register(minimal):
+    stop = threading.Event()
+
+    def poll():
+        while not stop.wait(30):
+            ctx = minimal.ctx                    # read it when the thread fires, not in register
+            if ctx is not None and dark_mode() != ctx.theme.dark:
+                ctx.set_theme("night" if dark_mode() else "day")
+
+    threading.Thread(target=poll, daemon=True).start()
+    minimal.on_dispose(stop.set)
+```
+
+`minimal.ctx` is `None` while `register` runs (a thread started there must read it when it fires), and always under `minimal ext check` and in any registry no app owns. After a `/reload` the new `Extension` gets it too; the old one's `on_dispose` functions ran first, so stop your threads there. From a thread outside a turn, prefer `ctx.queue_user_message(text)` (it waits for the turn in progress) to `ctx.run_command(line)`, which runs now but, since API 2.4, never clears the user's interrupt flag while a turn or another command runs. `ctx.settings.update` reloads live too.
+
+## Settings access
+
+`ctx.settings` (API 2.4) reads and writes minimal's own settings ([settings](settings.md)) with dotted keys (`ui.sidebar`, `reasoning_effort`, `permissions.allow`, `extensions.settings.tui_tools.tools`): for profiles, layouts, glyph sets and the like.
+
+| Method | What it does |
+| ------ | ------------ |
+| `get(key, default=None)` | The effective value with every layer merged as minimal reads them: scalars from the highest layer; `prompt.append`, `permissions.*` and `extensions.disabled` joined; `ui.widgets`, `ui.status` and `ui.keys` merged entry by entry; `extensions.settings.<id>.<name>` with the extension's `"merge": "deep"`. A project's trust-gated keys count only once the project is trusted. `default` if no layer sets it (a declared extension setting the user never set reads as `default`; `minimal.settings` has those with defaults). A copy: change it freely. `ValueError` for a key that is not a setting |
+| `layers(key)` | `{scope: value}` of the `global`, `project` and `local` files that set `key` and apply, lowest first (the last wins for a scalar); the files' own values, not merged; `{}` if none |
+| `update(changes, *, scope="global", apply=True)` | Writes dotted keys (`None` deletes) to `~/.minimal/settings.json` (`"global"`), the project's `.minimal/settings.json` (`"project"`) or its `settings.local.json` (`"local"`), atomically through `config.write_private` (a project file is replaced atomically too, mode 0600), then reloads **once** so the change takes effect (the terminal UI re-lays itself out). All changes are validated first and nothing is written if one fails. `apply=False` skips the reload so you can batch writes and call `ctx.reload()` yourself. A key may be a tuple of names for one that contains a dot |
+| `unset(key, *, scope="global", apply=True)` | `update({key: None}, ...)`: the lower layers' value, or the default, applies again |
+
+`update` refuses, with a `ValueError` saying what to do: an unknown key or scope; a value that is not what `docs/settings.md` says (and, for `extensions.settings.<id>.<name>` of a loaded extension, one its `declare_settings` schema rejects); the global-only keys (`marketplaces`, `prompt.base`, `ui.css`) at `project` or `local` scope; the trust-gated keys (`permissions.allow`, `extensions.disabled`, `extensions.settings`) at `project` or `local` scope while the project's settings are not trusted (`/trust`). Writing a trust-gated key to a trusted project changes what `/trust` reviewed, so after the reload minimal leaves the project's trust-gated settings and extensions unapplied until the user runs `/trust` again (the usual notice says so). A settings file that is not valid JSON is left untouched and reported. `/ui` and `/ext settings` use the same `update`.
+
+```python
+@minimal.command(description="focus layout")
+def focus(args, ctx):
+    ctx.settings.update({"ui.sidebar": "hidden", "ui.density": "compact", "ui.widgets.git": {"enabled": False}})
+    print(ctx.settings.layers("ui.sidebar"))      # {'global': 'hidden'}
+```
+
+## Screens and the transcript
+
+API 2.4. These need the terminal UI (the plain terminal prints or falls back as noted).
+
+**`ctx.ui.pick(title, items, *, preview=None, on_highlight=None, filter=True, timeout=None)`** is the building block for "choose among many": a themed, keyboard-driven list the user filters by typing (type, ↑/↓ or PageUp/PageDown, Enter picks, Esc cancels).
+
+- `items` are `(value, label)` or `(value, label, detail)` tuples of strings; `value` is what comes back and must be unique (`ValueError` otherwise). `label` is listed and `detail` follows it dimmed; the filter matches both, fuzzily and without regard to case (`fb` finds `foo_bar`; several words must all match; better matches come first, an empty filter keeps your order). At most 300 rows are listed at once; typing narrows a longer list. With no items nothing is shown and it returns `None`.
+- `on_highlight(value)` runs **on the UI thread** every time the highlighted row changes, the row first highlighted when the list opens included (once per change: typing that leaves the same row on top does not repeat it). Use it to preview, for instance to apply a colour theme while the cursor is on it and restore the old one when the pick returns `None`. An exception is reported once and does not close the list.
+- `preview(value)` returns plain text for a side pane that follows the highlight (UI thread: keep it fast; an exception shows in the pane).
+- `filter=False` shows no filter box (only the list moves).
+- Returns the value, or `None` if the user pressed Esc, the `timeout` passed, minimal quit, or `items` was empty. The plain terminal shows `choose`'s numbered list instead (no filter, preview or highlight callback).
+
+**`ctx.ui.overlay(content, title="", *, timeout=None)`** shows read-only text in a box over the transcript: ↑/↓, PageUp/PageDown, Home/End, `j`/`k` scroll; Esc or `q` closes it. `content` is a string, or styled lines as `register_panel` returns them (`[[("added ", "$diff-added"), ("name", "bold $accent")], "plain line"]`: `$name` styles follow the theme; `ValueError` for an unknown style), or a Textual `Content`. Use it for help, key lists and diffs. The plain terminal prints the text.
+
+**`ctx.ui.screen(factory, *, timeout=None)`** shows a modal Textual screen of your own and returns the value it is dismissed with:
+
+```python
+from textual.screen import ModalScreen
+from textual.widgets import Button
+
+class Confirm(ModalScreen):
+    def __init__(self, dismiss):
+        super().__init__()
+        self.done = dismiss
+
+    def compose(self):
+        yield Button("Apply", id="ok")
+
+    def on_button_pressed(self, event):
+        self.done("applied")              # or self.dismiss("applied")
+
+result = ctx.ui.screen(lambda dismiss: Confirm(dismiss))   # "applied", or None
+```
+
+`factory(dismiss)` is called on the UI thread and returns a `ModalScreen`. `dismiss(value=None)` closes it from the screen's handlers or from any thread, as `screen.dismiss(value)` does; it does nothing once the screen is closed or while another screen covers it. The result is `None` if the screen closes without a value, minimal quits, or the `timeout` passes (it is closed then, once it is the top screen). Call it from a tool, command or handler that runs in a worker thread, never from the UI thread itself (widget callbacks and `terminal=True` commands cannot wait for a screen they must draw): there it raises `RuntimeError`, as it does in the plain terminal. What `factory` raises reaches the caller. Style it with the theme's CSS variables (`$surface`, `$panel`, `$accent`, `$modal-overlay`, …).
+
+**`ctx.transcript`** (`minimal.api.Transcript`) works on the messages as the terminal UI draws them, named by their index in `ctx.messages` (safe from any thread):
+
+| Member | What it does |
+| --- | --- |
+| `find(text, *, regex=False)` | The indexes of the messages containing `text` (case-insensitive; with `regex=True` a regular expression for `re.search`, case-sensitive unless it says `(?i)`). It searches the text of messages, a tool call's name and input as JSON and a tool result's text, not thinking. Works in the plain terminal too. `ValueError` for empty text or a bad pattern |
+| `scroll_to(message_index)` | Scrolls the transcript so that the block showing that message is at the top, and stops following the bottom until the user scrolls down. `True` if it has a block; `False` for an index out of range, a message older than the 200 the UI redraws, or one that shows nothing (and in the plain terminal). A message of tool calls or tool results maps to its first tool call's block |
+| `mark(message_index, label="")` | Marks the message: its block gets the CSS class `-marked` (stable; the default style is a thick `$accent` left border, restyle it with `register_css`) and `label` as its tooltip; marking again replaces the label. `ValueError` for an index outside the messages. A mark on a message the UI does not draw is kept but shows nothing |
+| `unmark(message_index=None)` | Removes that message's mark (no error if it has none), or every mark with `None` |
+| `marks()` | `[(index, label), ...]` by index |
+
+Marks last while the session is in view: `/new`, `/resume` and `fork` clear them, and `truncate` (`/rewind`) drops the ones it cut. They are not saved. A tool call and its result are one block, so marking both keeps it marked until both are unmarked.
 
 ## Modes
 
@@ -317,7 +427,7 @@ if result.status == "done":
 return f"agent {result.agent_id} {result.status}: {result.error or 'stopped'}"
 ```
 
-`run_agent(prompt, *, system_note="", exclude_tools=(), name=None, system=None, tools=None, model=None, provider=None, max_turns=None)` returns the text of the last reply and raises what went wrong (the error that ended the loop, `TurnInterrupted` if it was interrupted, `RuntimeError` if it ran out of turns) as it always did. `run_agent_result` takes the same keywords and returns an `AgentResult`, a frozen dataclass: `agent_id`, `text` (the last reply's; of the last one it got to if it did not finish), `usage` (`Usage`), `status` (`done`, `interrupted`, `error` after a failed model request, `max_turns`), `error` (the message of an `error` or `max_turns`, else `None`) and `messages` (the agent's own transcript, starting with its prompt; every `tool_use` has its `tool_result` even when it was interrupted). Both raise `ValueError` before anything starts for an invalid argument.
+`run_agent(prompt, *, system_note="", exclude_tools=(), name=None, system=None, tools=None, model=None, provider=None, max_turns=None, cwd=None, reasoning_effort=None, mentions=False)` returns the text of the last reply and raises what went wrong (the error that ended the loop, `TurnInterrupted` if it was interrupted, `RuntimeError` if it ran out of turns) as it always did. `run_agent_result` takes the same keywords and returns an `AgentResult`, a frozen dataclass: `agent_id`, `text` (the last reply's; of the last one it got to if it did not finish), `usage` (`Usage`), `status` (`done`, `interrupted`, `error` after a failed model request, `max_turns`), `error` (the message of an `error` or `max_turns`, else `None`) and `messages` (the agent's own transcript, starting with its prompt; every `tool_use` has its `tool_result` even when it was interrupted). Both raise `ValueError` before anything starts for an invalid argument.
 
 | Keyword        | Meaning                                                                                                          |
 | -------------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -328,6 +438,9 @@ return f"agent {result.agent_id} {result.status}: {result.error or 'stopped'}"
 | `model`        | A model name for this agent; with `provider` omitted, the current provider's                                      |
 | `provider`     | The name of a provider for this agent only (`ValueError` if unknown or without credentials); its default model unless `model` is given. The app's provider and model do not change, and a `provider_error` handler that switches provider switches only this agent |
 | `max_turns`    | Most model requests it may make (default `ctx.max_turns`, 50 unless `agent.max_turns` says otherwise)                                                                      |
+| `cwd`          | API 2.4. A folder (relative to the calling `ctx.cwd`; `ValueError` unless it exists) the agent works in. Its `ctx.cwd` follows it, so the built-in tools, `bash` and the "outside the workspace" confirmation of `read`/`grep`/`glob` use it, as do the working directory and project instructions (`AGENTS.md`) of its default system prompt and its permission rules; the agents it starts inherit it. The caller and every other agent keep theirs, and any number of agents may run at once in different folders (a worktree each) |
+| `reasoning_effort` | API 2.4. `"low"`, `"medium"` or `"high"` for this agent's requests only (and the agents it starts); `ValueError` for another value; `None`: the current effort. Use it instead of a `before_request` handler that changes `options` for one agent |
+| `mentions`     | API 2.4. `True` expands `@path` mentions in `prompt` as the terminal UI does for the user's messages: the content of each mentioned text file inside the agent's `cwd` is attached to its first message. Default `False` (the prompt is sent as it is) |
 
 An agent uses the current mode ([Modes](#modes)): the mode's restriction and note apply, and `tools` can only narrow them.
 
@@ -418,6 +531,7 @@ These selectors are stable; anything else (other ids, Textual's inner widgets) c
 | `#composer`, `#prompt`, `#prompt-glyph` | The prompt box, its text area and the glyph before it |
 | `#statusline`, `#working` | The status line and the working indicator |
 | `.user`, `Markdown.assistant`, `.tool` (`.-pending`, `.-success`, `.-error`), `.output`, `.error` | The transcript's blocks: your message, the model's reply, a tool call by state, command output, an error |
+| `.-marked` | API 2.4. A transcript block an extension marked with `ctx.transcript.mark` ([Screens and the transcript](#screens-and-the-transcript)); the default style is a thick `$accent` left border |
 
 The theme's colours are CSS variables (`$accent`, `$muted`, `$dim`, `$border-muted`, `$user-message-bg`, `$tool-success-bg`, …; `CSS_VARIABLES` lists them), so a stylesheet follows `/theme`. Use `ctx.theme` when Python needs a colour, and listen for `theme_change` to recompute it.
 
@@ -435,6 +549,8 @@ The terminal UI has five areas for widgets and panels (`WIDGET_AREAS`):
 
 `top`, `bottom` and `footer` size to their content: give a widget a height and do not `dock` it. The widgets and panels of an area stack by `order` (an integer, default `0`, lower first), then in registration order; status segments sort the same way within their side. minimal's own segments have orders from -40 to 0 on the left and 100 to 110 on the right (`model`, `path`, `git`, `mode`; `context`, `extensions`, `session`), so a segment you leave at `0` goes after them on the left and before them on the right, and `order=-50` puts yours first.
 
+A widget's height is its own to set (a `height` in its `DEFAULT_CSS`, or `widget.styles.height`), and the user can override it without code: `ui.widgets.<name>.height` (API 2.4, an integer from 1 to 100 rows) sizes any widget or panel, in a column area as in `top`, `bottom` and `footer`; leave it out and the widget keeps its own height. A widget that wants the keyboard, such as an embedded terminal, takes it with `ctx.focus_widget(name, hold=True)` ([`ctx`](#ctx-the-context)): the UI would otherwise move the focus back to the prompt when the next turn or command ends.
+
 Your placement is a default. The user can move, reorder and hide any widget, panel or status segment, minimal's own included, without editing code: `/ui move session footer`, `/ui hide git`, or the `ui.widgets` and `ui.status` [settings](settings.md#ui-settings) (keys are the names you registered). A name you register as a status segment that is also one of minimal's own (`git`, `model`) replaces it. Do not assume your widget is mounted: `ctx.widget(name)` is `None` for one the user hid.
 
 ## Keybindings
@@ -447,13 +563,14 @@ def show_stats(ctx):
 minimal.register_keybinding("f6", lambda ctx: ctx.run_command("/mode plan"), "plan mode", show=True)
 ```
 
-`register_keybinding(key, run, description="", *, show=False, name="")` (and the `@minimal.keybinding(key, *, description, show, name)` decorator, which takes the description from the function's docstring) binds a global key to `run(ctx)`. It runs on a worker thread, like a slash command: it may print (the output goes to the transcript), ask the user questions with `ctx.ui` and call anything on `ctx`; the prompt is locked meanwhile. An error it raises is shown once as `[extension] key <key> (<id>): <message>`. A key is ignored while a turn, a command or a dialog is running. The bindings are in force after every load and are dropped and made again on every `/reload`.
+`register_keybinding(key, run, description="", *, show=False, name="", terminal=False)` (and the `@minimal.keybinding(key, *, description, show, name, terminal)` decorator, which takes the description from the function's docstring) binds a global key to `run(ctx)`. It runs on a worker thread, like a slash command (unless `terminal=True`, below): it may print (the output goes to the transcript), ask the user questions with `ctx.ui` and call anything on `ctx`; the prompt is locked meanwhile. An error it raises is shown once as `[extension] key <key> (<id>): <message>`. A key is ignored while a turn, a command or a dialog is running. The bindings are in force after every load and are dropped and made again on every `/reload`.
 
 - **Key names** are Textual's: modifiers `ctrl`, `alt`, `shift`, `meta`, `super` joined with `+` to a letter, a digit, `f1`-`f24` or a named key (`ctrl+o`, `alt+x`, `f5`, `ctrl+shift+left`). Without `ctrl`, `alt`, `meta` or `super` only function keys and `insert` are accepted (a bare letter would steal typing). The terminal decides which combinations reach the app: `ctrl+<letter>`, function keys and `alt+<letter>` usually do.
 - **Reserved keys** (`RESERVED_KEYS`) are refused with a `ValueError` (a load error for the extension): `escape`, `ctrl+c`, `ctrl+p`, `ctrl+q`, `enter`, `tab`, `shift+tab`, `ctrl+b`, the arrows, `home`/`end`, `pageup`/`pagedown`, `backspace`/`delete` and the prompt's editing keys (`ctrl+a`, `ctrl+e`, `ctrl+k`, `ctrl+u`, `ctrl+w`, `ctrl+z`, …).
 - **Duplicates.** Two extensions binding the same key: the later one (load order) wins and the reload reports `<id>: key ctrl+o was bound by <other>'s binding '<label>'; replaced`. Two bindings of one extension cannot share a `name` (or description).
 - **`show=True`** lists the key (with its description) in Textual's `Footer` widget, for an extension widget that uses one: a `Footer` subclass with `DEFAULT_CSS = "Keys { dock: none; }"` in the `footer` area (a docked widget leaves the area zero rows tall). minimal draws no key hints of its own: `/ui` lists every key.
 - **Re-keying.** The user gives a binding another key under `ui.keys` by `<extension id>:<name>` (`name`, else the description, else the key): `{"ui": {"keys": {"example:stats": "alt+s"}}}`; `""` unbinds it. `ui.keys` also rebinds minimal's own actions (`interrupt`, `toggle_sidebar`, `cycle_mode`; `KEY_ACTIONS`). Give every binding a stable `name` so a description edit does not break users' settings.
+- **`terminal=True`** (API 2.4: `register_keybinding(..., terminal=True)`, `@minimal.keybinding(key, terminal=True)`) runs the key like a `terminal=True` command instead: the UI suspends itself and `run(ctx)` runs on the UI thread, in the real terminal, for a full-screen program (`fzf`, `$EDITOR`, `lazygit`) or anything that reads the keyboard. What it prints is gone when the UI returns: **return a str** (shown in the transcript afterwards), use `ctx.show(text)`, or put the result in the prompt with `ctx.ui.set_draft(text)`; an error it raises is shown after the resume. The prompt and the working indicator are locked meanwhile, and the key is ignored while a turn, a command or a dialog is running, as for any key. `ctx.ui.ask`, `choose`... use the plain terminal there. After it the UI refreshes the status line and moves the focus back to the prompt. `KeybindingSpec.terminal` carries the flag, and `ctx.keybindings()` and `/ui` list the key as usual.
 
 ## Renderers
 
@@ -540,10 +657,11 @@ It loads each extension without a terminal or a provider and prints one line per
 ```
 ok   tools/fetch 1.0
 WARN extensions/mermaid: needs termaid
+WARN extensions/lenses: head is larger than tail; using 20
 FAIL widgets/broken: syntax error: '(' was never closed (broken.py, line 2)
 ```
 
-In a marketplace checkout `ext check` looks at every item of every category folder. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself); `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, `__depends__` or `__conflicts__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
+In a marketplace checkout `ext check` looks at every item of every category folder. `WARN` means a module the extension imports is not installed here (also when the extension raises `ImportError(..., name="pkg")` for a missing `pkg` itself), or (API 2.4) the extension reported a non-fatal problem with `minimal.report_problem(text)`: it loads, so a `WARN` never fails the exit status; `FAIL` is a missing docstring, version or `__api__`, an `__api__` this minimal does not provide, a malformed `__dependencies__`, `__depends__` or `__conflicts__`, a load error, a settings error, or both `x.py` and `x/` in one category. The exit status is 1 if any line is `FAIL`.
 
 Only the package name of a `__dependencies__` entry is checked when deciding what is missing, not its version range.
 
@@ -568,14 +686,16 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 | `EVENTS`, `WIDGET_AREAS`, `STATUS_SIDES`, `THEME_COLORS`    | Valid event names, widget areas (`top`, `bottom`, `sidebar`, `left`, `footer`), status sides and theme colours |
 | `KeybindingSpec`, `RESERVED_KEYS`, `KEY_ACTIONS`            | A registered keybinding (`key`, `run`, `description`, `show`, `name`, `ext`, `id`), the keys no extension may bind, and minimal's own key actions with their default keys |
 | `LogoSpec`, `logo_content`, `theme`, `glyphs`               | Logo description, `logo_content(spec)` (a `LogoSpec` as Textual content) and the UI glyphs |
-| `UsageTotals`                                               | What `ctx.usage` returns: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests` |
+| `UsageTotals`                                               | What `ctx.usage` returns: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests` and (API 2.4) `by_model`, the same per `"provider/model"` |
+| `SessionInfo`, `NotifyEvent`                                | What `ctx.session_info()` / `ctx.sessions_info()` return and the `notify` payload (API 2.4) |
 | `glob_regex`                                                | The glob matcher of `glob` and of path permission rules           |
 | `ThemeInfo`, `ThemeChangeEvent`, `CSS_VARIABLES`, `CssSpec`  | What `ctx.theme` returns (`name`, `dark`, `colors`: `#rrggbb` by name), the `theme_change` payload, the CSS variables `$name` may stand for in styled text, and a registered stylesheet (API 2.3) |
+| `ContextSettings`, `SETTING_MERGES`, `normalize_key`        | What `ctx.settings` is; the values of a `declare_settings` schema entry's `merge` (`"replace"`, `"deep"`); `normalize_key(key, what="key")` returns a key name as Textual spells it (stripped, lowercased) or raises `ValueError` starting with `what` if it is not one a binding can take (a bare letter would steal typing): validate a user-chosen key before `register_keybinding` or writing `ui.keys` (API 2.4) |
 | `GitInfo`, `KeyInfo`, `SettingsSpec`                        | What `ctx.git()`, `ctx.keybindings()` and a `declare_settings` call (`id`, `defaults`, `schema`, `values`) give (API 2.3) |
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.3`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.4`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
 API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response`, `shutdown` and `provider_error`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
@@ -596,6 +716,14 @@ API 2.3 added `complete` to `@minimal.command` and `register_command` (and the `
 API 2.3 added, for customisable interfaces: `minimal.register_keybinding` and the `@minimal.keybinding` decorator (`KeybindingSpec`, `RESERVED_KEYS`, `KEY_ACTIONS` in `minimal.api`), the `order` keyword of `register_widget`, `register_panel` and `register_status`, the areas `left` and `footer` in `WIDGET_AREAS`, and the metadata `__depends__` and `__conflicts__`. An extension using any of them declares `__api__ = "2.3"`.
 
 API 2.3 added, for extensions that look and behave the way the user wants: `ctx.invalidate()` (redraw from any thread), `ctx.theme` (`ThemeInfo`) and the `theme_change` event (`ThemeChangeEvent`), `$name` and `#rrggbb` pieces in styled text, the `title` and `collapsible` keywords of `register_panel` and `register_widget`, `minimal.register_css` (`CssSpec`, `CSS_VARIABLES`) with the stable selectors of [Styling the terminal UI](#styling-the-terminal-ui), the `schema` argument of `declare_settings` (`SettingsSpec`) with `/ext settings`, `ctx.context_window`, `ctx.git()` (`GitInfo`) and `ctx.keybindings()` (`KeyInfo`). An extension using any of them declares `__api__ = "2.3"`.
+
+API 2.4 added, for terminal tools and richer interfaces (terminal UI slice): `terminal=True` on `register_keybinding` and `@minimal.keybinding` (the key runs under a suspended UI like a `terminal` command; `KeybindingSpec.terminal`), `ctx.ui.get_draft()` and `ctx.ui.set_draft(text, *, append=False)` (the prompt's text, with `Frontend.draft` and `Frontend.set_draft`), `ctx.show(text, kind="output")` (a transcript block that survives a `terminal` command or key; `Frontend.show`) together with a str returned by a `terminal` command or key being shown after the resume, `Extension.builtin_commands()` (the built-in command names at `register` time), `ctx.git_refresh()`, `ctx.focus_widget(name, *, hold=False)` and `ctx.focus_composer()` (focus control with a hold that `after_action` respects; `Frontend.focus_widget` and `Frontend.focus_composer`) and the `height` field of `ui.widgets` overrides. Every new `Frontend` method has a no-op default in the plain terminal's frontend.
+
+API 2.4 added, for extensions that act on their own and drive the user's configuration: `minimal.ctx` (the `Context` once `register` returned), `ctx.settings` (`get`, `layers`, `update`, `unset`; `ContextSettings`), `ctx.set_theme(name, *, save=False)`, `minimal.api.normalize_key`, the `"merge": "deep"` field of a `declare_settings` schema entry (`SETTING_MERGES`), `minimal.report_problem(text)` (a `Warning:` line in the reload summary, `WARN` in `minimal ext check`), and a `ctx.run_command` that no longer clears the user's interrupt flag while a turn or command runs. A frontend implements `Frontend.set_theme(name) -> bool`. An extension using any of them declares `__api__ = "2.4"`.
+
+API 2.4 added, for extensions that show their own interface: `ctx.ui.screen(factory)` (a modal Textual screen), `ctx.ui.pick(...)` (a fuzzy-filtered list with a live highlight callback and a preview pane) and `ctx.ui.overlay(...)` (read-only scrollable text), the `timeout` keyword of every `ctx.ui` question, `ctx.transcript` (`Transcript`: jump to, mark and search messages; the stable `-marked` class) and the `ui.preview_lines` setting. An extension using any of them declares `__api__ = "2.4"`.
+
+API 2.4 added, for agent-heavy and housekeeping extensions: `cwd`, `reasoning_effort` and `mentions` on `ctx.run_agent` / `run_agent_result` (`Context.cwd` and `reasoning_effort` of the agent's `ctx` follow them), `reasoning_effort`, `options` and `messages` on `ctx.complete` / `complete_text`, `UsageTotals.by_model`, `model`, `provider` and `source` on `after_response` (which `ctx.complete` now fires, `source` `"complete"`), `ctx.session_info()` and `ctx.sessions_info()` (`SessionInfo`), `ctx.progress(text, key=None)` with one slot per tool call, the `notify` event (`NotifyEvent`) and `read_only` as a function on tools. An extension using any of them declares `__api__ = "2.4"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 
