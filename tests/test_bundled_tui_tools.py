@@ -53,11 +53,18 @@ class ToolsTest(BundledExtensionTest):
         (self.project / "sub").mkdir(parents=True)
         git = shutil.which("git")
         self.assertIsNotNone(git, "these tests need git on PATH")
+        # only the few system tools the fake scripts use (basename, touch, git), linked into a folder of their own: the
+        # real PATH may hold gh, lazygit... and must not make a tool "found"
+        self.sysbin = self.tmp / "sysbin"
+        self.sysbin.mkdir()
+        for tool in ("basename", "touch", "git"):
+            found = shutil.which(tool)
+            self.assertIsNotNone(found, f"these tests need {tool} on PATH")
+            (self.sysbin / tool).symlink_to(found)
         env = mock.patch.dict(
             os.environ,
             {
-                # system folders for the fake scripts' basename, touch...; git's own folder for the git tools
-                "PATH": os.pathsep.join([str(self.bin), "/usr/bin", "/bin", os.path.dirname(git)]),
+                "PATH": os.pathsep.join([str(self.bin), str(self.sysbin)]),
                 "FAKE_LOG": str(self.log),
                 "GIT_CONFIG_GLOBAL": os.devnull,  # no signing or hooks of the developer's own configuration
                 "GIT_CONFIG_SYSTEM": os.devnull,
