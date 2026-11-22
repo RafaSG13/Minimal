@@ -58,12 +58,13 @@ class ContextTest(BundledExtensionTest):
             extra_extensions=[str(MARKETPLACE / "extensions" / f"{self.item}.py")],
         )
         _, errors = app.reload_extensions()
+        self.warnings = app.extension_problems  # what the item reported with report_problem: it still loaded
         app.provider, app.model = RecordingProvider(replies), "m"
         return app, errors
 
     def make(self, settings=None, replies=(), top=None):
         app, errors = self.build(settings, replies, top)
-        self.assertEqual(errors, [])
+        self.assertEqual((errors, self.warnings), ([], []))
         return app
 
     @property
@@ -303,14 +304,20 @@ class CompactSettingsTest(ContextTest):
                 self.assertTrue(any(problem in e for e in errors), errors)
                 self.assertIn("compact", app.registry.commands)  # still loaded, with the default
 
-    def test_an_empty_summary_prompt_is_reported_with_its_fix(self):
+    def test_an_empty_summary_prompt_is_a_warning_and_the_default_prompt_is_used(self):
         app, errors = self.build({"summary_prompt": "  "})
-        self.assertEqual(len(errors), 1)
-        self.assertIn("summary_prompt must not be empty; remove it to use the default", errors[0])
-        self.assertNotIn("compact", app.registry.commands)
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertIn("compact: extensions.settings.compact.summary_prompt must not be empty", warning)
+        self.assertIn("compact", app.registry.commands)
+        app.messages[:] = exchange("q", "a")
+        app.provider.replies = [text_reply("SUMMARY")]
+        self.run_command(app, "/compact")
+        asked = app.provider.requests[0].messages[-1]["content"]
+        self.assertEqual(asked, self.ext.SUMMARY_REQUEST)
 
     def test_it_declares_the_api_it_uses(self):
-        self.assertIn('__api__ = "2.3"', (MARKETPLACE / "extensions" / "compact.py").read_text())
+        self.assertIn('__api__ = "2.4"', (MARKETPLACE / "extensions" / "compact.py").read_text())
         self.assertIn("high", REASONING_EFFORTS)
 
 
@@ -459,18 +466,25 @@ class LensesTest(ContextTest):
         self.frontend.notify.assert_called_with("Output lenses are on.", "info")
         self.assertEqual(self.make().registry.keybindings, {})  # no key by default
 
-    def test_a_key_the_ui_needs_is_refused_with_the_fix(self):
+    def test_a_key_the_ui_needs_is_a_warning_with_the_fix_and_the_lenses_still_load(self):
         for key in ("ctrl+c", "a"):
             with self.subTest(key=key):
                 app, errors = self.build({"key": key})
-                self.assertEqual(len(errors), 1)
-                self.assertIn("extensions.settings.lenses.key", errors[0])
-                self.assertIn('set it to "" for no key', errors[0])
+                self.assertEqual(errors, [])
+                (warning,) = self.warnings
+                self.assertIn("extensions.settings.lenses.key", warning)
+                self.assertIn('set it to "" for no key', warning)
+                self.assertEqual(app.registry.keybindings, {})
+                self.assertIn("lenses", app.registry.commands)
 
     def test_bad_settings_are_reported_with_the_fix(self):
+        for settings, problem in (("min_chars", 0), ("tail", -5)):  # a range the schema checks stays a load error
+            with self.subTest(settings=settings):
+                app, errors = self.build({settings: problem})
+                self.assertTrue(any(f"extensions.settings.lenses.{settings}" in e for e in errors), errors)
+
+    def test_inconsistent_settings_are_warnings_with_the_fix_and_the_lenses_load(self):
         for settings, problem in (
-            ({"min_chars": 0}, "extensions.settings.lenses.min_chars"),
-            ({"tail": -5}, "extensions.settings.lenses.tail"),
             ({"repeat_min": 1}, "repeat_min must be 0 (never) or 2 or more"),
             ({"passing": ["("]}, "passing[0] '(' is not a valid regular expression"),
             ({"passing": [3]}, "passing[0] must be a string"),
@@ -488,10 +502,17 @@ class LensesTest(ContextTest):
         ):
             with self.subTest(settings=settings):
                 app, errors = self.build(settings)
-                self.assertTrue(any(problem in e for e in errors), errors)
+                self.assertEqual(errors, [])
+                self.assertTrue(any(problem in w and w.startswith("lenses: ") for w in self.warnings), self.warnings)
+                self.assertIn("(ignored: the default applies)", self.warnings[0])
+                self.assertIn("lenses", app.registry.commands)
+
+    def test_a_repeat_min_of_one_falls_back_to_the_default(self):
+        app, _ = self.build({"repeat_min": 1})
+        self.assertIn("[previous line repeated", self.output_of(app, self.REPEAT, "again"))
 
     def test_it_declares_the_api_it_uses(self):
-        self.assertIn('__api__ = "2.3"', (MARKETPLACE / "extensions" / "lenses.py").read_text())
+        self.assertIn('__api__ = "2.4"', (MARKETPLACE / "extensions" / "lenses.py").read_text())
 
 
 # --- retry ---------------------------------------------------------------------------------------------------------------
@@ -611,7 +632,14 @@ class RetrySettingsTest(ContextTest):
             ({"max_attempts": -1}, "extensions.settings.retry.max_attempts"),
             ({"factor": 0.5}, "extensions.settings.retry.factor"),
             ({"base_delay": -2}, "extensions.settings.retry.base_delay"),
-            ({"statuses": [99]}, "statuses: 99 is not an HTTP status (100-599)"),
+        ):
+            with self.subTest(settings=settings):
+                app, errors = self.build(settings)
+                self.assertTrue(any(problem in e for e in errors), errors)
+
+    def test_inconsistent_settings_are_warnings_and_the_key_is_back_to_its_default(self):
+        for settings, problem in (
+            ({"statuses": [99]}, "statuses has 99, which is not an HTTP status (100-599)"),
             ({"statuses": ["429"]}, "statuses must be a list of whole numbers"),
             ({"network_errors": [1]}, "network_errors must be a list of strings"),
             ({"match": [None]}, "match must be a list of strings"),
@@ -622,10 +650,21 @@ class RetrySettingsTest(ContextTest):
         ):
             with self.subTest(settings=settings):
                 app, errors = self.build(settings)
-                self.assertTrue(any(problem in e for e in errors), errors)
+                self.assertEqual(errors, [])
+                (warning,) = self.warnings
+                self.assertTrue(warning.startswith("retry: extensions.settings.retry."), warning)
+                self.assertIn(problem, warning)
+                self.assertIn("the default is used until you fix it", warning)
+                self.assertTrue(app.registry._handlers.get("provider_error"))
+
+    def test_a_bad_status_list_does_not_stop_the_retry_of_the_default_statuses(self):
+        app, errors = self.build({"base_delay": 0, "statuses": ["429"]})
+        self.assertEqual(len(self.warnings), 1)
+        self.run_failing(app, [HTTPError(503)])
+        self.assertEqual(len(app.provider.requests), 2)  # 503 is a default status: retried
 
     def test_it_declares_the_api_it_uses(self):
-        self.assertIn('__api__ = "2.3"', (MARKETPLACE / "extensions" / "retry.py").read_text())
+        self.assertIn('__api__ = "2.4"', (MARKETPLACE / "extensions" / "retry.py").read_text())
 
 
 # --- claude_subscription -------------------------------------------------------------------------------------------------

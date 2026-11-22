@@ -63,7 +63,8 @@ class SafetyTest(BundledExtensionTest):
         git("commit", "-q", "-m", "init")
 
     def load(self, settings=None, replies=()):
-        """``(app, errors)`` with the extension loaded; a load problem is returned, not asserted away."""
+        """``(app, errors)`` with the extension loaded; a load problem is returned, not asserted away. The non-fatal
+        problems it reported with ``report_problem`` are in ``self.warnings``."""
         (self.tmp / "settings.json").write_text(
             json.dumps({"extensions": {"settings": {self.EXT: settings or {}}}})
         )
@@ -77,12 +78,13 @@ class SafetyTest(BundledExtensionTest):
             extra_extensions=[str(MARKETPLACE / "extensions" / f"{self.EXT}.py")],
         )
         _, errors = app.reload_extensions()
+        self.warnings = app.extension_problems
         app.provider, app.model = RecordingProvider(replies), "m"
         return app, errors
 
     def make(self, settings=None, replies=()):
         app, errors = self.load(settings, replies)
-        self.assertEqual(errors, [])
+        self.assertEqual((errors, self.warnings), ([], []))
         return app
 
     def command(self, app, line):
@@ -126,18 +128,45 @@ class ScopeFenceSettingsTest(SafetyTest):
         self.command(app, "/fence docs/**")
         self.assertIn("no src/x.py (only docs/**)", self.write_turn(app))
 
-    def test_bad_template_is_reported_with_the_fix(self):
-        _, errors = self.load({"outside_message": "no {file}"})
-        self.assertTrue(any("extensions.settings.scope_fence.outside_message" in e and "{path}" in e for e in errors), errors)
+    def test_bad_template_loads_with_the_default_message_and_a_warning_with_the_fix(self):
+        app, errors = self.load({"outside_message": "no {file}"})
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertIn("scope_fence: extensions.settings.scope_fence.outside_message", warning)
+        self.assertIn("{path}", warning)
+        self.assertIn("default message is used", warning)
+        self.command(app, "/fence docs/**")
+        seen = self.write_turn(app)  # the fence still holds, with the default wording
+        self.assertIn("src/x.py is outside the fence (docs/**). Do not work around it:", seen)
+        self.assertFalse((self.project / "src" / "x.py").exists())
+
+    def test_a_bad_template_only_resets_its_own_key(self):
+        app, errors = self.load({"outside_message": "no {file}", "budget_message": "over: {used}/{lines}"})
+        self.assertEqual((errors, len(self.warnings)), ([], 1))
+        self.command(app, "/fence docs/** --lines 1")
+        self.assertIn("src/x.py is outside the fence", self.write_turn(app))
 
     def test_wrong_type_is_reported_and_default_kept(self):
         app, errors = self.load({"default_lines": "many"})
         self.assertTrue(any("default_lines" in e for e in errors), errors)
         self.assertIn("fence", app.registry.panels)
 
-    def test_unknown_tool_is_reported(self):
-        _, errors = self.load({"tools": ["write", "bash"]})
-        self.assertTrue(any("scope_fence.tools" in e and "write, edit" in e for e in errors), errors)
+    def test_unknown_tool_falls_back_to_guarding_write_and_edit_with_a_warning(self):
+        app, errors = self.load({"tools": ["write", "bash"]})
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertTrue("scope_fence.tools" in warning and "write, edit" in warning, warning)
+        self.command(app, "/fence docs/**")
+        self.write_turn(app, tool="edit", path="src/y.py")
+        self.assertIn("src/y.py is outside the fence", self.results(app))  # edit is guarded too: the default list
+
+    def test_bad_exempt_falls_back_to_the_default_prefixes(self):
+        app, errors = self.load({"exempt": ["ok/", ""]})
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertIn("scope_fence.exempt must be a list of non-empty strings", warning)
+        self.command(app, "/fence docs/**")
+        self.assertIn("src/x.py is outside the fence", self.write_turn(app))
 
     def test_tools_setting_narrows_the_guard(self):
         app = self.make({"tools": ["edit"]})
@@ -183,9 +212,14 @@ class ScopeFenceSettingsTest(SafetyTest):
         binding.run(ctx)
         ctx.notify.assert_called_once_with("Fence: docs/**")
 
-    def test_bad_key_is_reported_with_the_fix(self):
-        _, errors = self.load({"key": "x"})
-        self.assertTrue(any("scope_fence.key" in e and "\"\"" in e for e in errors), errors)
+    def test_bad_key_is_a_warning_with_the_fix_and_the_fence_still_loads(self):
+        app, errors = self.load({"key": "x"})
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertTrue("scope_fence.key" in warning and "\"\"" in warning, warning)
+        self.assertIn("fence", app.registry.panels)
+        self.assertIsNotNone(app.find_command("fence"))
+        self.assertEqual(app.registry.keybindings, {})
 
     def test_disabled_registers_nothing(self):
         app = self.make({"enabled": False})
@@ -217,9 +251,23 @@ class TripwireTest(SafetyTest):
         self.command(app, "/tripwire add grep -q good a.txt")
         self.assertIn("BROKE grep -q good a.txt!", self.break_turn(app))
 
-    def test_bad_template_is_reported_with_the_fix(self):
-        _, errors = self.load({"still_note": "{nope}"})
-        self.assertTrue(any("tripwire.still_note" in e and "{cmd}" in e for e in errors), errors)
+    def test_bad_template_loads_with_the_default_note_and_a_warning_with_the_fix(self):
+        app, errors = self.load({"still_note": "{nope}", "broke_note": "BROKE {cmd}!"})
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertTrue("tripwire: extensions.settings.tripwire.still_note" in warning and "{cmd}" in warning, warning)
+        self.assertIn("default note is used", warning)
+        self.command(app, "/tripwire add grep -q good a.txt")
+        self.assertIn("BROKE grep -q good a.txt!", self.break_turn(app))  # the good template still applies; the wire guards
+        self.assertIn("tripwire", app.registry.panels)
+
+    def test_bad_glyph_falls_back_to_the_default_with_a_warning(self):
+        app, errors = self.load({"ok_glyph": "\n"})
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertIn("tripwire.ok_glyph must be printable text", warning)
+        self.command(app, "/tripwire add true")
+        self.assertTrue(app.registry.panels["tripwire"].render(mock.Mock()).startswith("●"))
 
     def test_progress_and_failure_notice(self):
         app = self.make({"notify": True})
@@ -266,9 +314,13 @@ class TripwireTest(SafetyTest):
         self.assertIn("true", listing)
         self.assertIn("false", listing)
 
-    def test_bad_commands_setting_is_reported(self):
-        _, errors = self.load({"commands": ["ok", ""]})
-        self.assertTrue(any("tripwire.commands" in e for e in errors), errors)
+    def test_bad_commands_entry_is_dropped_with_a_warning_and_the_others_still_guard(self):
+        app, errors = self.load({"commands": ["grep -q good a.txt", ""]})
+        self.assertEqual(errors, [])
+        (warning,) = self.warnings
+        self.assertIn("tripwire.commands must be a list of non-empty command strings", warning)
+        self.assertIn("grep -q good a.txt", self.command(app, "/tripwire"))
+        self.assertIn('[tripwire] "grep -q good a.txt" fails:', self.break_turn(app))  # the configured wire still guards
 
     def test_timeout_and_output_limits(self):
         module = load_module("tripwire")
@@ -322,11 +374,16 @@ class LooseEndsTest(SafetyTest):
         lines = app.registry.panels["loose_ends"].render(mock.Mock()).splitlines()
         self.assertEqual(lines, ["TODO (3)", "N item num", "N item num"])
 
-    def test_bad_glyph_is_reported_with_the_fix(self):
-        _, errors = self.load({"glyphs": {"urgent": "U"}})
-        self.assertTrue(any("glyphs" in e and "unverified, noticed, followup" in e for e in errors), errors)
-        _, errors = self.load({"glyphs": {"noticed": ""}})
-        self.assertTrue(any("glyphs.noticed" in e for e in errors), errors)
+    def test_bad_glyph_is_a_warning_with_the_fix_and_the_default_glyph_stays(self):
+        app, errors = self.load({"glyphs": {"urgent": "U", "noticed": "", "followup": "F"}})
+        self.assertEqual(errors, [])
+        self.assertEqual(len(self.warnings), 2, self.warnings)
+        self.assertTrue(any("glyphs" in w and "unverified, noticed, followup" in w for w in self.warnings), self.warnings)
+        self.assertTrue(any("glyphs.noticed" in w for w in self.warnings), self.warnings)
+        self.note(app, "x", kind="noticed")
+        self.note(app, "y", kind="followup")
+        lines = app.registry.panels["loose_ends"].render(mock.Mock()).splitlines()
+        self.assertEqual(lines[1:], ["F y", "! x"])  # the bad override left the default ``!`` and the good one applied
 
     def test_max_text_refuses_with_a_fix(self):
         app = self.make({"max_text": 10})
@@ -422,14 +479,22 @@ class CrystallizeTest(SafetyTest):
             app.find_command("crystallize").run("all", ctx)
         self.assertIn("not a valid tool name (use [a-z]+)", out.getvalue())
 
-    def test_bad_settings_are_reported_with_the_fix(self):
-        _, errors = self.load({"tool_name_pattern": "["})
-        self.assertTrue(any("tool_name_pattern" in e and "regular expression" in e for e in errors), errors)
-        _, errors = self.load({"other_rule": "no {tool}"})
-        self.assertTrue(any("other_rule" in e and "{name}" in e for e in errors), errors)
-        _, errors = self.load({"rules_file": "../x.md"})
-        self.assertTrue(any("rules_file" in e and "inside the project" in e for e in errors), errors)
-        _, errors = self.load({"min_runs": 1})
+    def test_bad_settings_load_with_the_default_and_a_warning_with_the_fix(self):
+        for settings, key, needle in (
+            ({"tool_name_pattern": "["}, "tool_name_pattern", "regular expression"),
+            ({"other_rule": "no {tool}"}, "other_rule", "{name}"),
+            ({"rules_file": "../x.md"}, "rules_file", "inside the project"),
+            ({"rules_heading": "a\nb"}, "rules_heading", "one non-empty line"),
+            ({"skip_commands": ["ls", ""]}, "skip_commands", "non-empty command names"),
+        ):
+            with self.subTest(key=key):
+                app, errors = self.load(settings)
+                self.assertEqual(errors, [])
+                (warning,) = self.warnings
+                self.assertTrue(f"crystallize.{key}" in warning and needle in warning, warning)
+                self.assertIn("the default is used", warning)
+                self.assertIsNotNone(app.find_command("crystallize"))
+        _, errors = self.load({"min_runs": 1})  # a range the schema checks stays a load error
         self.assertTrue(any("min_runs" in e for e in errors), errors)
 
     def test_disabled_registers_nothing(self):
