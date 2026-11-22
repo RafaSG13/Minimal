@@ -327,7 +327,7 @@ class TuiScreensTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             task = self.worker(app.host.ctx.ui.pick, "Fruit", self.ITEMS)
             await self.wait_until(pilot, self.shown(app, PickScreen))
-            self.assertEqual(app.screen.listed, ["apple", "banana", "apricot", "cherry"])  # the order given
+            await self.wait_until(pilot, lambda: app.screen.listed == ["apple", "banana", "apricot", "cherry"])  # as given
             await self.wait_until(pilot, lambda: isinstance(app.focused, Input))
             await pilot.press("b", "n", "n")  # fuzzy: B-a-N-a-N-a
             await self.wait_until(pilot, lambda: app.screen.listed == ["banana"])
@@ -461,7 +461,7 @@ class TuiScreensTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             task = self.worker(app.host.ctx.ui.pick, "Many", items)
             await self.wait_until(pilot, self.shown(app, PickScreen))
-            self.assertEqual(len(app.screen.listed), 300)
+            await self.wait_until(pilot, lambda: len(app.screen.listed) == 300)
             self.assertIn("first 300 of 1000", str(app.screen.query_one("#pick-hint", Label).render()))
             await pilot.press(*"item 999")
             await self.wait_until(pilot, lambda: app.screen.listed[:1] == ["v999"])
