@@ -600,7 +600,7 @@ class RetrySettingsTest(ContextTest):
         self.assertEqual(ext.verdict(HTTPError(429), 1, "anthropic", {"max_attempts": 0, "fallback": "fake"}), {"provider": "fake"})
 
     def test_progress_counts_down_the_wait_and_clears_it(self):
-        app = self.make({"base_delay": 0.06, "progress": True})
+        app = self.make({"base_delay": 0.3, "progress": True})
         with mock.patch.object(self.ext, "PROGRESS_STEP", 0.02):
             self.run_failing(app, [HTTPError(429)])
         notes = [call.args[0] for call in self.frontend.progress.call_args_list]

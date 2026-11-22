@@ -77,6 +77,11 @@
 - `notify` event (`NotifyEvent`: `text`, `kind`, `source`), fired by `ctx.notify` and minimal's own notices.
 - `Tool.read_only` (and `register_tool`/`@minimal.tool`) may be a function `(input, ctx) -> bool` decided per call.
 
+### Fixed
+
+- Text printed while the terminal UI has no transcript (as it starts or quits, e.g. by a worker thread) is written to
+  the real terminal instead of crashing the app with `NoMatches`.
+
 ## 0.9.0
 
 ### Added
