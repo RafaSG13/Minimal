@@ -658,7 +658,7 @@ class TuiScreensTest(unittest.IsolatedAsyncioTestCase):
             await self.wait_until(pilot, self.shown(app, OverlayScreen))
             body = app.screen.query_one("#overlay-body")
             self.assertEqual(body.scroll_y, 0)
-            self.assertIs(app.focused, body)
+            await self.wait_until(pilot, lambda: app.focused is body)
             await pilot.press("pagedown")
             await self.wait_until(pilot, lambda: body.scroll_y > 0)
             moved = body.scroll_y
