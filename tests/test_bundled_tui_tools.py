@@ -158,7 +158,7 @@ class RegistrationTest(ToolsTest):
         self.install("lazygit", "btop")
         app = self.make()
         commands = app.registry.commands
-        self.assertEqual(sorted(commands), ["btop", "lazygit", "tui"])
+        self.assertEqual(sorted(commands), ["btop", "edit", "lazygit", "tui"])
         self.assertTrue(commands["lazygit"].terminal and commands["btop"].terminal)
         self.assertFalse(commands["tui"].terminal)
         self.assertIn("git UI", commands["lazygit"].description)
@@ -196,7 +196,7 @@ class RegistrationTest(ToolsTest):
         app = self.make()
         complete = app.registry.commands["tui"].complete
         self.assertEqual(complete("lazyg", app.context), ["lazygit"])
-        self.assertEqual(complete("la", app.context), ["lazygit", "lazydocker", "last"])
+        self.assertEqual(complete("la", app.context), ["lazygit", "lazydocker", "lazysql", "last"])
         self.assertEqual(complete("lazygit ", app.context), [])
 
     def test_every_setting_has_a_description(self):
@@ -278,7 +278,7 @@ class LaunchTest(ToolsTest):
     def test_a_disabled_tool_is_not_a_command(self):
         self.install("lazygit", "btop")
         app = self.make({"tools": {"lazygit": {"enabled": False}}})
-        self.assertEqual(sorted(app.registry.commands), ["btop", "tui"])
+        self.assertEqual(sorted(app.registry.commands), ["btop", "edit", "tui"])
         self.assertIn("lazygit", self.run_command(app, "/tui"))
         self.assertIn("lazygit is disabled", self.run_command(app, "/tui lazygit"))
 
@@ -507,7 +507,7 @@ class DeepMergeTest(ToolsTest):
             project={"tools": {"two": {"command": ["two"]}, "lazygit": {"command": ["lazygit", "--debug"]}, "one": {"description": "mine"}}},
             local={"tools": {"two": {"description": "personal"}}},
         )
-        self.assertEqual(sorted(app.registry.commands), ["lazygit", "one", "tui", "two"])
+        self.assertEqual(sorted(app.registry.commands), ["edit", "lazygit", "one", "tui", "two"])
         self.assertIn("mine", app.registry.commands["one"].description)  # the project's field...
         self.run_command(app, "/one")
         self.assertEqual(self.runs()[-1]["name"], "one")  # ...next to the global command
@@ -532,7 +532,7 @@ class DeepMergeTest(ToolsTest):
     def test_an_untrusted_project_adds_nothing(self):
         self.install("one", "two")
         app = self.make(self.GLOBAL, project={"tools": {"two": {"command": ["two"]}}}, trusted=False)
-        self.assertEqual(sorted(app.registry.commands), ["one", "tui"])
+        self.assertEqual(sorted(app.registry.commands), ["edit", "one", "tui"])
 
     def test_the_setting_declares_the_deep_merge(self):
         app = self.make()
@@ -567,7 +567,7 @@ class BadSettingsTest(ToolsTest):
     def test_fields_are_type_checked_with_the_fix(self):
         self.assert_warning(
             {"tools": {"mine": {"command": "mine", "env": {"A": 1}, "enabled": "yes", "colour": 1}}},
-            "unknown field 'colour' (known: command, description, cwd, env, enabled, install, git, key)",
+            "unknown field 'colour' (known: command, description, cwd, env, enabled, install, git, key, requires)",
         )
         self.assert_warning(
             {"tools": {"mine": {"command": "mine", "env": {"A": 1}, "enabled": "yes"}}},
@@ -600,7 +600,7 @@ class BadSettingsTest(ToolsTest):
         )
         self.assertEqual(len(self.warnings), 3, self.warnings)
         self.assertTrue(all(w.startswith("tui_tools: ") and w.endswith("skipped)") for w in self.warnings), self.warnings)
-        self.assertEqual(sorted(app.registry.commands), ["btop", "good", "lazygit", "tui"])
+        self.assertEqual(sorted(app.registry.commands), ["btop", "edit", "good", "lazygit", "tui"])
         self.assertIn("resource monitor", app.registry.commands["btop"].description)
         self.run_command(app, "/lazygit")
         self.assertEqual(self.runs()[0]["name"], "lazygit")

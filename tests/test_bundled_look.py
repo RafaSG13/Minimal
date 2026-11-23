@@ -302,10 +302,12 @@ class HelpOverlayTest(LookTest):
         app = self.ok(self.PATH, {"show_commands": False})
         self.assertNotIn("Commands", self.run_help(app, "/keys"))
 
-    def test_disabled_registers_nothing_and_bad_extra_keys_are_an_error(self):
+    def test_disabled_registers_nothing_and_bad_extra_keys_are_a_warning_with_the_default_keys(self):
         self.assertNotIn("keys", self.ok(self.PATH, {"enabled": False}).registry.commands)
-        _, errors = self.load(self.PATH, {"extra_keys": [["only one"]]})
-        self.assertIn("extra_keys entries must be [key, text] pairs", errors[0])
+        app, errors = self.load(self.PATH, {"extra_keys": [["only one"]]})
+        self.assertEqual(errors, [])
+        self.assertIn("extra_keys entries must be [key, text] pairs", app.extension_problems[0])
+        self.assertIn("Ctrl+Q", self.run_help(app, "/keys"))
         _, errors = self.load(self.PATH, {"width": 5})
         self.assertIn("width", errors[0])
 
@@ -375,9 +377,10 @@ class TermTitleTest(LookTest, unittest.IsolatedAsyncioTestCase):
     def test_template_is_validated_at_load(self):
         for template in ("{nope}", "{project", "{0}"):
             with self.subTest(template):
-                _, errors = self.load(self.PATH, {"template": template})
-                self.assertEqual(len(errors), 1, errors)
-                self.assertIn("template", errors[0])
+                app, errors = self.load(self.PATH, {"template": template})
+                self.assertEqual(errors, [])
+                self.assertEqual(len(app.extension_problems), 1, app.extension_problems)
+                self.assertIn("template", app.extension_problems[0])
         _, errors = self.load(self.PATH, {"max_length": 2})
         self.assertIn("max_length", errors[0])
 
