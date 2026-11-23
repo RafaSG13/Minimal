@@ -1,0 +1,24 @@
+.minimal/extensions/.lock.json
+  h_e81853c41416fb 1-16
+.minimal/extensions/widgets/model_picker.py
+  h_e81853c41416fb 1-250
+.minimal/extensions/widgets/style_pack.py
+  h_e81853c41416fb 1-141
+CHANGELOG.md
+  h_e81853c41416fb 80-84
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 408-414
+tests/test_bundled_context.py
+  h_e81853c41416fb 603
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "4a230a24b4bde60105865b02ed903e183012ce69",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
