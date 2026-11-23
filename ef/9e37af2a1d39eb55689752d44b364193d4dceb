@@ -1,0 +1,18 @@
+CHANGELOG.md
+  h_e81853c41416fb 3
+docs/extensions.md
+  h_e81853c41416fb 3,47,61,698
+src/minimal/__init__.py
+  h_e81853c41416fb 16,18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "ef9e37af2a1d39eb55689752d44b364193d4dceb",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
