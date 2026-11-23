@@ -1,0 +1,28 @@
+tests/test_bundled_context.py
+  h_e81853c41416fb 1-732
+tests/test_bundled_creator.py
+  h_e81853c41416fb 1,176-330
+tests/test_bundled_delegate.py
+  h_e81853c41416fb 2,27,31,39,51-52,285-289,292-303,306-309,311-415,418
+tests/test_bundled_extensions.py
+  h_e81853c41416fb 109
+tests/test_bundled_safety.py
+  h_e81853c41416fb 1-447
+tests/test_bundled_themes_kit.py
+  h_e81853c41416fb 79-87
+tests/test_bundled_tools.py
+  h_e81853c41416fb 1-167
+tests/test_bundled_tui_tools.py
+  h_e81853c41416fb 1-518
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "e5723c973d4ffb84961a7eaf2d6234227cb7f46a",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
