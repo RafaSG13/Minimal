@@ -1,6 +1,6 @@
 # Writing extensions
 
-An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes and sections, modes, widgets, status-line segments, colour themes and a header logo, and run agents of its own. This guide covers minimal API 2.4 ([API versions](#api-versions)).
+An extension is Python code defining `register(minimal)`. It can add tools for the model, slash commands, providers, event hooks, system-prompt notes and sections, modes, widgets, status-line segments, colour themes and a header logo, and run agents of its own. This guide covers minimal API 2.5 ([API versions](#api-versions)).
 
 ```python
 """Greets the user."""
@@ -77,6 +77,7 @@ An extension without `__api__` is not loaded (`declares no __api__; add __api__ 
 | `builtin_commands()`   | API 2.4. `frozenset` of the names (no `/`) of minimal's own slash commands. They are registered before any extension loads, so it is complete inside `register`: use it to avoid shadowing one by accident, or to decide to hand over with `ctx.run_command(line, builtin=True)`. Extension commands are not in it. The terminal UI's own `/theme` is added when the UI starts, so it is in the set only from the first `/reload` on |
 | `ctx`                  | API 2.4. The app's `Context` once `register` has returned, for code outside any call: a timer or watcher thread, a subscription. `None` while `register` runs and under `minimal ext check` ([Using `ctx` outside a call](#using-ctx-outside-a-call)) |
 | `report_problem(text)` | API 2.4. Records a non-fatal problem: the extension still loads and the reload summary shows `Warning: <id>: <text>` ([Settings](#settings)). `ValueError` for empty text |
+| `set_command_wrapper(fn)` | API 2.5. `fn(argv, ctx) -> argv` rewrites the argv of every `bash` call (`["/bin/bash", "-c", command]`): the seam a sandbox plugs into. Minimal still scrubs the environment and applies the timeout and the process-group kill. An exception from `fn`, or a result that is not a non-empty list of strings, fails the call with `command wrapper failed: ...` and nothing runs unwrapped. One wrapper at a time: a second registration raises `ValueError`; `/reload` clears it |
 
 ### Tools
 
@@ -695,7 +696,7 @@ Import from `minimal.api` only; these names stay put when internal modules move.
 
 ## API versions
 
-`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.4`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
+`minimal.api` and the `Extension`/`Context` objects it exports are versioned apart from minimal itself: `API_VERSION` is `MAJOR.MINOR` (this minimal: `2.5`). A minor version only adds names or members; a major version changes or removes something. A minimal release that leaves the API alone does not change it, so extensions do not need touching for it.
 
 API 1.1 added the events `session_start`, `session_switch`, `turn_start`, `before_request`, `after_response`, `shutdown` and `provider_error`, `minimal.on_dispose`, `minimal.data_dir`, `ctx.notify`, `ctx.use_provider`, `ctx.queue_user_message`, and request options: `Provider.stream(..., options=None)` (`max_tokens`, `temperature`; passed only when set, so older providers keep working) and `ctx.complete(..., options=None)`. An extension using any of them declares `__api__ = "1.1"`.
 
@@ -724,6 +725,8 @@ API 2.4 added, for extensions that act on their own and drive the user's configu
 API 2.4 added, for extensions that show their own interface: `ctx.ui.screen(factory)` (a modal Textual screen), `ctx.ui.pick(...)` (a fuzzy-filtered list with a live highlight callback and a preview pane) and `ctx.ui.overlay(...)` (read-only scrollable text), the `timeout` keyword of every `ctx.ui` question, `ctx.transcript` (`Transcript`: jump to, mark and search messages; the stable `-marked` class) and the `ui.preview_lines` setting. An extension using any of them declares `__api__ = "2.4"`.
 
 API 2.4 added, for agent-heavy and housekeeping extensions: `cwd`, `reasoning_effort` and `mentions` on `ctx.run_agent` / `run_agent_result` (`Context.cwd` and `reasoning_effort` of the agent's `ctx` follow them), `reasoning_effort`, `options` and `messages` on `ctx.complete` / `complete_text`, `UsageTotals.by_model`, `model`, `provider` and `source` on `after_response` (which `ctx.complete` now fires, `source` `"complete"`), `ctx.session_info()` and `ctx.sessions_info()` (`SessionInfo`), `ctx.progress(text, key=None)` with one slot per tool call, the `notify` event (`NotifyEvent`) and `read_only` as a function on tools. An extension using any of them declares `__api__ = "2.4"`.
+
+API 2.5 added `minimal.set_command_wrapper(fn)` (`Registry.command_wrapper`): a hook that rewrites the argv of every `bash` call, for sandboxes. An extension using it declares `__api__ = "2.5"`.
 
 Every extension declares the API it is written for with `__api__` (see [Metadata](#metadata)). The loader refuses one that declares nothing or another major version, before running any of its code, and says why; the marketplace installs the newest version of it written for this API, and lists it without installing if there is none. Importing a name `minimal.api` no longer has fails with the version that removed it and what to use instead (`minimal.api.REMOVED`), not a bare `cannot import name`.
 

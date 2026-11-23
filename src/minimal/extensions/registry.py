@@ -814,6 +814,7 @@ class Registry:
             ``"<extension id>: <text>"`` (API 2.4).
         context: The app's ``ctx`` that ``Extension.ctx`` hands out once ``register`` has returned; ``None`` when no app
             owns the registry (``minimal ext check``), and kept across :meth:`reset` (API 2.4).
+        command_wrapper: ``fn(argv, ctx) -> argv`` that rewrites the argv of every ``bash`` call, or ``None`` (API 2.5).
     """
 
     def __init__(self) -> None:
@@ -835,6 +836,7 @@ class Registry:
         self.declared_settings: dict[str, SettingsSpec] = {}
         self.problems: list[str] = []
         self.context: Context | None = None
+        self.command_wrapper: Callable[[list[str], Any], list[str]] | None = None
         self._placed: dict[tuple[str, str], int] = {}
         self._disposers: list[Callable[[], Any]] = []
 
@@ -846,6 +848,7 @@ class Registry:
         a turn offers the new tools on the next request.
         """
         self.tools.clear()
+        self.command_wrapper = None
         self.commands.clear()
         self.builtin_commands.clear()
         self.providers.clear()
@@ -1400,6 +1403,18 @@ class Registry:
             if result is not None:
                 results.append(result)
         return results
+
+    def set_command_wrapper(self, fn: Callable[[list[str], Any], list[str]]) -> None:
+        """Rewrite the argv of every ``bash`` call with ``fn(argv, ctx) -> argv`` (the seam a sandbox plugs into).
+
+        Raises:
+            ValueError: if ``fn`` is not callable or a wrapper is already registered.
+        """
+        if not callable(fn):
+            raise ValueError("set_command_wrapper: fn must be callable")
+        if self.command_wrapper is not None:
+            raise ValueError("a command wrapper is already registered")
+        self.command_wrapper = fn
 
     def on_dispose(self, fn: Callable[[], Any]) -> None:
         """Call ``fn()`` at the next :meth:`dispose`: before a reload and when minimal exits.
