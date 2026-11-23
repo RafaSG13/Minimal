@@ -682,5 +682,57 @@ class ExtensionApiTest(unittest.TestCase):
         self.assertEqual(self.app.provider.stream.call_count, 1)
 
 
+class CommandWrapperTest(ExtensionApiTest):
+    """``Extension.set_command_wrapper`` (API 2.5): the seam a sandbox plugs into."""
+
+    def bash(self, command):
+        self.app.reload_extensions()
+        return self.app.registry.tools["bash"].run({"command": command}, self.app.context)
+
+    def wrapper_extension(self, body):
+        self.extension(
+            "wrap.py",
+            f"""
+            __api__ = "2.5"
+            def register(minimal):
+                {body}
+            """,
+        )
+
+    def test_wrapper_receives_the_argv_and_its_result_runs(self):
+        self.wrapper_extension(
+            "minimal.set_command_wrapper(lambda argv, ctx: ['/bin/echo', 'wrapped:' + ' '.join(argv[:2]) + ':' + argv[2]])"
+        )
+        self.assertEqual(self.bash("echo plain"), "wrapped:/bin/bash -c:echo plain\n\n[exit 0]")
+
+    def test_failing_wrapper_runs_nothing(self):
+        marker = self.tmp / "marker"
+        self.wrapper_extension("minimal.set_command_wrapper(lambda argv, ctx: 1 / 0)")
+        with self.assertRaisesRegex(RuntimeError, "command wrapper failed: division by zero"):
+            self.bash(f"touch {marker}")
+        self.assertFalse(marker.exists())
+
+    def test_wrapper_returning_garbage_runs_nothing(self):
+        marker = self.tmp / "marker"
+        self.wrapper_extension("minimal.set_command_wrapper(lambda argv, ctx: 'not a list')")
+        with self.assertRaisesRegex(RuntimeError, "command wrapper failed: it must return a non-empty list of strings"):
+            self.bash(f"touch {marker}")
+        self.assertFalse(marker.exists())
+
+    def test_second_wrapper_is_refused_and_reload_clears_it(self):
+        registry = Registry()
+        registry.set_command_wrapper(lambda argv, ctx: argv)
+        with self.assertRaisesRegex(ValueError, "a command wrapper is already registered"):
+            registry.set_command_wrapper(lambda argv, ctx: argv)
+        with self.assertRaisesRegex(ValueError, "fn must be callable"):
+            Registry().set_command_wrapper("nope")  # type: ignore[arg-type]
+        registry.reset()
+        self.assertIsNone(registry.command_wrapper)
+        registry.set_command_wrapper(lambda argv, ctx: argv)  # free again
+
+    def test_no_wrapper_leaves_bash_alone(self):
+        self.assertTrue(self.bash("echo plain").startswith("plain"))
+
+
 if __name__ == "__main__":
     unittest.main()

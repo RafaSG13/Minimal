@@ -523,6 +523,24 @@ class Context:
         with :meth:`run_agent`) :meth:`cancel_agent` stopped this agent; poll it in long loops."""
         return self._flag().is_set()
 
+    def _wrap_command(self, argv: list[str]) -> list[str]:
+        """``argv`` as the registered command wrapper (``Extension.set_command_wrapper``) rewrites it; ``argv`` itself
+        when there is none. Used by ``bash``; never runs the command unwrapped when the wrapper fails.
+
+        Raises:
+            RuntimeError: if the wrapper raised or returned something that is not a list of strings.
+        """
+        wrapper = self._app.registry.command_wrapper
+        if wrapper is None:
+            return argv
+        try:
+            wrapped = wrapper(list(argv), self)
+            if not isinstance(wrapped, list) or not wrapped or not all(isinstance(a, str) for a in wrapped):
+                raise TypeError("it must return a non-empty list of strings")
+        except Exception as e:
+            raise RuntimeError(f"command wrapper failed: {e}") from e
+        return wrapped
+
     def _flag(self) -> threading.Event:
         return self._app.cancelled if self._run is None else self._run.cancel
 

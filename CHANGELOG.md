@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- `minimal.set_command_wrapper(fn)` (API 2.5): `fn(argv, ctx) -> argv` rewrites the argv of every `bash` call, the seam
+  for a sandbox extension. Minimal still scrubs the environment, applies the timeout and kills the process group; a
+  wrapper that raises fails the call with `command wrapper failed: ...` and nothing runs unwrapped. One wrapper at a
+  time; `/reload` clears it.
+
 ## 0.10.0
 
 ### Added

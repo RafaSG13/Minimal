@@ -580,6 +580,19 @@ class Extension:
 
         return decorate
 
+    def set_command_wrapper(self, fn: Callable[[list[str], Any], list[str]]) -> None:
+        """API 2.5. ``fn(argv, ctx) -> argv`` rewrites the argv of every ``bash`` call (the sandbox seam); an exception
+        from it fails the call, nothing runs unwrapped.
+
+        ``argv`` is ``["/bin/bash", "-c", command]`` and ``ctx`` the calling agent's; return the argv to run instead
+        (for example ``["sandbox-exec", "-p", profile, *argv]``). Minimal still scrubs the environment, applies the
+        timeout and kills the process group. Only one wrapper may be registered at a time.
+
+        Raises:
+            ValueError: if ``fn`` is not callable or another extension already registered a wrapper.
+        """
+        self._registry.set_command_wrapper(fn)
+
     def on_dispose(self, fn: Callable[[], Any]) -> Callable[[], Any]:
         """Call ``fn()`` before the extensions are reloaded and when minimal exits; returns ``fn``, so it works as a decorator.
 

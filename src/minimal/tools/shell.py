@@ -63,8 +63,12 @@ def bash(input: dict, ctx: Any) -> str:
     what the model sees after the ``tool_result`` handlers saw all of it.
     """
     timeout_s = input.get("timeout_ms", 120_000) / 1000
+    argv = ["/bin/bash", "-c", input["command"]]
+    wrap = getattr(ctx, "_wrap_command", None)
+    if wrap:
+        argv = wrap(argv)  # a command wrapper (sandbox) rewrites it; if it fails nothing runs
     proc = subprocess.Popen(
-        ["/bin/bash", "-c", input["command"]],
+        argv,
         cwd=ctx.cwd,
         env=_command_env(),
         stdout=subprocess.PIPE,
