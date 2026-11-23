@@ -1,0 +1,36 @@
+CHANGELOG.md
+  h_e81853c41416fb 45-64
+docs/extensions.md
+  h_e81853c41416fb 248,265,269-275,328-375,527,716-717
+docs/settings.md
+  h_e81853c41416fb 52,66
+src/minimal/api.py
+  h_e81853c41416fb 23,90
+src/minimal/config.py
+  h_e81853c41416fb 224
+src/minimal/core/app.py
+  h_e81853c41416fb 17,239-257,299-348,442-444,453,458-460,465,472-476,481,494-495,497,502-547
+src/minimal/core/context.py
+  h_e81853c41416fb 13-14,17,26-34,48-57,59-65,70-97,99-119,121-172,174-258,379,387
+src/minimal/ui/tui/app.py
+  h_e81853c41416fb 58,155,186-189,273-274,300-303,308,312-314,321-323,325-326,330,336-388,428,435,437,483-484,1042-1044,1074-1075
+src/minimal/ui/tui/frontend.py
+  h_e81853c41416fb 14-23,132-138,141,147-160,163-164,167-180,187,189-190,195,197,199-200,211,214,217-218,220-259,261-274
+src/minimal/ui/tui/screens.py
+  h_e81853c41416fb 5,11,13,16,285-500
+src/minimal/ui/tui/widgets.py
+  h_e81853c41416fb 36,229-230,238,241,310,314-319,321,324,330,333
+tests/test_api24_screens.py
+  h_e81853c41416fb 1-938
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "099954ce90c0cac8b8f7d63d4a3bc16e25648a31",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
