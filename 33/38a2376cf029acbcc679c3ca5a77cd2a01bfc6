@@ -1,0 +1,28 @@
+CHANGELOG.md
+  h_e81853c41416fb 5-11
+docs/extensions.md
+  h_e81853c41416fb 3,80,699,729-730
+src/minimal/__init__.py
+  h_e81853c41416fb 18
+src/minimal/core/context.py
+  h_e81853c41416fb 526-543
+src/minimal/extensions/facade.py
+  h_e81853c41416fb 583-595
+src/minimal/extensions/registry.py
+  h_e81853c41416fb 817,839,851,1407-1418
+src/minimal/tools/shell.py
+  h_e81853c41416fb 66-69,71
+tests/test_extension_api.py
+  h_e81853c41416fb 685-736
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "3338a2376cf029acbcc679c3ca5a77cd2a01bfc6",
+  "prompts": {},
+  "humans": {
+    "h_e81853c41416fb": {
+      "author": "RafaSG13 <rafasrrg13@gmail.com>"
+    }
+  }
+}
