@@ -1,0 +1,423 @@
+AGENT_STATUSES = ('running', 'done', 'interrupted', 'error', 'max_turns')
+API_VERSION = '2.5'
+AfterResponseEvent class(dict)
+AfterResponseEvent.ctx: Any
+AfterResponseEvent.reply: Reply
+AfterResponseEvent.usage: Usage | None
+AfterResponseEvent.nested: bool
+AfterResponseEvent.agent_id: str
+AfterResponseEvent.parent_id: str | None
+AfterResponseEvent.model: str
+AfterResponseEvent.provider: str
+AfterResponseEvent.source: str
+AgentEndEvent class(dict)
+AgentEndEvent.ctx: Any
+AgentEndEvent.agent_id: str
+AgentEndEvent.parent_id: str | None
+AgentEndEvent.name: str
+AgentEndEvent.status: str
+AgentEndEvent.text: str
+AgentEndEvent.usage: Usage
+AgentEndEvent.error: str | None
+AgentInfo class(object)
+AgentInfo.id: str
+AgentInfo.parent_id: str | None
+AgentInfo.name: str
+AgentInfo.status: str
+AgentInfo.model: str
+AgentInfo.provider: str
+AgentInfo.prompt: str
+AgentInfo.started: float
+AgentInfo.finished: float | None
+AgentInfo.tool_calls: int
+AgentInfo.usage: Usage
+AgentInfo.error: str | None = None
+AgentResult class(object)
+AgentResult.agent_id: str
+AgentResult.text: str
+AgentResult.usage: Usage
+AgentResult.status: str
+AgentResult.error: str | None
+AgentResult.messages: list[dict]
+AgentStartEvent class(dict)
+AgentStartEvent.ctx: Any
+AgentStartEvent.agent_id: str
+AgentStartEvent.parent_id: str | None
+AgentStartEvent.name: str
+AgentStartEvent.prompt: str
+AnthropicProvider class(object)
+AnthropicProvider.identity = None
+AnthropicProvider.list_models def(self) -> 'list[str]'
+AnthropicProvider.name = 'anthropic'
+AnthropicProvider.stream def(self, *, model: 'str', system: 'str', messages: 'list[dict]', tools: 'list[dict]', on_text: 'TextCallback | None', options: 'Mapping[str, Any] | None' = None) -> 'Reply'
+AnthropicProvider.client attribute
+BeforeRequestEvent class(dict)
+BeforeRequestEvent.ctx: Any
+BeforeRequestEvent.messages: list[dict]
+BeforeRequestEvent.system: str
+BeforeRequestEvent.tools: list[dict]
+BeforeRequestEvent.options: dict
+BeforeRequestEvent.nested: bool
+BeforeRequestEvent.agent_id: str
+BeforeRequestEvent.parent_id: str | None
+CSS_VARIABLES = [('accent', 'accent'), ('background', 'background'), ('border', 'border-muted'), ('code', 'md-code'), ('diff_added', 'diff-added'), ('diff_removed', 'diff-removed'), ('dim', 'dim'), ('error', 'error'), ('error_bg', 'tool-error-bg'), ('focus', 'border-blue'), ('foreground', 'foreground'), ('git_clean', 'status-git-clean'), ('git_dirty', 'status-git-dirty'), ('model', 'status-model'), ('muted', 'muted'), ('panel', 'panel'), ('path', 'status-path'), ('pending_bg', 'tool-pending-bg'), ('secondary', 'secondary'), ('selection', 'input-selection-background'), ('status_bg', 'status-bg'), ('success', 'success'), ('success_bg', 'tool-success-bg'), ('surface', 'surface'), ('user_bg', 'user-message-bg'), ('warning', 'warning')]
+Context class(object)
+Context.agent_id property
+Context.agents def(self) -> 'list[AgentInfo]'
+Context.cancel_agent def(self, agent_id: 'str') -> 'bool'
+Context.cancelled property
+Context.check_cancelled def(self) -> 'None'
+Context.commands def(self) -> 'dict[str, str]'
+Context.complete def(self, messages: 'list[dict]', *, system: 'str | None' = None, tools: 'bool' = True, options: 'Mapping[str, Any] | None' = None, model: 'str | None' = None, reasoning_effort: 'str | None' = None) -> 'Reply'
+Context.complete_text def(self, prompt: 'str', *, system: 'str | None' = None, model: 'str | None' = None, max_tokens: 'int' = 1024, messages: 'list[dict] | None' = None, options: 'Mapping[str, Any] | None' = None, reasoning_effort: 'str | None' = None) -> 'str'
+Context.context_tokens property
+Context.context_window property
+Context.cwd property
+Context.cycle_mode def(self) -> 'str | None'
+Context.focus_composer def(self) -> 'None'
+Context.focus_widget def(self, name: 'str', *, hold: 'bool' = False) -> 'bool'
+Context.fork def(self, at_index: 'int | None' = None) -> 'str'
+Context.git def(self) -> 'GitInfo | None'
+Context.git_refresh def(self) -> 'None'
+Context.invalidate def(self) -> 'None'
+Context.keybindings def(self) -> 'list[KeyInfo]'
+Context.max_turns property
+Context.messages property
+Context.mode property
+Context.mode_info def(self, name: 'str | None' = None) -> 'ModeSpec | None'
+Context.model property
+Context.models def(self) -> 'list[str]'
+Context.modes def(self) -> 'dict[str, str]'
+Context.new_session def(self, messages: 'list[dict]') -> 'str'
+Context.notify def(self, text: 'str', kind: 'str' = 'info') -> 'None'
+Context.parent_id property
+Context.progress def(self, text: 'str | None', *, key: 'str | None' = None) -> 'None'
+Context.project_trusted property
+Context.prompt_sections def(self) -> 'list[str]'
+Context.provider_name property
+Context.queue_user_message def(self, text: 'str') -> 'None'
+Context.read_session def(self, session_id: 'str') -> 'list[dict]'
+Context.reasoning_effort property
+Context.reload def(self) -> 'str'
+Context.run_agent def(self, prompt: 'str', *, system_note: 'str' = '', exclude_tools: 'Iterable[str]' = (), name: 'str | None' = None, system: 'str | None' = None, tools: 'Iterable[str] | None' = None, model: 'str | None' = None, provider: 'str | None' = None, max_turns: 'int | None' = None, cwd: 'str | None' = None, reasoning_effort: 'str | None' = None, mentions: 'bool' = False) -> 'str'
+Context.run_agent_result def(self, prompt: 'str', *, system_note: 'str' = '', exclude_tools: 'Iterable[str]' = (), name: 'str | None' = None, system: 'str | None' = None, tools: 'Iterable[str] | None' = None, model: 'str | None' = None, provider: 'str | None' = None, max_turns: 'int | None' = None, cwd: 'str | None' = None, reasoning_effort: 'str | None' = None, mentions: 'bool' = False) -> 'AgentResult'
+Context.run_command def(self, line: 'str', *, builtin: 'bool' = False) -> 'None'
+Context.session_id property
+Context.session_info def(self, session_id: 'str | None' = None) -> 'SessionInfo'
+Context.sessions def(self, *, all_projects: 'bool' = False) -> 'list[str]'
+Context.sessions_info def(self, limit: 'int | None' = None, *, all_projects: 'bool' = False) -> 'list[SessionInfo]'
+Context.set_mode def(self, name: 'str | None') -> 'None'
+Context.set_model def(self, name: 'str') -> 'None'
+Context.set_reasoning_effort def(self, value: 'str | None') -> 'None'
+Context.set_theme def(self, name: 'str', *, save: 'bool' = False) -> 'bool'
+Context.show def(self, text: 'str', kind: 'str' = 'output') -> 'None'
+Context.system_prompt def(self) -> 'str'
+Context.theme property
+Context.tools property
+Context.truncate def(self, at_index: 'int') -> 'int'
+Context.usage property
+Context.use_provider def(self, name: 'str', model: 'str | None' = None) -> 'None'
+Context.widget def(self, name: 'str') -> 'object | None'
+Context.settings attribute
+Context.transcript attribute
+Context.ui attribute
+ContextSettings class(object)
+ContextSettings.get def(self, key: 'str', default: 'Any' = None) -> 'Any'
+ContextSettings.layers def(self, key: 'str') -> 'dict[str, Any]'
+ContextSettings.unset def(self, key: 'str | tuple[str, ...]', *, scope: 'str' = 'global', apply: 'bool' = True) -> 'None'
+ContextSettings.update def(self, changes: 'Mapping[str | tuple[str, ...], Any]', *, scope: 'str' = 'global', apply: 'bool' = True) -> 'None'
+CssSpec class(object)
+CssSpec.name: str
+CssSpec.css: str
+CssSpec.ext: str = ''
+CssSpec.id property
+EVENTS = ('tool_call', 'tool_result', 'turn_end', 'session_start', 'session_switch', 'turn_start', 'before_request', 'after_response', 'shutdown', 'provider_error', 'agent_start', 'agent_end', 'mode_change', 'theme_change', 'notify')
+Extension class(object)
+Extension.add_provider def(self, spec: 'ProviderSpec') -> 'None'
+Extension.append_system_prompt def(self, text: 'str') -> 'None'
+Extension.builtin_commands def(self) -> 'frozenset[str]'
+Extension.command def(self, name: 'str | None' = None, *, description: 'str' = '', terminal: 'bool' = False, complete: 'CommandComplete | None' = None) -> 'Callable[[CommandRun], CommandRun]'
+Extension.ctx property
+Extension.data_dir def(self, scope: 'str' = 'project') -> 'Path'
+Extension.declare_settings def(self, defaults: 'dict', schema: 'Mapping[str, Mapping[str, Any]] | None' = None) -> 'Mapping[str, Any]'
+Extension.id property
+Extension.keybinding def(self, key: 'str', *, description: 'str' = '', show: 'bool' = False, name: 'str' = '', terminal: 'bool' = False) -> 'Callable[[Callable[[Any], Any]], Callable[[Any], Any]]'
+Extension.on def(self, event: 'str', handler: 'EventHandler | None' = None)
+Extension.on_dispose def(self, fn: 'Callable[[], Any]') -> 'Callable[[], Any]'
+Extension.path property
+Extension.project_trusted property
+Extension.register_command def(self, name: 'str', run: 'CommandRun', description: 'str' = '', terminal: 'bool' = False, complete: 'CommandComplete | None' = None) -> 'None'
+Extension.register_css def(self, name: 'str', css: 'str') -> 'None'
+Extension.register_keybinding def(self, key: 'str', run: 'Callable[[Any], Any]', description: 'str' = '', *, show: 'bool' = False, name: 'str' = '', terminal: 'bool' = False) -> 'None'
+Extension.register_logo def(self, art: 'list[str]', colors: 'dict[str, str]', align: 'str' = 'center') -> 'None'
+Extension.register_mode def(self, name: 'str', *, description: 'str', tools: 'Iterable[str] | None' = None, exclude_tools: 'Iterable[str]' = (), system_note: 'str' = '', read_only: 'bool' = False) -> 'None'
+Extension.register_panel def(self, name: 'str', render: 'Callable[[Any], Any]', area: 'str' = 'sidebar', live: 'Callable[[Any, dict], Any] | None' = None, interval: 'float' = 0.0, *, order: 'int' = 0, title: 'str | None' = None, collapsible: 'bool' = False) -> 'None'
+Extension.register_prompt_section def(self, name: 'str', text: 'PromptText', *, replace: 'str | None' = None) -> 'None'
+Extension.register_provider def(self, name: 'str', create: 'Callable[[], Provider]', default_model: 'str', env_keys: 'tuple[str, ...]' = (), description: 'str' = '') -> 'None'
+Extension.register_renderer def(self, kind: 'str', render: 'Callable[[Any, dict], Any]') -> 'None'
+Extension.register_status def(self, name: 'str', render: 'Callable[[Any], Any]', side: 'str' = 'right', *, order: 'int' = 0) -> 'None'
+Extension.register_theme def(self, name: 'str', *, dark: 'bool', background: 'str', foreground: 'str', accent: 'str', **colors: 'str') -> 'None'
+Extension.register_tool def(self, name: 'str', run: 'ToolRun', description: 'str' = '', input_schema: 'dict | None' = None, confirm: 'bool | Callable[[dict, Any], bool]' = False, subject_key: 'str | None' = None, read_only: 'bool | Callable[[dict, Any], bool]' = False) -> 'None'
+Extension.register_widget def(self, name: 'str', create: 'Callable[[Any], Any]', area: 'str' = 'sidebar', *, order: 'int' = 0, title: 'str | None' = None, collapsible: 'bool' = False) -> 'None'
+Extension.remove_prompt_section def(self, name: 'str') -> 'None'
+Extension.report_problem def(self, text: 'str') -> 'None'
+Extension.scope property
+Extension.set_command_wrapper def(self, fn: 'Callable[[list[str], Any], list[str]]') -> 'None'
+Extension.settings property
+Extension.tool def(self, name: 'str | None' = None, *, description: 'str' = '', input_schema: 'dict | None' = None, confirm: 'bool | Callable[[dict, Any], bool]' = False, subject_key: 'str | None' = None, read_only: 'bool | Callable[[dict, Any], bool]' = False) -> 'Callable[[ToolRun], ToolRun]'
+Extension.tools property
+Extension.version property
+GitInfo class(object)
+GitInfo.branch: str | None
+GitInfo.dirty: bool = False
+GitInfo.ahead: int = 0
+GitInfo.behind: int = 0
+GitInfo.staged: int = 0
+GitInfo.unstaged: int = 0
+GitInfo.untracked: int = 0
+GitInfo.files: tuple[tuple[str, str], ...] = ()
+IMAGE_TYPES = ('image/png', 'image/jpeg', 'image/gif', 'image/webp')
+KEY_ACTIONS = [('cycle_mode', 'shift+tab'), ('interrupt', 'escape'), ('toggle_sidebar', 'ctrl+b')]
+KeyInfo class(object)
+KeyInfo.key: str
+KeyInfo.action: str
+KeyInfo.description: str
+KeyInfo.source: str
+KeybindingSpec class(object)
+KeybindingSpec.key: str
+KeybindingSpec.run: Callable[[Any], Any]
+KeybindingSpec.description: str = ''
+KeybindingSpec.show: bool = False
+KeybindingSpec.name: str = ''
+KeybindingSpec.ext: str = ''
+KeybindingSpec.terminal: bool = False
+KeybindingSpec.id property
+KeybindingSpec.label property
+LogoSpec class(object)
+LogoSpec.art: list[str]
+LogoSpec.colors: dict[str, str]
+LogoSpec.align: str = 'center'
+MAIN_AGENT = 'main'
+ModeChangeEvent class(dict)
+ModeChangeEvent.ctx: Any
+ModeChangeEvent.old: str | None
+ModeChangeEvent.new: str | None
+ModeSpec class(object)
+ModeSpec.name: str
+ModeSpec.description: str
+ModeSpec.tools: tuple[str, ...] | None = None
+ModeSpec.exclude_tools: tuple[str, ...] = ()
+ModeSpec.system_note: str = ''
+ModeSpec.read_only: bool = False
+ModeSpec.block_reason def(self, name: 'str', tool: 'Tool | None') -> 'str | None'
+NotifyEvent class(dict)
+NotifyEvent.ctx: Any
+NotifyEvent.text: str
+NotifyEvent.kind: str
+NotifyEvent.source: str
+PROMPT_SECTIONS = ('base', 'environment', 'extending', 'instructions', 'append')
+PanelSpec class(object)
+PanelSpec.name: str
+PanelSpec.render: Callable[[Any], Any]
+PanelSpec.area: str = 'sidebar'
+PanelSpec.live: Callable[[Any, dict], Any] | None = None
+PanelSpec.interval: float = 0.0
+PanelSpec.order: int = 0
+PanelSpec.title: str | None = None
+PanelSpec.collapsible: bool = False
+PromptText = str | collections.abc.Callable[[typing.Any], 'str | None']
+Provider class(Protocol)
+Provider.list_models def(self) -> 'list[str]'
+Provider.stream def(self, *, model: 'str', system: 'str', messages: 'list[dict]', tools: 'list[dict]', on_text: 'TextCallback | None', options: 'Mapping[str, Any] | None' = None) -> 'Reply'
+ProviderErrorEvent class(dict)
+ProviderErrorEvent.ctx: Any
+ProviderErrorEvent.error: Exception
+ProviderErrorEvent.attempt: int
+ProviderErrorEvent.provider: str
+ProviderErrorEvent.model: str
+ProviderErrorEvent.nested: bool
+ProviderErrorEvent.agent_id: str
+ProviderErrorEvent.parent_id: str | None
+ProviderSpec class(object)
+ProviderSpec.name: str
+ProviderSpec.create: Callable[[], Provider]
+ProviderSpec.default_model: str
+ProviderSpec.env_keys: tuple[str, ...] = ()
+ProviderSpec.description: str = ''
+ProviderSpec.sdk: str = ''
+ProviderSpec.install: str = ''
+ProviderSpec.login: Callable[[], None] | None = None
+ProviderSpec.logout: Callable[[], None] | None = None
+ProviderSpec.account: Callable[[], str | None] | None = None
+ProviderSpec.context_windows: Mapping[str, int] = <factory>
+ProviderSpec.missing_credentials def(self) -> 'str | None'
+ProviderSpec.missing_sdk def(self) -> 'str | None'
+REASONING_EFFORTS = ('low', 'medium', 'high')
+RESERVED_KEYS = ['alt+backspace', 'alt+delete', 'alt+enter', 'backspace', 'ctrl+a', 'ctrl+b', 'ctrl+backspace', 'ctrl+c', 'ctrl+d', 'ctrl+e', 'ctrl+h', 'ctrl+i', 'ctrl+j', 'ctrl+k', 'ctrl+left', 'ctrl+m', 'ctrl+p', 'ctrl+q', 'ctrl+right', 'ctrl+shift+a', 'ctrl+shift+k', 'ctrl+shift+left', 'ctrl+shift+right', 'ctrl+u', 'ctrl+v', 'ctrl+w', 'ctrl+x', 'ctrl+y', 'ctrl+z', 'delete', 'down', 'end', 'enter', 'escape', 'home', 'left', 'pagedown', 'pageup', 'right', 'shift+down', 'shift+end', 'shift+enter', 'shift+home', 'shift+left', 'shift+right', 'shift+tab', 'shift+up', 'super+backspace', 'super+c', 'super+x', 'super+y', 'super+z', 'tab', 'up']
+RendererSpec class(object)
+RendererSpec.kind: str
+RendererSpec.render: Callable[[Any, dict], Any]
+Reply class(object)
+Reply.content: list[dict]
+Reply.stop_reason: str
+Reply.provider_data: Any = None
+Reply.usage: Usage | None = None
+SETTING_MERGES = ('replace', 'deep')
+SETTING_SCHEMA_KEYS = ('description', 'enum', 'min', 'max', 'merge')
+STATUS_SIDES = ('left', 'right')
+STYLES = ('foreground', 'accent', 'secondary', 'success', 'warning', 'error', 'muted', 'dim', 'diff_added', 'diff_removed', 'bold', 'italic', 'underline', 'reverse')
+SessionInfo class(object)
+SessionInfo.id: str
+SessionInfo.title: str
+SessionInfo.parent: str
+SessionInfo.cwd: str
+SessionInfo.preview: str
+SessionInfo.mtime: float
+SessionInfo.n_messages: int
+SessionInfo.created: float | None
+SessionInfo.locked: bool
+SessionStartEvent class(dict)
+SessionStartEvent.ctx: Any
+SessionStartEvent.resumed: bool
+SessionSwitchEvent class(dict)
+SessionSwitchEvent.ctx: Any
+SessionSwitchEvent.old_id: str
+SessionSwitchEvent.new_id: str
+SettingsSpec class(object)
+SettingsSpec.ext: str
+SettingsSpec.defaults: Mapping[str, Any]
+SettingsSpec.schema: Mapping[str, Mapping[str, Any]] = <factory>
+SettingsSpec.values: Mapping[str, Any] = <factory>
+ShutdownEvent class(dict)
+ShutdownEvent.ctx: Any
+THEME_COLORS = ('surface', 'panel', 'secondary', 'success', 'warning', 'error', 'muted', 'dim', 'border', 'focus', 'user_bg', 'pending_bg', 'success_bg', 'error_bg', 'code', 'model', 'path', 'status_bg', 'git_clean', 'git_dirty', 'selection', 'diff_added', 'diff_removed')
+ThemeChangeEvent class(dict)
+ThemeChangeEvent.ctx: Any
+ThemeChangeEvent.name: str
+ThemeChangeEvent.dark: bool
+ThemeInfo class(object)
+ThemeInfo.name: str
+ThemeInfo.dark: bool
+ThemeInfo.colors: Mapping[str, str]
+Tool class(object)
+Tool.name: str
+Tool.description: str
+Tool.input_schema: dict
+Tool.run: ToolRun
+Tool.confirm: bool | Callable[[dict, Any], bool] = False
+Tool.subject_key: str | None = None
+Tool.read_only: bool | Callable[[dict, Any], bool] = False
+ToolCallEvent class(dict)
+ToolCallEvent.name: str
+ToolCallEvent.input: dict
+ToolCallEvent.ctx: Any
+ToolCallEvent.agent_id: str
+ToolCallEvent.parent_id: str | None
+ToolResultEvent class(dict)
+ToolResultEvent.name: str
+ToolResultEvent.input: dict
+ToolResultEvent.output: str
+ToolResultEvent.is_error: bool
+ToolResultEvent.ctx: Any
+ToolResultEvent.agent_id: str
+ToolResultEvent.parent_id: str | None
+Transcript class(object)
+Transcript.find def(self, text: 'str', *, regex: 'bool' = False) -> 'list[int]'
+Transcript.mark def(self, message_index: 'int', label: 'str' = '') -> 'None'
+Transcript.marks def(self) -> 'list[tuple[int, str]]'
+Transcript.scroll_to def(self, message_index: 'int') -> 'bool'
+Transcript.unmark def(self, message_index: 'int | None' = None) -> 'None'
+TurnEndEvent class(dict)
+TurnEndEvent.messages: list[dict]
+TurnEndEvent.ctx: Any
+TurnEndEvent.nested: bool
+TurnEndEvent.agent_id: str
+TurnEndEvent.parent_id: str | None
+TurnInterrupted class(Exception)
+TurnStartEvent class(dict)
+TurnStartEvent.ctx: Any
+TurnStartEvent.text: str
+UI class(object)
+UI.ask def(self, question: 'str', *, timeout: 'float | None' = None) -> 'bool'
+UI.ask_text def(self, title: 'str', *, timeout: 'float | None' = None) -> 'str | None'
+UI.choose def(self, title: 'str', options: 'list[tuple[str, str]]', *, timeout: 'float | None' = None) -> 'str | None'
+UI.choose_many def(self, title: 'str', options: 'list[tuple[str, str, bool]]', *, timeout: 'float | None' = None) -> 'list[str] | None'
+UI.get_draft def(self) -> 'str'
+UI.overlay def(self, content: 'Any', title: 'str' = '', *, timeout: 'float | None' = None) -> 'None'
+UI.pick def(self, title: 'str', items: 'Sequence[tuple[str, ...]]', *, preview: 'Callable[[str], str] | None' = None, on_highlight: 'Callable[[str], Any] | None' = None, filter: 'bool' = True, timeout: 'float | None' = None) -> 'str | None'
+UI.screen def(self, factory: 'Callable[[Callable[[Any], None]], Any]', *, timeout: 'float | None' = None) -> 'Any'
+UI.set_draft def(self, text: 'str', *, append: 'bool' = False) -> 'None'
+USER_DENIED = 'the user denied the execution'
+Usage class(object)
+Usage.input_tokens: int = 0
+Usage.output_tokens: int = 0
+Usage.cache_read_tokens: int = 0
+Usage.cache_write_tokens: int = 0
+UsageTotals class(object)
+UsageTotals.input_tokens: int = 0
+UsageTotals.output_tokens: int = 0
+UsageTotals.cache_read_tokens: int = 0
+UsageTotals.cache_write_tokens: int = 0
+UsageTotals.requests: int = 0
+UsageTotals.by_model: Mapping[str, UsageTotals] = <factory>
+WIDGET_AREAS = ('top', 'bottom', 'sidebar', 'left', 'footer')
+__version__ str
+glob_regex def(pattern: 'str') -> 're.Pattern[str]'
+glyphs module minimal.glyphs
+glyphs.BRANCH = '⎇'
+glyphs.COLLAPSED = '▸'
+glyphs.CURSOR = '▌'
+glyphs.DOT = ' · '
+glyphs.ERROR = '✘'
+glyphs.EXPANDED = '▾'
+glyphs.FULL_BLOCK = '█'
+glyphs.HEADER_NODE = '─●─'
+glyphs.LOWER_HALF = '▄'
+glyphs.MODEL = '⬢'
+glyphs.PROMPT = '❯'
+glyphs.RUNNING = '⟳'
+glyphs.SEPARATOR = '▕'
+glyphs.SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+glyphs.SUCCESS = '✔'
+glyphs.UPPER_HALF = '▀'
+glyphs.WARNING = '⚠'
+image_block def(data: 'str | bytes', media_type: 'str') -> 'dict'
+logo_content def(spec: 'LogoSpec') -> 'Content'
+normalize_key def(key: 'Any', what: 'str' = 'key') -> 'str'
+openai_compatible def(name: 'str', base_url: 'str', default_model: 'str', *, key_env: 'str | None' = None, description: 'str' = '', context_windows: 'Mapping[str, int] | None' = None) -> 'ProviderSpec'
+result_text def(content: 'Any') -> 'str'
+styled_line def(value: 'Any') -> 'StyledLine'
+styled_lines def(value: 'Any') -> 'list[StyledLine] | None'
+theme module minimal.glyphs
+theme.BRANCH = '⎇'
+theme.COLLAPSED = '▸'
+theme.CURSOR = '▌'
+theme.DOT = ' · '
+theme.ERROR = '✘'
+theme.EXPANDED = '▾'
+theme.FULL_BLOCK = '█'
+theme.HEADER_NODE = '─●─'
+theme.LOWER_HALF = '▄'
+theme.MODEL = '⬢'
+theme.PROMPT = '❯'
+theme.RUNNING = '⟳'
+theme.SEPARATOR = '▕'
+theme.SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+theme.SUCCESS = '✔'
+theme.UPPER_HALF = '▀'
+theme.WARNING = '⚠'
+REMOVED BUILTIN_COMMANDS 1.0
+REMOVED ID_RE 1.0
+REMOVED Registry 1.0
+REMOVED SESSIONS_DIR 1.0
+REMOVED build_system_prompt 1.0
+REMOVED new_id 1.0
+REMOVED open_session 1.0
+REMOVED raise_if_cancelled 1.0
+REMOVED reload_summary 1.0
+REMOVED run_agent 1.0
+REMOVED theme.DEFAULT 2.0
+REMOVED theme.MINIMAL 2.0
+REMOVED theme.available 2.0
+REMOVED theme.build 2.0
+REMOVED tool_specs 1.0

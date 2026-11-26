@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- The extension API is frozen at 2.5 until 1.0.0: `tests/test_api_surface.py` pins the public surface of `minimal.api`
+  against `tests/golden/api_surface.txt`, and `docs/extensions.md` records the freeze and the post-1.0 deprecation rule.
+
 ### Added
 
 - `minimal.set_command_wrapper(fn)` (API 2.5): `fn(argv, ctx) -> argv` rewrites the argv of every `bash` call, the seam
